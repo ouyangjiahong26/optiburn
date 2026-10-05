@@ -44,8 +44,8 @@ pub trait ScsiTransport {
 
 ## 被否决的方案
 
-- **libburn FFI**：官方 README 明确列出支持平台为「GNU/Linux（kernel ≥ 2.4）、
-  FreeBSD（ATAPI/CAM）、OpenSolaris、NetBSD」——没有 Windows。即便绕过这一点，把
+- **libburn FFI**：官方 README 明确列出支持平台为“GNU/Linux（kernel ≥ 2.4）、
+  FreeBSD（ATAPI/CAM）、OpenSolaris、NetBSD”——没有 Windows。即便绕过这一点，把
   GPLv2+ 的库链进 MIT 项目会把分发许可问题引入本项目，而我们需要它提供的只是
   `SG_IO`/SPTI 这层薄胶水（SCSI 命令本身的编解码仍在我们的 `optiburn-mmc` 里）。
   收益与代价不成比例。

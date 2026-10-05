@@ -42,8 +42,10 @@ optiburn-cli        命令行：build-image / burn / probe
 盘 ──probe──▶ 设备标识 + 盘片状态（SG_IO/SPTI + READ DISC INFORMATION）
 ```
 
-镜像先落盘再写盘（ADR-0003）是有意为之：同一份镜像字节在四个平台上完全一致，没有光驱
-也能把整条链路测完，写盘失败还能重试。
+镜像先落盘再写盘（ADR-0003）是有意为之：镜像文件本身就是可归档、可校验的分发单元，
+没有光驱也能把整条链路测完，写盘失败还能重试。注意镜像内含构建时刻的时间戳（上游把
+`now()` 写进 ISO 卷描述符与 UDF 时间戳），所以同一目录两次构建的字节并不相同——可复现
+的是目录顺序与内容，不是镜像字节。
 
 ## 各 crate 的接口与隐藏内容
 
@@ -65,7 +67,7 @@ optiburn-cli        命令行：build-image / burn / probe
 返回 `Inquiry` / `DiscInformation` / `DiscStatus` 结构。
 
 **隐藏**：CDB 字节序与分配长度字段位置（`READ DISC INFORMATION` 的分配长度在 CDB 第
-7–8 字节）、响应里哪些位是盘状态（字节 2 的低 2 位，同一字节还带 last-session 状态与
+7–8 字节）、响应里哪些位是盘片状态（字节 2 的低 2 位，同一字节还带 last-session 状态与
 erasable 标志）、尾部空格与 NUL 填充、短响应判定（用 `residual` 反推实际长度）。
 
 **没有的东西**：写侧命令。路线图落地前不留空壳类型。
@@ -79,16 +81,19 @@ erasable 标志）、尾部空格与 NUL 填充、短响应判定（用 `residua
 hadris-cd 的选项组装、输出文件必须以**读写**方式打开（hadris 写完卷描述符后会回读并就地
 打补丁，只写句柄会 `EBADF`）、镜像按 2048 字节扇区对齐。
 
-**不变量**：同样输入产出字节相同的镜像（hadris 的 `FileTree::from_fs` 递归读取时按名字
-排序，跳过符号链接）；`ImageInfo.filesystems` 回报的是实际写进去的文件系统。
+**不变量**：同一输入的目录顺序确定（hadris 的 `FileTree::from_fs` 递归读取时按名字排序、
+跳过符号链接），但镜像内含构建时刻时间戳，字节不跨次一致；`ImageInfo.filesystems` 从真正
+交给写盘器的选项反推，`ImageInfo.sectors` 只在字节数是 2048 的整数倍时给出（否则报
+`MisalignedImage`，不假装知道扇区数）。
 
 ### optiburn-engine
 
 **接口**：`BurnEngine::{name, burn}`，输入 `BurnJob`（镜像、设备、倍速、是否多区段），
 进度通过 `&mut dyn FnMut(f32)` 回调。
 
-**隐藏**：`xorriso -as cdrecord` 的参数拼装、stderr 上的百分比解析、失败时从 stderr
-尾部取摘要、`unsupported` 与「工具不存在」的区分（后者给 `MissingTool` 并附安装提示）。
+**隐藏**：`xorriso -as cdrecord` 的参数拼装（镜像路径按 `OsStr` 原样传递，不做有损转换）、
+stderr 上的百分比解析、失败时从 stderr 尾部取摘要、区分工具缺失（`MissingTool`，附安装
+提示）与其它 I/O 错误（`Io`）。
 
 **已知不足**：v0 的进度只是粗粒度提示——cdrecord 风格输出里缓冲区/fifo 的百分比与写入
 百分比同格式，且成功时统一补发 1.0；精确进度要等原生 MMC 引擎自己数 LBA。

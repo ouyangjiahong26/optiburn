@@ -100,6 +100,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(any(target_os = "linux", windows))]
     fn open_missing_device_reports_not_found() {
         match open("/nonexistent-optiburn-device") {
             Err(TransportError::NotFound(path)) => {

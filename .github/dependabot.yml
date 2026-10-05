@@ -11,8 +11,9 @@ updates:
       prefix: "chore"
       include: "scope"
     groups:
-      # 上游 hadris 家族的三个 crate 必须同版本（hadris-cd 内部按 2.5.0 依赖），
-      # 拆成三个 PR 会互相冲突且都编不过。
+      # hadris 家族各 crate 必须同版本：工作区直接声明 2 个（hadris-cd、hadris-udf），
+      # Cargo.lock 里解析出 9 个，都由 hadris-cd 2.5.0 的内部依赖决定。不分组会开出
+      # 互相冲突且都编不过的多个 PR。
       hadris:
         patterns:
           - "hadris-*"

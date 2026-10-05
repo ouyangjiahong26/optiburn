@@ -68,12 +68,17 @@ pub enum MasteringError {
     Io(#[from] std::io::Error),
     #[error("image writer failed: {0}")]
     Writer(#[from] hadris_cd::Error),
+    #[error(
+        "writer produced a {bytes}-byte image, which is not a whole number of {SECTOR_SIZE}-byte sectors"
+    )]
+    MisalignedImage { bytes: u64 },
 }
 
 /// 把 `source_dir` 的内容写成一个镜像文件 `output`。
 ///
-/// 目录树由 hadris-cd 的 `FileTree::from_fs` 递归读取（跳过符号链接，按名字排序，
-/// 保证同样输入产出字节相同的镜像）。
+/// 目录树由 hadris-cd 的 `FileTree::from_fs` 递归读取（跳过符号链接，按名字排序），
+/// 因此同一输入的文件顺序是确定的；但上游会把构建时刻写进 ISO 卷描述符与 UDF 时间戳，
+/// **镜像字节不跨次一致**（同一份镜像文件本身仍可归档、可校验）。
 pub fn build_image(
     source_dir: &Path,
     output: &Path,
@@ -88,6 +93,9 @@ pub fn build_image(
     }
 
     let tree = FileTree::from_fs(source_dir)?;
+    let options = options_for(spec);
+    // 回报的内容从真正交给写盘器的选项反推，避免 profile 分支散落两处（ADR-0002）。
+    let filesystems = filesystems_for(&options);
     // 必须以读写方式打开：hadris 写完卷描述符后要回读并就地打补丁，只写句柄会得到 EBADF。
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -95,13 +103,13 @@ pub fn build_image(
         .create(true)
         .truncate(true)
         .open(output)?;
-    OpticalImageWriter::new(file, options_for(spec)).finish(tree)?;
+    OpticalImageWriter::new(file, options).finish(tree)?;
 
     let bytes = std::fs::metadata(output)?.len();
     Ok(ImageInfo {
-        sectors: bytes.div_ceil(SECTOR_SIZE),
+        sectors: sector_count(bytes)?,
         bytes,
-        filesystems: filesystems_for(spec),
+        filesystems,
     })
 }
 
@@ -127,18 +135,32 @@ fn options_for(spec: &ImageSpec) -> OpticalImageOptions {
     options
 }
 
-/// 与 [`options_for`] 对应的“实际写进去了什么”，供 CLI 回报。
-fn filesystems_for(spec: &ImageSpec) -> Vec<String> {
-    let mut filesystems = vec!["ISO 9660".to_string()];
-    if spec.joliet {
+/// 从真正写进镜像的选项反推文件系统清单，供 CLI 回报。
+///
+/// Joliet 一档本仓库只设 Level 3（唯一设置点是 [`options_for`]）。
+fn filesystems_for(options: &OpticalImageOptions) -> Vec<String> {
+    let mut filesystems = Vec::new();
+    if options.iso.enabled {
+        filesystems.push("ISO 9660".to_string());
+    }
+    if options.iso.joliet.is_some() {
         filesystems.push("Joliet Level 3".to_string());
     }
-    match spec.profile {
-        DiscProfile::Cd => {}
-        DiscProfile::Dvd => filesystems.push(format!("UDF {}", UdfRevision::V1_02)),
-        DiscProfile::Bd => filesystems.push(format!("UDF {}", UdfRevision::V2_50)),
+    if options.udf.enabled {
+        filesystems.push(format!("UDF {}", options.udf.revision));
     }
     filesystems
+}
+
+/// 镜像扇区数。
+///
+/// hadris 以扇区为单位写出（末尾补齐到扇区边界），所以这是精确除法而不是估算；一旦
+/// 上游产出非整扇区长度的镜像，就不再声称知道扇区数，直接报错。
+fn sector_count(bytes: u64) -> Result<u64, MasteringError> {
+    if !bytes.is_multiple_of(SECTOR_SIZE) {
+        return Err(MasteringError::MisalignedImage { bytes });
+    }
+    Ok(bytes / SECTOR_SIZE)
 }
 
 #[cfg(test)]
@@ -153,8 +175,13 @@ mod tests {
         }
     }
 
+    /// 文件系统清单只有一个来源（选项），测试也走同一条路径。
+    fn filesystems(spec: &ImageSpec) -> Vec<String> {
+        filesystems_for(&options_for(spec))
+    }
+
     #[test]
-    fn profiles_pick_the_documented_filesystems() {
+    fn profile_options_pick_the_documented_filesystems() {
         let cd = options_for(&spec(DiscProfile::Cd, true));
         assert!(!cd.udf.enabled);
         assert_eq!(cd.iso.joliet, Some(JolietLevel::Level3));
@@ -171,21 +198,31 @@ mod tests {
     fn joliet_can_be_turned_off() {
         assert_eq!(options_for(&spec(DiscProfile::Dvd, false)).iso.joliet, None);
         assert_eq!(
-            filesystems_for(&spec(DiscProfile::Dvd, false)),
+            filesystems(&spec(DiscProfile::Dvd, false)),
             vec!["ISO 9660", "UDF 1.02"]
         );
     }
 
     #[test]
-    fn filesystems_report_matches_the_profile() {
+    fn filesystems_report_matches_the_options() {
         assert_eq!(
-            filesystems_for(&spec(DiscProfile::Cd, true)),
+            filesystems(&spec(DiscProfile::Cd, true)),
             vec!["ISO 9660", "Joliet Level 3"]
         );
         assert_eq!(
-            filesystems_for(&spec(DiscProfile::Bd, true)),
+            filesystems(&spec(DiscProfile::Bd, true)),
             vec!["ISO 9660", "Joliet Level 3", "UDF 2.50"]
         );
+    }
+
+    #[test]
+    fn sector_count_only_accepts_whole_sectors() {
+        assert_eq!(sector_count(0).unwrap(), 0);
+        assert_eq!(sector_count(4096).unwrap(), 2);
+        assert!(matches!(
+            sector_count(4097),
+            Err(MasteringError::MisalignedImage { bytes: 4097 })
+        ));
     }
 
     #[test]
@@ -222,7 +259,7 @@ mod tests {
         let out = tmp.path().join("out.iso");
 
         let info = build_image(&src, &out, &ImageSpec::default()).unwrap();
-        assert_eq!(info.bytes % SECTOR_SIZE, 0, "镜像必须按扇区对齐");
+        assert!(info.bytes.is_multiple_of(SECTOR_SIZE), "镜像必须按扇区对齐");
         assert_eq!(info.sectors * SECTOR_SIZE, info.bytes);
         assert_eq!(
             info.filesystems,

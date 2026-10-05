@@ -40,12 +40,15 @@ cargo build --release
 ### Build an image
 
 ```bash
-$ optiburn build-image ~/photos -o photos.iso --profile dvd --volume-id PHOTOS
-镜像: photos.iso
-  扇区: 652
-  字节: 1335296
+$ optiburn build-image docs -o docs.iso --profile dvd --volume-id OPTIBURN
+镜像: docs.iso
+  扇区: 682
+  字节: 1396736
   文件系统: ISO 9660, Joliet Level 3, UDF 1.02
 ```
+
+(The output above comes from this repository's `docs/` directory; the image
+embeds a build timestamp, so sizes track the directory contents.)
 
 `--profile` picks the filesystems: `cd` (no UDF), `dvd` (default, UDF 1.02
 Bridge), `bd` (UDF 2.50). Without `-o` the image is written to
@@ -54,7 +57,7 @@ Bridge), `bd` (UDF 2.50). Without `-o` the image is written to
 ### Burn it
 
 ```bash
-optiburn burn photos.iso --device /dev/sr0 --speed 8
+optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
 Windows device names are drive letters: `--device E:`. `--multi` appends as a
@@ -68,7 +71,9 @@ Windows only mounts the last session. The only engine in v0 is `xorriso`
 
 ```bash
 $ optiburn probe
-/dev/sr0 | ASUS BW-16D1HT 3.10 | 空盘，1 个区段
+未发现光驱                      # no drive present (exit code 0)
+# with a drive, one line per device:
+# /dev/sr0 | ASUS BW-16D1HT 3.10 | 空盘，1 个区段
 ```
 
 Exits 0 even when no drive is present (`未发现光驱`), so it is safe to run in
@@ -82,9 +87,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace          # needs xorriso for the round-trip test
 for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
          x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
-  cargo check --workspace --target "$t"
+  RUSTFLAGS="-D warnings" cargo check --workspace --all-targets --target "$t"
 done
 ```
+
+Dead code and unused imports on the cross targets are reported by rustc but not
+by clippy on Linux, so this pass denies warnings too — which is exactly how CI's
+`cross-check` job runs.
 
 The mastering test writes a real image and asks `xorriso` to extract it back,
 then compares every file byte for byte — including a Chinese filename and a

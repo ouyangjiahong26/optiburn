@@ -6,13 +6,15 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{BurnEngine, BurnJob, XorrisoEngine};
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
+// 只有 Linux 的 probe 能枚举设备，非 Linux 目标用不到 mmc 层。
+#[cfg(target_os = "linux")]
 use optiburn_mmc::{DiscStatus, MmcDevice};
 
 #[derive(Parser)]
 #[command(
     name = "optiburn",
     version,
-    about = "Cross-platform optical disc burning toolkit"
+    about = "跨平台光盘刻录工具（ISO 9660 / Joliet / UDF Bridge）"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -160,6 +162,7 @@ fn default_output(src: &Path) -> PathBuf {
     PathBuf::from(format!("{stem}.iso"))
 }
 
+#[cfg(target_os = "linux")]
 fn disc_status_text(status: DiscStatus) -> String {
     match status {
         DiscStatus::Empty => "空盘".to_string(),
