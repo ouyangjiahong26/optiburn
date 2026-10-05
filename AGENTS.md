@@ -5,10 +5,13 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
 
 ## Project Overview
 
-五个 crate 的 workspace，依赖单向：`cli → {mastering, engine, mmc} → {hadris-cd, transport}`。
+五个 crate 的 workspace，依赖单向：`cli` 依赖 `mastering`、`engine`、`mmc`，并直接依赖
+`transport`（probe 用它打开与枚举设备）。`mastering` 依赖 `hadris-cd`，`mmc` 依赖
+`transport`。
 
-- `optiburn-transport`：SCSI 传输。全仓库唯一的硬件抽象点——`ScsiTransport` trait 一个方法
-  `issue(cdb, dir, data, timeout)`；Linux 走 `SG_IO`，Windows 走 SPTI。CDB 上限 16 字节，
+- `optiburn-transport`：SCSI 传输。全仓库唯一的硬件抽象点，`ScsiTransport` trait 只有
+  一个方法 `issue(cdb, dir, data, timeout)`。Linux 走 `SG_IO`，Windows 走 SPTI，光驱设备
+  枚举（`list_optical_devices`）也按平台收在这里。CDB 上限 16 字节，
   sense 上限 32 字节，命令级成功 = SCSI 状态字节与宿主机/驱动状态全 0。
 - `optiburn-mmc`：MMC 命令编解码。v0 只有读侧三条（`inquiry`、`test_unit_ready`、
   `read_disc_information`）。写侧（`RESERVE TRACK`/`WRITE(10)`/`CLOSE TRACK`）在路线图上，
@@ -50,7 +53,7 @@ cargo run -p optiburn-cli -- probe      # 期望“未发现光驱”，退出�
 |---|---|
 | `crates/optiburn-transport/` | `lib.rs`（trait + 平台分发）、`linux.rs`（SG_IO）、`windows.rs`（SPTI） |
 | `crates/optiburn-mmc/` | CDB 编解码与响应解析，含黄金 CDB 断言与固定缓冲区解析测试 |
-| `crates/optiburn-mastering/` | `build_image` + profile 映射；`tests/roundtrip.rs` 是 xorriso 对拍 |
+| `crates/optiburn-mastering/` | `build_image` + profile 映射。`tests/roundtrip.rs` 是 xorriso 对拍 |
 | `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`）、`xorriso.rs`（参数与进度解析） |
 | `crates/optiburn-cli/` | `src/main.rs` 三个子命令 |
 | `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0005） |
@@ -59,17 +62,17 @@ cargo run -p optiburn-cli -- probe      # 期望“未发现光驱”，退出�
 
 ## 约定
 
-- **改接口先过全量检查**：任何公开符号变化都要 `cargo check --workspace --all-targets`
+- 改接口先过全量检查：任何公开符号变化都要 `cargo check --workspace --all-targets`
   加四个目标全过，再跑测试。
-- **新公开符号配错误类型**：错误用 `thiserror`，`#[error]` 文案英文；CLI 面向用户的
+- 新公开符号配错误类型：错误用 `thiserror`，`#[error]` 文案英文。CLI 面向用户的
   文案中文。
-- **注释写中文**，只写“为什么”。文件 < 1000 行、函数 < 50 行。
-- **不加 GUI 依赖**，不引 GPL 依赖（链接层面必须保持 MIT 可分发；子进程调 GPL 工具可以）。
-- **平台分支只能出现在 `optiburn-transport`**。别处出现 `#[cfg(target_os)]` 前先想清楚。
-- **上游怪癖要写进代码注释与 ADR**（例：hadris 需要读写句柄；它的文档注释里 UDF VRS 的
+- 注释写中文，只写“为什么”。文件 < 1000 行、函数 < 50 行。
+- 不加 GUI 依赖，不引 GPL 依赖（链接层面必须保持 MIT 可分发，子进程调 GPL 工具可以）。
+- 平台分支只能出现在 `optiburn-transport`。别处出现 `#[cfg(target_os)]` 前先想清楚。
+- 上游怪癖要写进代码注释与 ADR（例：hadris 需要读写句柄，它的文档注释里 UDF VRS 的
   扇区号是错的，实测在 20–22）。这类事实写下来，避免下一个人重踩。
-- **不写空洞的兼容层**：改接口就迁移全部调用方；废弃代码直接删。
-- 领域命名用 `CONTEXT.md` 词汇；`main` 走分支保护，一切改动经 PR。
+- 不写空洞的兼容层：改接口就迁移全部调用方。废弃代码直接删。
+- 领域命名用 `CONTEXT.md` 词汇。`main` 走分支保护，一切改动经 PR。
 - 能用证据（命令输出、字节偏移、上游源码位置）就不用推测。推测要标明是推测。
 - 文档只写中文，`README.md` 例外（英文为主 + “中文速览”一节）。
 

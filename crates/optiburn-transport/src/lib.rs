@@ -8,7 +8,7 @@ use std::time::Duration;
 
 /// 单个 CDB 的最大长度：SPTI 的 `SCSI_PASS_THROUGH_DIRECT.Cdb` 固定 16 字节。
 pub const MAX_CDB_LEN: usize = 16;
-/// sense 缓冲区上限：SCSI 规范中固定格式 sense 最长 32 字节。
+/// sense 缓冲区上限：SCSI 标准中固定格式 sense 最长 32 字节。
 pub const MAX_SENSE_LEN: usize = 32;
 
 /// 数据传送方向。
@@ -16,15 +16,15 @@ pub const MAX_SENSE_LEN: usize = 32;
 pub enum Direction {
     /// 无数据阶段，例如 TEST UNIT READY。
     None,
-    /// 主机 → 设备。
+    /// 数据从主机发往设备。
     ToDevice,
-    /// 设备 → 主机。
+    /// 数据从设备发回主机。
     FromDevice,
 }
 
 /// 一次命令的结果。
 ///
-/// `scsi_status == 0` 即命令级成功；sense 不做解释，原样交给上层判断。
+/// `scsi_status == 0` 即命令级成功。sense 不做解释，原样交给上层判断。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Completion {
     /// SCSI 状态字节。
@@ -95,6 +95,24 @@ pub fn open(_device: &str) -> Result<Box<dyn ScsiTransport>, TransportError> {
     Err(TransportError::Unsupported)
 }
 
+/// 枚举本机的光驱设备路径，按名字排序，路径可直接交给 [`open`]。
+///
+/// v0 只有 Linux 能枚举（`/dev/sr*`）。其它平台返回空列表，上层按“未发现光驱”处理。
+/// 枚举与 [`open`] 一样按平台收在本 crate，调用方不需要平台分支。
+#[cfg(target_os = "linux")]
+pub fn list_optical_devices() -> Vec<String> {
+    linux::optical_devices()
+}
+
+/// 枚举本机的光驱设备路径，按名字排序，路径可直接交给 [`open`]。
+///
+/// v0 只有 Linux 能枚举（`/dev/sr*`）。其它平台返回空列表，上层按“未发现光驱”处理。
+/// 枚举与 [`open`] 一样按平台收在本 crate，调用方不需要平台分支。
+#[cfg(not(target_os = "linux"))]
+pub fn list_optical_devices() -> Vec<String> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +127,17 @@ mod tests {
             Err(other) => panic!("expected NotFound, got {other:?}"),
             Ok(_) => panic!("expected NotFound, opened a device that cannot exist"),
         }
+    }
+
+    #[test]
+    fn optical_device_list_is_sorted_and_matches_platform() {
+        let devices = list_optical_devices();
+        assert!(devices.windows(2).all(|w| w[0] < w[1]), "{devices:?}");
+        #[cfg(target_os = "linux")]
+        for device in &devices {
+            assert!(device.starts_with("/dev/sr"), "{device}");
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert!(devices.is_empty());
     }
 }
