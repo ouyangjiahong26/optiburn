@@ -1,0 +1,11 @@
+[package]
+name = "optiburn-mmc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MMC (Multimedia Commands) layer for optiburn — read-side commands"
+
+[dependencies]
+optiburn-transport = { path = "../optiburn-transport" }
+thiserror.workspace = true

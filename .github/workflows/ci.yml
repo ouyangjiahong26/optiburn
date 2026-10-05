@@ -1,0 +1,82 @@
+name: CI
+
+# 不加 paths-ignore/paths 过滤：lint/test/cross-check 是 main 的 required checks，
+# workflow 被路径过滤跳过时 check 永不出现，文档类 PR 会被永久 pending 阻塞。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # job 名（lint / test / cross-check）就是分支保护里的 required check 名，改名即断保护。
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.1
+      # xorriso 是镜像回读对拍的参考实现；缺了它测试会打印 SKIP 并跳过，
+      # 那等于把「镜像能被参考工具读」这条唯一的真实外部验证静默丢掉了。
+      - name: Install xorriso
+        run: sudo apt-get update && sudo apt-get install -y xorriso
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace
+        run: |
+          set -o pipefail
+          cargo test --workspace -- --nocapture 2>&1 | tee test-output.txt
+          # 镜像对拍没跑起来就等于没有外部验证，不能让 SKIP 静默通过。
+          if grep -q 'SKIP: xorriso' test-output.txt; then
+            echo "xorriso 不可用，镜像回读对拍被跳过：视为失败" >&2
+            exit 1
+          fi
+        env:
+          RUST_BACKTRACE: 1
+
+  cross-check:
+    name: cross-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          # Windows 目标只 check（交叉编译不链接，无需 MSVC 工具链），
+          # 用来验证 SPTI 代码路径在 cfg(windows) 下能编译。
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: Check all four targets
+        run: |
+          set -eu
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+                   x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
+            echo "=== cargo check --target $t"
+            cargo check --workspace --all-targets --target "$t"
+          done
