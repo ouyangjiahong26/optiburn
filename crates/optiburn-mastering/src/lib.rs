@@ -77,8 +77,8 @@ pub enum MasteringError {
 /// 把 `source_dir` 的内容写成一个镜像文件 `output`。
 ///
 /// 目录树由 hadris-cd 的 `FileTree::from_fs` 递归读取（跳过符号链接，按名字排序），
-/// 因此同一输入的文件顺序是确定的；但上游会把构建时刻写进 ISO 卷描述符与 UDF 时间戳，
-/// **镜像字节不跨次一致**（同一份镜像文件本身仍可归档、可校验）。
+/// 因此同一输入的文件顺序是确定的。但上游会把构建时刻写进 ISO 卷描述符与 UDF 时间戳，
+/// 镜像字节不跨次一致（同一份镜像文件本身仍可归档、可校验）。
 pub fn build_image(
     source_dir: &Path,
     output: &Path,
@@ -154,7 +154,7 @@ fn filesystems_for(options: &OpticalImageOptions) -> Vec<String> {
 
 /// 镜像扇区数。
 ///
-/// hadris 以扇区为单位写出（末尾补齐到扇区边界），所以这是精确除法而不是估算；一旦
+/// hadris 以扇区为单位写出（末尾补齐到扇区边界），所以这是精确除法而不是估算。一旦
 /// 上游产出非整扇区长度的镜像，就不再声称知道扇区数，直接报错。
 fn sector_count(bytes: u64) -> Result<u64, MasteringError> {
     if !bytes.is_multiple_of(SECTOR_SIZE) {
@@ -270,7 +270,7 @@ mod tests {
         // ISO 9660 主卷描述符固定在扇区 16，类型字节 1，识别串在第 2–6 字节。
         assert_eq!(image[16 * 2048], 1);
         assert_eq!(&image[16 * 2048 + 1..16 * 2048 + 6], b"CD001");
-        // UDF 卷识别序列：BEA01 → NSR02(UDF 1.02) → TEA01。
+        // UDF 卷识别序列依次是 BEA01、NSR02（UDF 1.02）、TEA01。
         let bea = find_marker(&image, b"BEA01").expect("UDF BEA01 缺失");
         let nsr = find_marker(&image, b"NSR02").expect("UDF 1.02 应写 NSR02");
         let tea = find_marker(&image, b"TEA01").expect("UDF TEA01 缺失");

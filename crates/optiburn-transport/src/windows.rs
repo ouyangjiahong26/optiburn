@@ -1,8 +1,8 @@
 //! Windows 实现：SPTI 的 `IOCTL_SCSI_PASS_THROUGH_DIRECT`（`ntddscsi.h`）。
 //!
-//! 只借用 windows-sys 的 `CreateFileW`/`DeviceIoControl`/`CloseHandle` 与句柄类型；
-//! IOCTL 码、枚举值与 `SCSI_PASS_THROUGH_DIRECT` 布局按头文件在本地定义——windows-sys
-//! 未导出这些符号（见 ADR-0005）。
+//! 只借用 windows-sys 的 `CreateFileW`/`DeviceIoControl`/`CloseHandle` 与句柄类型。
+//! IOCTL 码、枚举值与 `SCSI_PASS_THROUGH_DIRECT` 布局按头文件在本地定义（windows-sys
+//! 未导出这些符号，见 ADR-0005）。
 
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -20,11 +20,11 @@ use crate::{Completion, Direction, MAX_CDB_LEN, MAX_SENSE_LEN, ScsiTransport, Tr
 
 /// `ntddscsi.h`: CTL_CODE(IOCTL_SCSI_BASE, 0x0405, METHOD_BUFFERED, FILE_READ_ACCESS|FILE_WRITE_ACCESS)。
 const IOCTL_SCSI_PASS_THROUGH_DIRECT: u32 = 0x0004_D014;
-/// `ntddscsi.h`: SCSI_IOCTL_DATA_UNSPECIFIED —— 无数据阶段。
+/// `ntddscsi.h` 的 `SCSI_IOCTL_DATA_UNSPECIFIED`：无数据阶段。
 const SCSI_IOCTL_DATA_UNSPECIFIED: u8 = 2;
-/// `ntddscsi.h`: SCSI_IOCTL_DATA_OUT —— 主机 → 设备。
+/// `ntddscsi.h` 的 `SCSI_IOCTL_DATA_OUT`：数据从主机发往设备。
 const SCSI_IOCTL_DATA_OUT: u8 = 0;
-/// `ntddscsi.h`: SCSI_IOCTL_DATA_IN —— 设备 → 主机。
+/// `ntddscsi.h` 的 `SCSI_IOCTL_DATA_IN`：数据从设备发回主机。
 const SCSI_IOCTL_DATA_IN: u8 = 1;
 
 /// `winerror.h`（`GetLastError`）的错误码：都表示“这个设备路径打不开”。
@@ -54,7 +54,7 @@ struct ScsiPassThroughDirect {
     cdb: [u8; MAX_CDB_LEN],
 }
 
-/// SPTD 与紧跟其后的 sense 缓冲区；`SenseInfoOffset` 指向 `sense`。
+/// SPTD 与紧跟其后的 sense 缓冲区。`SenseInfoOffset` 指向 `sense`。
 #[repr(C)]
 struct SptdWithBuffer {
     sptd: ScsiPassThroughDirect,
@@ -68,7 +68,7 @@ pub struct WindowsSpti {
 }
 
 impl WindowsSpti {
-    /// 打开设备句柄；找不到设备时返回 [`TransportError::NotFound`]。
+    /// 打开设备句柄。找不到设备时返回 [`TransportError::NotFound`]。
     pub fn open(device: &str) -> Result<Self, TransportError> {
         let name = device_name(device);
         let wide: Vec<u16> = std::ffi::OsStr::new(&name)
@@ -76,7 +76,7 @@ impl WindowsSpti {
             .chain(std::iter::once(0))
             .collect();
 
-        // SAFETY: wide 是 NUL 结尾的 UTF-16 缓冲区；其余参数按头文件语义给常量。
+        // SAFETY: wide 是 NUL 结尾的 UTF-16 缓冲区。其余参数按头文件语义给常量。
         let handle = unsafe {
             CreateFileW(
                 wide.as_ptr(),
@@ -134,7 +134,7 @@ impl WindowsSpti {
         }
     }
 
-    /// 把 SPTD 的返回结果翻译成 [`Completion`]；状态字节非 0 即失败。
+    /// 把 SPTD 的返回结果翻译成 [`Completion`]。状态字节非 0 即失败。
     fn completion(cdb: &[u8], buf: &SptdWithBuffer) -> Result<Completion, TransportError> {
         // SPTD 不回传已写入的 sense 长度，只能裁掉尾部填充的 0。
         let sense_end = buf.sense.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
@@ -185,7 +185,7 @@ impl ScsiTransport for WindowsSpti {
 
         let buf_size = std::mem::size_of::<SptdWithBuffer>() as u32;
         let mut returned = 0u32;
-        // SAFETY: 该 IOCTL 是 METHOD_BUFFERED，输入输出缓冲区允许重叠，故两处都传 buf；
+        // SAFETY: 该 IOCTL 是 METHOD_BUFFERED，输入输出缓冲区允许重叠，故两处都传 buf。
         // buf 在调用期间存活，数据指针指向调用方的 data。
         let ok = unsafe {
             DeviceIoControl(
@@ -211,7 +211,7 @@ impl ScsiTransport for WindowsSpti {
     }
 }
 
-/// `E:` 这类设备路径要写成 SPTI 要求的 `\\.\E:`；已带前缀或其它形式原样返回。
+/// `E:` 这类设备路径要写成 SPTI 要求的 `\\.\E:`。已带前缀或其它形式原样返回。
 fn device_name(device: &str) -> String {
     let mut chars = device.chars();
     let is_drive = matches!(

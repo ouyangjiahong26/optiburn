@@ -95,7 +95,7 @@ fn main() -> ExitCode {
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("错误: {message}");
+            eprintln!("错误：{message}");
             ExitCode::FAILURE
         }
     }
@@ -165,7 +165,7 @@ fn disc_status_text(status: DiscStatus) -> String {
         DiscStatus::Empty => "空盘".to_string(),
         DiscStatus::Appendable => "可追加".to_string(),
         DiscStatus::Finalized => "已封口".to_string(),
-        DiscStatus::Other(bits) => format!("其它({bits})"),
+        DiscStatus::Other(bits) => format!("其它（{bits}）"),
     }
 }
 
@@ -180,7 +180,7 @@ fn probe_command() -> Result<(), String> {
         let transport = match optiburn_transport::open(&text) {
             Ok(transport) => transport,
             Err(e) => {
-                println!("{text} | 打开失败: {e}");
+                println!("{text} | 打开失败：{e}");
                 continue;
             }
         };
@@ -190,7 +190,7 @@ fn probe_command() -> Result<(), String> {
                 "{} {} {}",
                 inquiry.vendor, inquiry.product, inquiry.revision
             ),
-            Err(e) => format!("INQUIRY 失败: {e}"),
+            Err(e) => format!("INQUIRY 失败：{e}"),
         };
         let disc = match device.read_disc_information() {
             Ok(information) => format!(
@@ -198,7 +198,7 @@ fn probe_command() -> Result<(), String> {
                 disc_status_text(information.status),
                 information.sessions
             ),
-            Err(e) => format!("读盘片信息失败: {e}"),
+            Err(e) => format!("读盘片信息失败：{e}"),
         };
         println!("{text} | {identity} | {disc}");
     }

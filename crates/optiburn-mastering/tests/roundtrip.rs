@@ -1,7 +1,7 @@
 //! 与参考实现 xorriso 对拍：本 crate 写出的镜像，xorriso 必须能解出同样的文件与字节。
 //!
-//! 这是“镜像能被参考工具读”这件事唯一的真实验证——hadris-cd 自己的测试只用它的
-//! reader 回读，没有第三方消费者。
+//! 这是“镜像能被参考工具读”这件事唯一的真实验证（hadris-cd 自己的测试只用它的
+//! reader 回读，没有第三方消费者）。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,12 +25,12 @@ fn extract_with_xorriso(iso: &Path, dest: &Path) -> bool {
             eprintln!("SKIP: xorriso 不在 PATH 上，镜像未与参考实现对拍");
             return false;
         }
-        Err(e) => panic!("启动 xorriso 失败: {e}"),
+        Err(e) => panic!("启动 xorriso 失败：{e}"),
         Ok(output) => output,
     };
     assert!(
         output.status.success(),
-        "xorriso 解镜像失败 ({}):\n{}\n{}",
+        "xorriso 解镜像失败（{}）：\n{}\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)

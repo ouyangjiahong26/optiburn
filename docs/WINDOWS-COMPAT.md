@@ -1,15 +1,15 @@
 # Windows 可读性
 
 目标读者是“用 optiburn 做盘、在 Windows 上打开”的人。这里记录每种介质写哪些文件系统、
-为什么，以及哪些行为是实测过的、哪些是从规范推出来的。
+为什么，以及哪些行为是实测过的、哪些是从标准推出来的。
 
 ## 介质 × 文件系统
 
 | Profile | ISO 9660 | Joliet | UDF | 依据 |
 |---|---|---|---|---|
-| `cd` | Level 2 + 长文件名（ISO 9660:1999） | Level 3 | 不写 | Windows 从 XP 起原生读 Joliet；CD 容量小，UDF 收益有限 |
-| `dvd`（默认） | Level 2 + 长文件名 | Level 3 | 1.02（UDF Bridge） | DVD-ROM 通用规范；Windows Vista+ 认 UDF 1.02 |
-| `bd` | Level 2 + 长文件名 | Level 3 | 2.50 | 蓝光规范要求；BD 播放/读取设备普遍只认 2.50+ |
+| `cd` | Level 2 + 长文件名（ISO 9660:1999） | Level 3 | 不写 | Windows 从 XP 起原生读 Joliet。CD 容量小，UDF 收益有限 |
+| `dvd`（默认） | Level 2 + 长文件名 | Level 3 | 1.02（UDF Bridge） | DVD-ROM 通用标准。Windows Vista+ 认 UDF 1.02 |
+| `bd` | Level 2 + 长文件名 | Level 3 | 2.50 | 蓝光标准要求。BD 播放/读取设备普遍只认 2.50+ |
 
 三个 profile 都保留 ISO 9660 主命名空间：老系统（DOS、老式机顶盒、部分车载机）只能读
 ISO 9660，丢了它盘就成废盘。Joliet 提供 Windows 的长文件名与中文名，UDF 提供现代读取
@@ -17,14 +17,14 @@ ISO 9660，丢了它盘就成废盘。Joliet 提供 Windows 的长文件名与�
 
 ### 依据链
 
-- **UDF Bridge 布局**：hadris-cd 同时写 ISO 9660 与 UDF 元数据并让两者共享同一份文件
-  数据区，上游自带“用两套 reader 回读同一镜像”的测试；本仓库再用 xorriso 独立回读一次
+- UDF Bridge 布局：hadris-cd 同时写 ISO 9660 与 UDF 元数据并让两者共享同一份文件
+  数据区，上游自带“用两套 reader 回读同一镜像”的测试。本仓库再用 xorriso 独立回读一次
   （`crates/optiburn-mastering/tests/roundtrip.rs`），把这条依据钉在可执行的检查上。
-- **命名空间组合**：与既有的 `genisoimage -r -J -udf -iso-level 3` 口径一致——长文件名
-  对应本仓库的 ISO 9660:1999 长文件名开关，`-J` 对应 Joliet，`-udf` 对应 UDF；`-r`
+- 命名空间组合：与既有的 `genisoimage -r -J -udf -iso-level 3` 口径一致：长文件名
+  对应本仓库的 ISO 9660:1999 长文件名开关，`-J` 对应 Joliet，`-udf` 对应 UDF。`-r`
   （Rock Ridge）本仓库 v0 未启用。该参数组合是计划记录的既有实践，对应工具不在本仓库，
   只作口径对照，不是可执行验证。
-- **介质与 UDF 版本**：DVD-ROM 通用规范用 UDF 1.02；蓝光要求 UDF 2.50 及以上。
+- 介质与 UDF 版本：DVD-ROM 通用标准用 UDF 1.02。蓝光要求 UDF 2.50 及以上。
 
 ## 镜像里实际长什么样（实测）
 
@@ -32,7 +32,7 @@ ISO 9660，丢了它盘就成废盘。Joliet 提供 Windows 的长文件名与�
 
 | 扇区 | 内容 |
 |---|---|
-| 0–15 | 系统区（本版本全 0；El Torito/混合启动未启用） |
+| 0–15 | 系统区（本版本全 0，El Torito/混合启动未启用） |
 | 16 | ISO 9660 主卷描述符（类型 1，`CD001`） |
 | 17 | 补充卷描述符（类型 2，Joliet） |
 | 18 | 补充卷描述符（类型 2，ISO 9660:1999 长文件名） |
@@ -41,20 +41,20 @@ ISO 9660，丢了它盘就成废盘。Joliet 提供 Windows 的长文件名与�
 | 256 | UDF Anchor Volume Descriptor Pointer |
 | 其余 | 目录结构与文件数据 |
 
-`NSR02` 表示 UDF 1.02，`NSR03` 表示 UDF 2.00 及以上——`--profile bd` 写的是 `NSR03`，
+`NSR02` 表示 UDF 1.02，`NSR03` 表示 UDF 2.00 及以上。`--profile bd` 写的是 `NSR03`，
 `--profile cd` 完全没有 UDF 那三个扇区。这些断言在 `crates/optiburn-mastering/src/lib.rs`
 的测试里锁住了，防止以后换上游版本时布局悄悄变掉。
 
-> 注意：上游 hadris-cd 的文档注释写“扇区 17–19 是 UDF 卷识别序列”，与实测不符——
+> 注意：上游 hadris-cd 的文档注释写“扇区 17–19 是 UDF 卷识别序列”，与实测不符：
 > 它的 ISO 卷描述符序列实际占 16–19，UDF VRS 在 20–22。本文件以实测为准。
 
 ## 怎么验证盘在 Windows 上能读
 
-1. `optiburn build-image <目录> -o disc.iso --profile dvd`；
+1. `optiburn build-image <目录> -o disc.iso --profile dvd`。
 2. `xorriso -indev disc.iso -ls /` 确认参考实现能列出全部文件（`cargo test -p
-   optiburn-mastering` 会自动做这件事，并逐字节比对内容，含中文文件名）；
-3. 刻录后插到 Windows：资源管理器应当直接挂载并显示卷标；`fsutil fsinfo volumeinfo X:`
-   会报出实际使用的文件系统（UDF 与 Joliet 的优先级由 Windows 决定）；
+   optiburn-mastering` 会自动做这件事，并逐字节比对内容，含中文文件名）。
+3. 刻录后插到 Windows：资源管理器应当直接挂载并显示卷标。`fsutil fsinfo volumeinfo X:`
+   会报出实际使用的文件系统（UDF 与 Joliet 的优先级由 Windows 决定）。
 4. 中文文件名、空文件、两级以上子目录、二进制内容是必须复核的四项。
 
 实测范围说明：本仓库没有 Windows 机器，第 3 步只能在有 Windows 的机器上做。第 1、2 步
@@ -72,4 +72,4 @@ ISO 9660，丢了它盘就成废盘。Joliet 提供 Windows 的长文件名与�
 
 Windows 只挂载最后一个区段：前面区段的文件在资源管理器里看不到，普通读取工具也读不到
 （`isoinfo -s` 之类的区段浏览工具例外）。所以 v0 的 `--multi` 只透传给 xorriso，不替用户
-决定要不要用——每次追加都让盘上的可见内容变成“新区段 + 旧区段”，而不是合并视图。
+决定要不要用。每次追加都让盘上的可见内容变成“新区段 + 旧区段”，而不是合并视图。

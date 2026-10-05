@@ -13,9 +13,9 @@ use crate::{Completion, Direction, MAX_CDB_LEN, MAX_SENSE_LEN, ScsiTransport, Tr
 const SG_IO: libc::c_ulong = 0x2285;
 /// `sg_io_hdr.dxfer_direction`：无数据阶段。
 const SG_DXFER_NONE: i32 = -1;
-/// `sg_io_hdr.dxfer_direction`：主机 → 设备。
+/// `sg_io_hdr.dxfer_direction`：数据从主机发往设备。
 const SG_DXFER_TO_DEV: i32 = -2;
-/// `sg_io_hdr.dxfer_direction`：设备 → 主机。
+/// `sg_io_hdr.dxfer_direction`：数据从设备发回主机。
 const SG_DXFER_FROM_DEV: i32 = -3;
 
 /// `sg_io_hdr` 的 C 布局（`scsi/sg.h`，64 位平台 sizeof 为 88）。
@@ -52,7 +52,7 @@ pub struct LinuxSg {
 }
 
 impl LinuxSg {
-    /// 以读写方式打开设备节点；`ENOENT` 映射为 [`TransportError::NotFound`]。
+    /// 以读写方式打开设备节点。`ENOENT` 映射为 [`TransportError::NotFound`]。
     pub fn open(device: &str) -> Result<Self, TransportError> {
         let file = OpenOptions::new()
             .read(true)
@@ -133,7 +133,7 @@ impl LinuxSg {
         Ok(Completion {
             scsi_status: hdr.status,
             sense: sense[..sense_len].to_vec(),
-            // resid 是“未传送的字节数”；写方向下它可能为负，那不代表有残留。
+            // resid 是“未传送的字节数”。写方向下它可能为负，那不代表有残留。
             residual: hdr.resid.max(0) as usize,
         })
     }

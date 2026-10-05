@@ -76,7 +76,7 @@ fn run(program: &str, args: &[OsString], progress: &mut dyn FnMut(f32)) -> Resul
 
 /// 组装 `xorriso -as cdrecord` 的参数表。
 ///
-/// 顺序：兼容层开关 → 设备 → 数据模式 → 倍速 → 多区段 → 镜像路径。
+/// 参数依次是兼容层开关、设备、数据模式、倍速、多区段、镜像路径。
 fn cdrecord_args(job: &BurnJob) -> Vec<OsString> {
     let mut args = vec![
         OsString::from("-as"),
@@ -98,8 +98,8 @@ fn cdrecord_args(job: &BurnJob) -> Vec<OsString> {
 /// 取出这一行里第一个 `NN%` 并换算成 0.0–1.0。
 ///
 /// xorriso 的 `-as cdrecord` 输出里，百分比既可能来自写入进度（`4.4% done`），也可能
-/// 来自缓冲区统计（`(fifo 100%) [buf 97%]`）——后者会先出现，所以 v0 的进度只是粗粒度
-/// 提示，成功时统一补发 1.0；精确进度等原生 MMC 引擎（能自己数 LBA）。
+/// 来自缓冲区统计（`(fifo 100%) [buf 97%]`）。后者会先出现，所以 v0 的进度只是粗粒度
+/// 提示，成功时统一补发 1.0。精确进度等原生 MMC 引擎（能自己数 LBA）。
 fn parse_progress(line: &str) -> Option<f32> {
     let percent = line.find('%')?;
     let digits = &line[..percent];

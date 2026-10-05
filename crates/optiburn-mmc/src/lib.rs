@@ -1,7 +1,7 @@
 //! MMC 命令层：把读侧 MMC 命令编码成 CDB，并把响应解析成结构化数据。
 //!
 //! 依赖 [`optiburn_transport::ScsiTransport`] 这一个硬件接缝，因此可以在没有光驱的
-//! 机器上用替身完整测试。v0 只有读侧命令；写侧（RESERVE TRACK / WRITE(10) /
+//! 机器上用替身完整测试。v0 只有读侧命令。写侧（RESERVE TRACK / WRITE(10) /
 //! CLOSE TRACK）留给路线图里的原生 MMC 引擎，不在本 crate 留空壳。
 
 use std::time::Duration;
@@ -24,7 +24,7 @@ pub enum MmcError {
     ShortResponse { got: usize, need: usize },
 }
 
-/// 设备的 INQUIRY 标识字段；尾部填充的空格与 NUL 已去掉。
+/// 设备的 INQUIRY 标识字段。尾部填充的空格与 NUL 已去掉。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inquiry {
     pub vendor: String,
@@ -60,7 +60,7 @@ impl DiscStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiscInformation {
     pub status: DiscStatus,
-    /// 区段数（响应字节 4 的低 8 位；高 8 位在字节 9，实际盘片不会超过 99）。
+    /// 区段数（响应字节 4 的低 8 位，高 8 位在字节 9，实际盘片不会超过 99）。
     pub sessions: u8,
     /// 响应字节 3：盘上首轨号（第一个轨道的编号，通常为 1）。
     /// “最后一个区段的首轨号”在字节 5，本结构不解析。
@@ -121,7 +121,7 @@ impl MmcDevice {
         })
     }
 
-    /// 下发一条设备 → 主机的命令，并把“实际写入字节数 < 期望”当作错误。
+    /// 下发一条数据从设备发回主机的命令，并把“实际写入字节数 < 期望”当作错误。
     fn read_into(&mut self, cdb: &[u8], need: usize) -> Result<Vec<u8>, MmcError> {
         let mut data = vec![0u8; need];
         let completion =
