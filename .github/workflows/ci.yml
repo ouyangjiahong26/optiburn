@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       # xorriso 是镜像回读对拍的参考实现；缺了它测试会打印 SKIP 并跳过，
       # 那等于把“镜像能被参考工具读”这条唯一的真实外部验证静默丢掉了。
       - name: Install xorriso
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           # Windows 目标只 check（交叉编译不链接，无需 MSVC 工具链），
           # 用来验证 SPTI 代码路径在 cfg(windows) 下能编译。
