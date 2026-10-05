@@ -1,6 +1,7 @@
 //! xorriso 子进程引擎（ADR-0004）。
 //!
-//! 走 `xorriso -as cdrecord` 兼容层，参数组合与 DiscCTL 生产环境验证过的形态一致。
+//! 走 `xorriso -as cdrecord` 兼容层。参数组合的依据在 ADR-0004：本机
+//! `xorriso -as cdrecord -help` 实查过 `dev=`、`speed=`、`-data`、`-multi` 均受支持。
 //! GPL 边界止于进程边界：本仓库不链接 libburn/libisofs。
 
 use std::collections::VecDeque;

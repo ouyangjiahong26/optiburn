@@ -5,7 +5,9 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
 
 ## Project Overview
 
-五个 crate 的 workspace，依赖单向：`cli → {mastering, engine, mmc} → {hadris-cd, transport}`。
+五个 crate 的 workspace，依赖单向：`cli` 依赖 `mastering`、`engine`、`mmc`，并直接依赖
+`transport`（probe 用它打开与枚举设备）。`mastering` 依赖 `hadris-cd`，`mmc` 依赖
+`transport`。
 
 - `optiburn-transport`：SCSI 传输。全仓库唯一的硬件抽象点，`ScsiTransport` trait 只有
   一个方法 `issue(cdb, dir, data, timeout)`。Linux 走 `SG_IO`，Windows 走 SPTI，光驱设备

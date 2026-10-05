@@ -11,6 +11,7 @@ flowchart TD
     CLI[optiburn-cli] --> ENG[optiburn-engine]
     CLI --> MAS[optiburn-mastering]
     CLI --> MMC[optiburn-mmc]
+    CLI --> TR[optiburn-transport]
     MAS --> HADRIS[hadris-cd]
     MMC --> TR[optiburn-transport]
     ENG --> XORRISO[xorriso 子进程]
@@ -18,8 +19,9 @@ flowchart TD
     TR --> SPTI[Windows: SPTI DeviceIoControl]
 ```
 
-依赖方向只有一条：`cli → {engine, mastering, mmc} → {hadris-cd, transport}`。没有反向
-依赖，也没有 crate 之间互相认识对方的实现。
+依赖方向只有一条，自上而下：`cli` 依赖 `engine`、`mastering`、`mmc`，并直接依赖
+`transport`（probe 用它打开与枚举设备）。`mastering` 依赖 `hadris-cd`，`mmc` 依赖
+`transport`。没有反向依赖，也没有 crate 之间互相认识对方的实现。
 
 ```
 optiburn-cli        命令行：build-image / burn / probe
