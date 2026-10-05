@@ -62,7 +62,8 @@ pub struct DiscInformation {
     pub status: DiscStatus,
     /// 区段数（响应字节 4 的低 8 位；高 8 位在字节 9，实际盘片不会超过 99）。
     pub sessions: u8,
-    /// 响应字节 3：最后一个区段的首轨号。
+    /// 响应字节 3：盘上首轨号（第一个轨道的编号，通常为 1）。
+    /// “最后一个区段的首轨号”在字节 5，本结构不解析。
     pub first_track: u8,
 }
 
@@ -72,6 +73,7 @@ pub struct MmcDevice {
 }
 
 impl MmcDevice {
+    /// 用一条已打开的传输通道建一台盘驱动器。
     pub fn new(transport: Box<dyn ScsiTransport>) -> Self {
         Self { transport }
     }

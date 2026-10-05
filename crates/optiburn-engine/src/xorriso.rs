@@ -4,6 +4,7 @@
 //! GPL 边界止于进程边界：本仓库不链接 libburn/libisofs。
 
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
@@ -32,7 +33,7 @@ impl BurnEngine for XorrisoEngine {
 ///
 /// 单独抽出来是为了能用本地 shell 脚本当替身测试：`xorriso` 的参数由调用方给，
 /// 这里只管进程、进度与失败摘要。
-fn run(program: &str, args: &[String], progress: &mut dyn FnMut(f32)) -> Result<(), BurnError> {
+fn run(program: &str, args: &[OsString], progress: &mut dyn FnMut(f32)) -> Result<(), BurnError> {
     let mut child = Command::new(program)
         .args(args)
         .stdout(Stdio::null())
@@ -75,20 +76,21 @@ fn run(program: &str, args: &[String], progress: &mut dyn FnMut(f32)) -> Result<
 /// 组装 `xorriso -as cdrecord` 的参数表。
 ///
 /// 顺序：兼容层开关 → 设备 → 数据模式 → 倍速 → 多区段 → 镜像路径。
-fn cdrecord_args(job: &BurnJob) -> Vec<String> {
+fn cdrecord_args(job: &BurnJob) -> Vec<OsString> {
     let mut args = vec![
-        "-as".to_string(),
-        "cdrecord".to_string(),
-        format!("dev={}", job.device),
-        "-data".to_string(),
+        OsString::from("-as"),
+        OsString::from("cdrecord"),
+        OsString::from(format!("dev={}", job.device)),
+        OsString::from("-data"),
     ];
     if let Some(speed) = job.speed {
-        args.push(format!("speed={speed}"));
+        args.push(OsString::from(format!("speed={speed}")));
     }
     if job.multi {
-        args.push("-multi".to_string());
+        args.push(OsString::from("-multi"));
     }
-    args.push(job.image.display().to_string());
+    // 用 OsStr 而不是 `display()`：后者会把非 UTF-8 字节替换成 U+FFFD，写盘就会找错文件。
+    args.push(job.image.as_os_str().to_os_string());
     args
 }
 
@@ -134,43 +136,48 @@ mod tests {
         actual.is_some_and(|v| (v - expected).abs() < 1e-6)
     }
 
+    /// 期望参数表：与实现同样用 `OsString`，避免为断言再把路径窄化回 `String`。
+    fn os(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
     #[test]
     fn cdrecord_args_cover_all_flag_combinations() {
         assert_eq!(
             cdrecord_args(&job(None, false)),
-            vec![
+            os(&[
                 "-as",
                 "cdrecord",
                 "dev=/dev/sr0",
                 "-data",
                 "/tmp/optiburn.iso"
-            ]
+            ])
         );
         assert_eq!(
             cdrecord_args(&job(Some(8), false)),
-            vec![
+            os(&[
                 "-as",
                 "cdrecord",
                 "dev=/dev/sr0",
                 "-data",
                 "speed=8",
                 "/tmp/optiburn.iso"
-            ]
+            ])
         );
         assert_eq!(
             cdrecord_args(&job(None, true)),
-            vec![
+            os(&[
                 "-as",
                 "cdrecord",
                 "dev=/dev/sr0",
                 "-data",
                 "-multi",
                 "/tmp/optiburn.iso"
-            ]
+            ])
         );
         assert_eq!(
             cdrecord_args(&job(Some(8), true)),
-            vec![
+            os(&[
                 "-as",
                 "cdrecord",
                 "dev=/dev/sr0",
@@ -178,7 +185,26 @@ mod tests {
                 "speed=8",
                 "-multi",
                 "/tmp/optiburn.iso"
-            ]
+            ])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_image_path_survives_as_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let mut job = job(None, false);
+        job.image = PathBuf::from(OsString::from_vec(b"/tmp/\xff\xfe.iso".to_vec()));
+
+        let args = cdrecord_args(&job);
+        let last = args.last().expect("image path is the last argument");
+        // display() 会把它变成 U+FFFD，OsStr 必须原样保留这几个字节。
+        assert_eq!(last.as_encoded_bytes(), b"/tmp/\xff\xfe.iso");
+        assert!(
+            std::ffi::OsStr::new(last)
+                .as_bytes()
+                .ends_with(b"\xff\xfe.iso")
         );
     }
 
@@ -215,10 +241,10 @@ mod tests {
         let mut seen = Vec::new();
         run(
             "sh",
-            &[
-                "-c".to_string(),
-                "printf 'Track 01: 25%% done\\n' >&2; printf '[buf 97%%]\\n' >&2".to_string(),
-            ],
+            &os(&[
+                "-c",
+                "printf 'Track 01: 25%% done\\n' >&2; printf '[buf 97%%]\\n' >&2",
+            ]),
             &mut |f| seen.push(f),
         )
         .expect("script exits 0");
@@ -234,10 +260,10 @@ mod tests {
     fn nonzero_exit_reports_stderr_tail() {
         let err = run(
             "sh",
-            &[
-                "-c".to_string(),
-                "printf 'xorriso : FAILURE : drive is busy\\n' >&2; exit 1".to_string(),
-            ],
+            &os(&[
+                "-c",
+                "printf 'xorriso : FAILURE : drive is busy\\n' >&2; exit 1",
+            ]),
             &mut |_| {},
         )
         .expect_err("script exits 1");

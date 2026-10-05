@@ -27,12 +27,12 @@ const SCSI_IOCTL_DATA_OUT: u8 = 0;
 /// `ntddscsi.h`: SCSI_IOCTL_DATA_IN —— 设备 → 主机。
 const SCSI_IOCTL_DATA_IN: u8 = 1;
 
-/// `ntddscsi.h` 的错误码：都表示“这个设备名打不开”。
+/// `winerror.h`（`GetLastError`）的错误码：都表示“这个设备路径打不开”。
 const ERROR_FILE_NOT_FOUND: u32 = 2;
 const ERROR_PATH_NOT_FOUND: u32 = 3;
 const ERROR_INVALID_NAME: u32 = 123;
 const ERROR_BAD_PATHNAME: u32 = 161;
-/// `ntddscsi.h` 的错误码：设备不支持该 IOCTL。
+/// `winerror.h` 的错误码：设备不支持该 IOCTL。
 const ERROR_INVALID_FUNCTION: u32 = 1;
 const ERROR_NOT_SUPPORTED: u32 = 50;
 
@@ -96,6 +96,65 @@ impl WindowsSpti {
             path: device.to_string(),
         })
     }
+
+    /// 组装 SPTD 与紧随其后的 sense 缓冲区。`data` 的指针由调用方保证在 ioctl 期间有效。
+    fn build_request(
+        cdb: &[u8],
+        cdb_buf: [u8; MAX_CDB_LEN],
+        dir: Direction,
+        data: &mut [u8],
+        timeout: Duration,
+    ) -> SptdWithBuffer {
+        SptdWithBuffer {
+            sptd: ScsiPassThroughDirect {
+                length: std::mem::size_of::<ScsiPassThroughDirect>() as u16,
+                scsi_status: 0,
+                path_id: 0,
+                target_id: 0,
+                lun: 0,
+                cdb_length: cdb.len() as u8,
+                sense_info_length: MAX_SENSE_LEN as u8,
+                data_in: match dir {
+                    Direction::None => SCSI_IOCTL_DATA_UNSPECIFIED,
+                    Direction::ToDevice => SCSI_IOCTL_DATA_OUT,
+                    Direction::FromDevice => SCSI_IOCTL_DATA_IN,
+                },
+                data_transfer_length: data.len() as u32,
+                // SPTD 的 TimeOutValue 单位是秒，与 SG_IO 的毫秒不同。
+                time_out_value: timeout.as_secs().clamp(1, u64::from(u32::MAX)) as u32,
+                data_buffer: if data.is_empty() {
+                    std::ptr::null_mut()
+                } else {
+                    data.as_mut_ptr().cast()
+                },
+                sense_info_offset: std::mem::size_of::<ScsiPassThroughDirect>() as u32,
+                cdb: cdb_buf,
+            },
+            sense: [0u8; MAX_SENSE_LEN],
+        }
+    }
+
+    /// 把 SPTD 的返回结果翻译成 [`Completion`]；状态字节非 0 即失败。
+    fn completion(cdb: &[u8], buf: &SptdWithBuffer) -> Result<Completion, TransportError> {
+        // SPTD 不回传已写入的 sense 长度，只能裁掉尾部填充的 0。
+        let sense_end = buf.sense.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
+        let sense = buf.sense[..sense_end].to_vec();
+
+        if buf.sptd.scsi_status != 0 {
+            return Err(TransportError::CommandFailed {
+                cdb: cdb.to_vec(),
+                scsi_status: buf.sptd.scsi_status,
+                sense,
+            });
+        }
+
+        Ok(Completion {
+            scsi_status: buf.sptd.scsi_status,
+            sense,
+            // SCSI_PASS_THROUGH_DIRECT 没有 residual 字段。
+            residual: 0,
+        })
+    }
 }
 
 impl Drop for WindowsSpti {
@@ -122,33 +181,7 @@ impl ScsiTransport for WindowsSpti {
         let mut cdb_buf = [0u8; MAX_CDB_LEN];
         cdb_buf[..cdb.len()].copy_from_slice(cdb);
 
-        let mut buf = SptdWithBuffer {
-            sptd: ScsiPassThroughDirect {
-                length: std::mem::size_of::<ScsiPassThroughDirect>() as u16,
-                scsi_status: 0,
-                path_id: 0,
-                target_id: 0,
-                lun: 0,
-                cdb_length: cdb.len() as u8,
-                sense_info_length: MAX_SENSE_LEN as u8,
-                data_in: match dir {
-                    Direction::None => SCSI_IOCTL_DATA_UNSPECIFIED,
-                    Direction::ToDevice => SCSI_IOCTL_DATA_OUT,
-                    Direction::FromDevice => SCSI_IOCTL_DATA_IN,
-                },
-                data_transfer_length: data.len() as u32,
-                // SPTD 的 TimeOutValue 单位是秒，与 SG_IO 的毫秒不同。
-                time_out_value: timeout.as_secs().clamp(1, u64::from(u32::MAX)) as u32,
-                data_buffer: if data.is_empty() {
-                    std::ptr::null_mut()
-                } else {
-                    data.as_mut_ptr().cast()
-                },
-                sense_info_offset: std::mem::size_of::<ScsiPassThroughDirect>() as u32,
-                cdb: cdb_buf,
-            },
-            sense: [0u8; MAX_SENSE_LEN],
-        };
+        let mut buf = Self::build_request(cdb, cdb_buf, dir, data, timeout);
 
         let buf_size = std::mem::size_of::<SptdWithBuffer>() as u32;
         let mut returned = 0u32;
@@ -170,24 +203,7 @@ impl ScsiTransport for WindowsSpti {
             return Err(map_io_error());
         }
 
-        // SPTD 不回传已写入的 sense 长度，只能裁掉尾部填充的 0。
-        let sense_end = buf.sense.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
-        let sense = buf.sense[..sense_end].to_vec();
-
-        if buf.sptd.scsi_status != 0 {
-            return Err(TransportError::CommandFailed {
-                cdb: cdb.to_vec(),
-                scsi_status: buf.sptd.scsi_status,
-                sense,
-            });
-        }
-
-        Ok(Completion {
-            scsi_status: buf.sptd.scsi_status,
-            sense,
-            // SCSI_PASS_THROUGH_DIRECT 没有 residual 字段。
-            residual: 0,
-        })
+        Self::completion(cdb, &buf)
     }
 
     fn device_path(&self) -> &str {
@@ -195,7 +211,7 @@ impl ScsiTransport for WindowsSpti {
     }
 }
 
-/// `E:` 这类盘符要写成 SPTI 要求的 `\\.\E:`；已带前缀或其它形式原样返回。
+/// `E:` 这类设备路径要写成 SPTI 要求的 `\\.\E:`；已带前缀或其它形式原样返回。
 fn device_name(device: &str) -> String {
     let mut chars = device.chars();
     let is_drive = matches!(

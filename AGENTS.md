@@ -38,7 +38,7 @@ done
 # 端到端（无光驱可跑的部分）
 cargo run -p optiburn-cli -- build-image docs -o /tmp/e2e.iso --profile dvd --volume-id E2E
 xorriso -indev /tmp/e2e.iso -ls /
-cargo run -p optiburn-cli -- probe      # 期望「未发现光驱」，退出码 0
+cargo run -p optiburn-cli -- probe      # 期望“未发现光驱”，退出码 0
 ```
 
 硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real` 需要
@@ -63,7 +63,7 @@ cargo run -p optiburn-cli -- probe      # 期望「未发现光驱」，退出�
   加四个目标全过，再跑测试。
 - **新公开符号配错误类型**：错误用 `thiserror`，`#[error]` 文案英文；CLI 面向用户的
   文案中文。
-- **注释写中文**，只写「为什么」。文件 < 1000 行、函数 < 50 行。
+- **注释写中文**，只写“为什么”。文件 < 1000 行、函数 < 50 行。
 - **不加 GUI 依赖**，不引 GPL 依赖（链接层面必须保持 MIT 可分发；子进程调 GPL 工具可以）。
 - **平台分支只能出现在 `optiburn-transport`**。别处出现 `#[cfg(target_os)]` 前先想清楚。
 - **上游怪癖要写进代码注释与 ADR**（例：hadris 需要读写句柄；它的文档注释里 UDF VRS 的
@@ -78,5 +78,5 @@ cargo run -p optiburn-cli -- probe      # 期望「未发现光驱」，退出�
 - 准确、简洁，先给结论再说依据；不堆形容词，不写营销腔。
 - 区分相近概念，不用空泛说法；术语照 `CONTEXT.md`。
 - 能用证据（命令输出、字节偏移、上游源码位置）就不用推测；推测要标明是推测。
-- 全仓库文档用弯引号「不用直角引号」；中英文混排时数字与英文两侧不加空格以外的东西。
-- 文档只写中文，`README.md` 例外（英文为主 + 「中文速览」一节）。
+- 全仓库文档与注释用弯引号（“”），不用直角引号（「」）；中英文混排时数字与英文两侧不加空格以外的东西。
+- 文档只写中文，`README.md` 例外（英文为主 + “中文速览”一节）。

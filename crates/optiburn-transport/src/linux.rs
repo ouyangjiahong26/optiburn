@@ -67,25 +67,18 @@ impl LinuxSg {
             path: device.to_string(),
         })
     }
-}
 
-impl ScsiTransport for LinuxSg {
-    fn issue(
-        &mut self,
+    /// 组装 `sg_io_hdr`（`scsi/sg.h` 的字段顺序）。指针指向调用方传入的缓冲区，由调用方
+    /// 保证它们在 ioctl 期间存活。
+    fn build_hdr(
         cdb: &[u8],
+        cdb_buf: &mut [u8; MAX_CDB_LEN],
         dir: Direction,
         data: &mut [u8],
+        sense: &mut [u8; MAX_SENSE_LEN],
         timeout: Duration,
-    ) -> Result<Completion, TransportError> {
-        if cdb.len() > MAX_CDB_LEN {
-            return Err(TransportError::CdbTooLong(cdb.len()));
-        }
-
-        let mut cdb_buf = [0u8; MAX_CDB_LEN];
-        cdb_buf[..cdb.len()].copy_from_slice(cdb);
-        let mut sense = [0u8; MAX_SENSE_LEN];
-
-        let mut hdr = SgIoHdr {
+    ) -> SgIoHdr {
+        SgIoHdr {
             interface_id: i32::from(b'S'),
             dxfer_direction: match dir {
                 Direction::None => SG_DXFER_NONE,
@@ -116,19 +109,20 @@ impl ScsiTransport for LinuxSg {
             resid: 0,
             duration: 0,
             info: 0,
-        };
-
-        // SAFETY: hdr 的布局与 sg_io_hdr 一致（下方测试断言尺寸），cmdp/dxferp/sbp
-        // 都指向本次调用内存中存活的缓冲区，ioctl 同步返回后才离开作用域。
-        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), SG_IO, &mut hdr as *mut SgIoHdr) };
-        if rc < 0 {
-            return Err(TransportError::Io(std::io::Error::last_os_error()));
         }
+    }
 
-        // 宿主机/驱动层报错时状态字节可能仍为 0，必须一并当失败，否则上层会把
-        // 超时或设备重置误判成成功。
+    /// 把 ioctl 结果翻译成 [`Completion`]。
+    ///
+    /// 宿主机/驱动层报错时状态字节可能仍为 0，必须一并当失败，否则上层会把超时或设备
+    /// 重置误判成成功。
+    fn completion(
+        cdb: &[u8],
+        hdr: &SgIoHdr,
+        sense: &[u8; MAX_SENSE_LEN],
+    ) -> Result<Completion, TransportError> {
+        let sense_len = usize::from(hdr.sb_len_wr).min(MAX_SENSE_LEN);
         if hdr.status != 0 || hdr.host_status != 0 || hdr.driver_status != 0 {
-            let sense_len = usize::from(hdr.sb_len_wr).min(MAX_SENSE_LEN);
             return Err(TransportError::CommandFailed {
                 cdb: cdb.to_vec(),
                 scsi_status: hdr.status,
@@ -138,9 +132,39 @@ impl ScsiTransport for LinuxSg {
 
         Ok(Completion {
             scsi_status: hdr.status,
-            sense: sense[..usize::from(hdr.sb_len_wr).min(MAX_SENSE_LEN)].to_vec(),
+            sense: sense[..sense_len].to_vec(),
+            // resid 是“未传送的字节数”；写方向下它可能为负，那不代表有残留。
             residual: hdr.resid.max(0) as usize,
         })
+    }
+}
+
+impl ScsiTransport for LinuxSg {
+    fn issue(
+        &mut self,
+        cdb: &[u8],
+        dir: Direction,
+        data: &mut [u8],
+        timeout: Duration,
+    ) -> Result<Completion, TransportError> {
+        if cdb.len() > MAX_CDB_LEN {
+            return Err(TransportError::CdbTooLong(cdb.len()));
+        }
+
+        let mut cdb_buf = [0u8; MAX_CDB_LEN];
+        cdb_buf[..cdb.len()].copy_from_slice(cdb);
+        let mut sense = [0u8; MAX_SENSE_LEN];
+
+        let mut hdr = Self::build_hdr(cdb, &mut cdb_buf, dir, data, &mut sense, timeout);
+
+        // SAFETY: hdr 的布局与 sg_io_hdr 一致（下方测试断言尺寸），其 cmdp/sbp/dxferp
+        // 都指向本次调用内存中存活的缓冲区，ioctl 同步返回后才离开作用域。
+        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), SG_IO, &mut hdr as *mut SgIoHdr) };
+        if rc < 0 {
+            return Err(TransportError::Io(std::io::Error::last_os_error()));
+        }
+
+        Self::completion(cdb, &hdr, &sense)
     }
 
     fn device_path(&self) -> &str {

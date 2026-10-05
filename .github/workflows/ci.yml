@@ -43,7 +43,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.98.1
       # xorriso 是镜像回读对拍的参考实现；缺了它测试会打印 SKIP 并跳过，
-      # 那等于把「镜像能被参考工具读」这条唯一的真实外部验证静默丢掉了。
+      # 那等于把“镜像能被参考工具读”这条唯一的真实外部验证静默丢掉了。
       - name: Install xorriso
         run: sudo apt-get update && sudo apt-get install -y xorriso
       - uses: Swatinem/rust-cache@v2
@@ -73,6 +73,10 @@ jobs:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
       - name: Check all four targets
+        # 交叉目标上的死代码/未使用导入只有 rustc 会报，Linux 的 clippy 看不见，
+        # 因此这里显式把警告升级为错误。
+        env:
+          RUSTFLAGS: -D warnings
         run: |
           set -eu
           for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
