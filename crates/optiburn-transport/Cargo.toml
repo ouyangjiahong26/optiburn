@@ -1,0 +1,23 @@
+[package]
+name = "optiburn-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SCSI transport layer for optiburn (Linux SG_IO, Windows SPTI)"
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# CreateFileW 被 Win32_Security 门控（它收 SECURITY_ATTRIBUTES 参数）；
+# GENERIC_READ/WRITE 在 Foundation 里，不在 FileSystem。
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }

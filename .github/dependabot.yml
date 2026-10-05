@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      # 上游 hadris 家族的三个 crate 必须同版本（hadris-cd 内部按 2.5.0 依赖），
+      # 拆成三个 PR 会互相冲突且都编不过。
+      hadris:
+        patterns:
+          - "hadris-*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"

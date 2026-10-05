@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/ouyangjiahong26/optiburn/security/advisories/new
+    about: 请走私密漏洞报告，不要开公开 issue。详见 SECURITY.md。
+  - name: 使用问题与想法
+    url: https://github.com/ouyangjiahong26/optiburn/discussions
+    about: 提问、想法探讨与一般性讨论，不占用 Issue。

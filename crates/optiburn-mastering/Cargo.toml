@@ -1,0 +1,13 @@
+[package]
+name = "optiburn-mastering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Disc image mastering for optiburn — ISO9660 + Joliet + UDF Bridge via hadris"
+
+[dependencies]
+hadris-cd = "2.5"
+# 只为了命名 UdfRevision；本 crate 不做 UDF 读写，故不启用任何 feature。
+hadris-udf = { version = "2.5", default-features = false }
+thiserror.workspace = true

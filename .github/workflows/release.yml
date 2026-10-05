@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# 只有最后一个 job 需要写权限（建 Release），其余 job 只读。
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: 构建 Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu
+      - name: Build
+        run: cargo build --release -p optiburn-cli --target x86_64-unknown-linux-gnu
+      - name: Package
+        run: |
+          tar -czf optiburn-x86_64-unknown-linux-gnu.tar.gz \
+            -C target/x86_64-unknown-linux-gnu/release optiburn
+          sha256sum optiburn-x86_64-unknown-linux-gnu.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: optiburn-x86_64-unknown-linux-gnu
+          path: optiburn-x86_64-unknown-linux-gnu.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    name: 构建 Windows (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release -p optiburn-cli --target ${{ matrix.target }}
+      - name: Package
+        shell: pwsh
+        run: |
+          $dir = "target/${{ matrix.target }}/release"
+          Compress-Archive -Path "$dir/optiburn.exe" -DestinationPath "optiburn-${{ matrix.target }}.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: optiburn-${{ matrix.target }}
+          path: optiburn-${{ matrix.target }}.zip
+          if-no-files-found: error
+
+  release:
+    name: 发布
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      # 发布说明直接取 CHANGELOG 里对应的小节，避免 Release 页与仓库文档两处维护。
+      - name: 生成发布说明
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { printing = 1; next }
+            printing && /^## / { exit }
+            printing { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG.md 里没有 $version 的小节" >&2
+            exit 1
+          fi
+          cat release-notes.md
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            dist/*

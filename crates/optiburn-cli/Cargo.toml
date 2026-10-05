@@ -1,0 +1,18 @@
+[package]
+name = "optiburn-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cross-platform optical disc burning toolkit — command line interface"
+
+[[bin]]
+name = "optiburn"
+path = "src/main.rs"
+
+[dependencies]
+optiburn-transport = { path = "../optiburn-transport" }
+optiburn-mmc = { path = "../optiburn-mmc" }
+optiburn-mastering = { path = "../optiburn-mastering" }
+optiburn-engine = { path = "../optiburn-engine" }
+clap = { version = "4", features = ["derive"] }
