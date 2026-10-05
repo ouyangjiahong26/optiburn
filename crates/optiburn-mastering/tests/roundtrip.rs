@@ -9,6 +9,35 @@ use std::process::Command;
 
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 
+/// 用 xorriso 把镜像解到 `dest`，成功返回 true。
+///
+/// xorriso 不在 PATH 上时打印 SKIP 并返回 false：没有参考实现可用，对拍无法进行。
+fn extract_with_xorriso(iso: &Path, dest: &Path) -> bool {
+    let output = match Command::new("xorriso")
+        .args(["-osirrox", "on", "-indev"])
+        .arg(iso)
+        .arg("-extract")
+        .arg("/")
+        .arg(dest)
+        .output()
+    {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("SKIP: xorriso 不在 PATH 上，镜像未与参考实现对拍");
+            return false;
+        }
+        Err(e) => panic!("启动 xorriso 失败: {e}"),
+        Ok(output) => output,
+    };
+    assert!(
+        output.status.success(),
+        "xorriso 解镜像失败 ({}):\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 #[test]
 fn xorriso_reads_back_every_file_byte_for_byte() {
     let tmp = TempDir::new();
@@ -30,29 +59,9 @@ fn xorriso_reads_back_every_file_byte_for_byte() {
     .unwrap();
     assert!(info.bytes > 0);
     assert!(info.sectors > 0);
-
-    let output = match Command::new("xorriso")
-        .args(["-osirrox", "on", "-indev"])
-        .arg(&iso)
-        .arg("-extract")
-        .arg("/")
-        .arg(&dest)
-        .output()
-    {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("SKIP: xorriso 不在 PATH 上，镜像未与参考实现对拍");
-            return;
-        }
-        Err(e) => panic!("启动 xorriso 失败: {e}"),
-        Ok(output) => output,
-    };
-    assert!(
-        output.status.success(),
-        "xorriso 解镜像失败 ({}):\n{}\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    if !extract_with_xorriso(&iso, &dest) {
+        return;
+    }
 
     let expected = snapshot(&src);
     let actual = snapshot(&dest);
