@@ -6,8 +6,6 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{BurnEngine, BurnJob, XorrisoEngine};
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
-// 只有 Linux 的 probe 能枚举设备，非 Linux 目标用不到 mmc 层。
-#[cfg(target_os = "linux")]
 use optiburn_mmc::{DiscStatus, MmcDevice};
 
 #[derive(Parser)]
@@ -162,7 +160,6 @@ fn default_output(src: &Path) -> PathBuf {
     PathBuf::from(format!("{stem}.iso"))
 }
 
-#[cfg(target_os = "linux")]
 fn disc_status_text(status: DiscStatus) -> String {
     match status {
         DiscStatus::Empty => "空盘".to_string(),
@@ -172,16 +169,14 @@ fn disc_status_text(status: DiscStatus) -> String {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn probe_command() -> Result<(), String> {
-    let devices = optical_devices();
+    let devices = optiburn_transport::list_optical_devices();
     if devices.is_empty() {
         println!("未发现光驱");
         return Ok(());
     }
 
-    for path in devices {
-        let text = path.to_string_lossy().into_owned();
+    for text in devices {
         let transport = match optiburn_transport::open(&text) {
             Ok(transport) => transport,
             Err(e) => {
@@ -207,31 +202,6 @@ fn probe_command() -> Result<(), String> {
         };
         println!("{text} | {identity} | {disc}");
     }
-    Ok(())
-}
-
-/// `/dev/sr*` 里形如 `sr0`、`sr12` 的设备节点，按名字排序。
-#[cfg(target_os = "linux")]
-fn optical_devices() -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir("/dev") else {
-        return Vec::new();
-    };
-    let mut devices = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let name = entry.file_name();
-            let name = name.to_str()?;
-            let index = name.strip_prefix("sr")?;
-            (!index.is_empty() && index.bytes().all(|b| b.is_ascii_digit())).then(|| entry.path())
-        })
-        .collect::<Vec<_>>();
-    devices.sort();
-    devices
-}
-
-#[cfg(not(target_os = "linux"))]
-fn probe_command() -> Result<(), String> {
-    println!("probe 尚未支持该平台");
     Ok(())
 }
 

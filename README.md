@@ -13,7 +13,7 @@ x86_64 and arm64. It builds disc images that Windows can read (ISO 9660 + Joliet
 |---|---|
 | `optiburn build-image` | Works: builds ISO 9660 + Joliet + UDF Bridge images. Verified against xorriso in tests. |
 | `optiburn burn` | Works on Linux through the `xorriso -as cdrecord` subprocess engine. |
-| `optiburn probe` | Works on Linux (`/dev/sr*`). Not implemented on Windows yet. |
+| `optiburn probe` | Works on Linux (`/dev/sr*`). On other platforms it finds no devices and reports `未发现光驱` (exit 0), because device enumeration is Linux-only so far. |
 
 Native MMC writing (no external tools) is the next milestone, not part of v0.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layered design and
@@ -149,7 +149,7 @@ x86_64/arm64。它解决的核心问题是：**在 Linux 上刻的盘，Windows 
 - `optiburn build-image <目录> -o out.iso --profile dvd`：把目录做成镜像，
   `--profile` 取 `cd`/`dvd`/`bd`，决定写哪些文件系统；
 - `optiburn burn out.iso --device /dev/sr0`：把镜像写到盘上（v0 通过 xorriso 子进程）；
-- `optiburn probe`：列出光驱与盘片状态（Linux；无光驱时退 0）。
+- `optiburn probe`：列出光驱与盘片状态（设备枚举只有 Linux 实现，其它平台一律报“未发现光驱”，退 0）。
 
 现状与边界：镜像层已实测（测试里用 xorriso 回读并逐字节比对，含中文文件名）；
 刻录依赖 `xorriso`；`probe` 只支持 Linux；原生的 MMC 写入引擎与 Windows 的 `probe`

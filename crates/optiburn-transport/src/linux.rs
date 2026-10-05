@@ -172,6 +172,25 @@ impl ScsiTransport for LinuxSg {
     }
 }
 
+/// `/dev` 下形如 `sr0`、`sr12` 的光驱设备节点路径，按名字排序。
+pub(super) fn optical_devices() -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir("/dev") else {
+        return Vec::new();
+    };
+    let mut devices = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let index = name.strip_prefix("sr")?;
+            (!index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| format!("/dev/{name}"))
+        })
+        .collect::<Vec<_>>();
+    devices.sort();
+    devices
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

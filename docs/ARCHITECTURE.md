@@ -52,7 +52,8 @@ optiburn-cli        命令行：build-image / burn / probe
 ### optiburn-transport
 
 **接口**：`ScsiTransport::issue(cdb, dir, data, timeout)` 一条同步命令，加上
-`Direction`／`Completion`／`TransportError`，以及按平台分发的 `open(device)`。
+`Direction`／`Completion`／`TransportError`，按平台分发的 `open(device)`，以及
+`list_optical_devices()`（枚举本机光驱设备路径，非 Linux 返回空列表）。
 
 **隐藏**：`SG_IO` 的 `sg_io_hdr` 组装、SPTI 的 `SCSI_PASS_THROUGH_DIRECT` 组装、
 两套方向枚举语义相反这件事（Linux `SG_DXFER_TO_DEV = -2`，Windows
@@ -122,7 +123,7 @@ stderr 上的百分比解析、失败时从 stderr 尾部取摘要、区分工�
 |---|---|---|
 | `build-image` | ✅ | ✅ |
 | `burn`（xorriso 引擎） | ✅ 需要 `xorriso` 与写设备权限 | ✅ 需要 `xorriso`（MSYS2 等） |
-| `probe` | ✅ `/dev/sr*` | ❌ 尚未实现 |
+| `probe` | ✅ `/dev/sr*` | 尚未实现（枚举不到设备，报“未发现光驱”） |
 | 原生 MMC 传输 | ✅ `SG_IO` | ✅ 编译通过，等有硬件时验证 |
 
 `cargo check` 覆盖四个目标三元组；Windows 的 SPTI 代码路径只保证能编译，没有真机验证过

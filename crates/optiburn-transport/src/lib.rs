@@ -95,6 +95,24 @@ pub fn open(_device: &str) -> Result<Box<dyn ScsiTransport>, TransportError> {
     Err(TransportError::Unsupported)
 }
 
+/// 枚举本机的光驱设备路径，按名字排序，路径可直接交给 [`open`]。
+///
+/// v0 只有 Linux 能枚举（`/dev/sr*`）；其它平台返回空列表，上层按“未发现光驱”处理。
+/// 枚举与 [`open`] 一样按平台收在本 crate，调用方不需要平台分支。
+#[cfg(target_os = "linux")]
+pub fn list_optical_devices() -> Vec<String> {
+    linux::optical_devices()
+}
+
+/// 枚举本机的光驱设备路径，按名字排序，路径可直接交给 [`open`]。
+///
+/// v0 只有 Linux 能枚举（`/dev/sr*`）；其它平台返回空列表，上层按“未发现光驱”处理。
+/// 枚举与 [`open`] 一样按平台收在本 crate，调用方不需要平台分支。
+#[cfg(not(target_os = "linux"))]
+pub fn list_optical_devices() -> Vec<String> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +127,17 @@ mod tests {
             Err(other) => panic!("expected NotFound, got {other:?}"),
             Ok(_) => panic!("expected NotFound, opened a device that cannot exist"),
         }
+    }
+
+    #[test]
+    fn optical_device_list_is_sorted_and_matches_platform() {
+        let devices = list_optical_devices();
+        assert!(devices.windows(2).all(|w| w[0] < w[1]), "{devices:?}");
+        #[cfg(target_os = "linux")]
+        for device in &devices {
+            assert!(device.starts_with("/dev/sr"), "{device}");
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert!(devices.is_empty());
     }
 }

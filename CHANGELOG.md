@@ -15,6 +15,11 @@
 - 软件设计文档：架构分层、Windows 兼容性矩阵、5 份 ADR、术语表（`docs/`）。
 - 治理：CI（lint/test/cross-check）、发布工作流、分支保护、安全报告、议题与 PR 模板。
 
+### 变更
+
+- probe 的设备枚举移到 `optiburn_transport::list_optical_devices`，非 Linux 平台从报
+  “probe 尚未支持该平台”改为报“未发现光驱”，退出码同为 0。
+
 ### 修复
 
 - CLI 顶层帮助文案改为中文，与本仓库“面向用户的文案用中文”的约定一致。

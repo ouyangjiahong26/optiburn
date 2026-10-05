@@ -7,8 +7,9 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
 
 五个 crate 的 workspace，依赖单向：`cli → {mastering, engine, mmc} → {hadris-cd, transport}`。
 
-- `optiburn-transport`：SCSI 传输。全仓库唯一的硬件抽象点——`ScsiTransport` trait 一个方法
-  `issue(cdb, dir, data, timeout)`；Linux 走 `SG_IO`，Windows 走 SPTI。CDB 上限 16 字节，
+- `optiburn-transport`：SCSI 传输。全仓库唯一的硬件抽象点，`ScsiTransport` trait 只有
+  一个方法 `issue(cdb, dir, data, timeout)`。Linux 走 `SG_IO`，Windows 走 SPTI，光驱设备
+  枚举（`list_optical_devices`）也按平台收在这里。CDB 上限 16 字节，
   sense 上限 32 字节，命令级成功 = SCSI 状态字节与宿主机/驱动状态全 0。
 - `optiburn-mmc`：MMC 命令编解码。v0 只有读侧三条（`inquiry`、`test_unit_ready`、
   `read_disc_information`）。写侧（`RESERVE TRACK`/`WRITE(10)`/`CLOSE TRACK`）在路线图上，
