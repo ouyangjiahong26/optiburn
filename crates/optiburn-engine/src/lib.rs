@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 mod xorriso;
 
-pub use xorriso::XorrisoEngine;
+pub use xorriso::{XorrisoEngine, grow};
 
-/// 一次刻录任务的输入。
+/// 一次镜像刻录任务的输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BurnJob {
     /// 待写入的镜像文件，例如 `.iso`。
@@ -21,6 +21,23 @@ pub struct BurnJob {
     pub speed: Option<u32>,
     /// 是否以多区段方式追加（`-multi`）。
     pub multi: bool,
+}
+
+/// 一次目录追加（增长模式）任务的输入。
+///
+/// 增长模式不经过镜像文件：xorriso 读出盘上已有区段的目录树，把源目录内容并进
+/// 去后作为新区段提交，因此旧文件仍可见。hadris 只能从零建整盘镜像，区段合并
+/// 只能落在引擎侧（见 ADR-0006）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrowJob {
+    /// 源目录，其内容成为盘上根目录。
+    pub src: PathBuf,
+    /// 目标设备：Linux 形如 `/dev/sr0`，Windows 形如 `E:`。
+    pub device: String,
+    /// 写入倍速。`None` 表示交给驱动自选。
+    pub speed: Option<u32>,
+    /// 新区段的卷标。
+    pub volume_id: String,
 }
 
 #[derive(Debug, thiserror::Error)]

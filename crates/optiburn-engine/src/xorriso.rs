@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
-use crate::{BurnEngine, BurnError, BurnJob};
+use crate::{BurnEngine, BurnError, BurnJob, GrowJob};
 
 /// 依赖的可执行文件名。
 const XORRISO: &str = "xorriso";
@@ -28,6 +28,40 @@ impl BurnEngine for XorrisoEngine {
     fn burn(&self, job: &BurnJob, progress: &mut dyn FnMut(f32)) -> Result<(), BurnError> {
         run(XORRISO, &cdrecord_args(job), progress)
     }
+}
+
+/// 用 xorriso 增长模式把目录写到盘上（多区段合并）。
+///
+/// `-dev` 会读出盘上已有区段的目录树，提交时新区段同时携带新旧文件，Windows 等
+/// 默认挂载最后一区段的系统仍能看到全部内容。空盘时它直接写第一区段，因此
+/// `append` 不必区分首刻与追加。
+pub fn grow(job: &GrowJob, progress: &mut dyn FnMut(f32)) -> Result<(), BurnError> {
+    run(XORRISO, &grow_args(job), progress)
+}
+
+/// 组装增长模式参数表。
+///
+/// `-map 源目录 /` 把目录内容映射到盘根，与 `build-image` 的语义一致；不带
+/// `-eject`，写完保留盘在仓内供回读校验。增长模式的写进度走 stdout 的 I 通道，
+/// `run` 只收 stderr，所以进度只剩成功时的 1.0。
+fn grow_args(job: &GrowJob) -> Vec<OsString> {
+    let mut args = vec![OsString::from("-dev"), OsString::from(&job.device)];
+    if let Some(speed) = job.speed {
+        args.push(OsString::from("-speed"));
+        args.push(OsString::from(format!("{speed}")));
+    }
+    args.extend([
+        OsString::from("-volid"),
+        OsString::from(&job.volume_id),
+        OsString::from("-joliet"),
+        OsString::from("on"),
+        OsString::from("-map"),
+        // 用 OsStr 而不是 `display()`：后者会把非 UTF-8 字节替换成 U+FFFD，写盘就会找错文件。
+        job.src.as_os_str().to_os_string(),
+        OsString::from("/"),
+        OsString::from("-commit"),
+    ]);
+    args
 }
 
 /// 跑一个写盘子进程，把 stderr 上的百分比转成进度，并在退出码非零时报错。
@@ -188,6 +222,44 @@ mod tests {
                 "/tmp/optiburn.iso"
             ])
         );
+    }
+
+    #[test]
+    fn grow_args_map_src_to_root_and_commit() {
+        let job = GrowJob {
+            src: PathBuf::from("/tmp/stage"),
+            device: "/dev/sr0".to_string(),
+            speed: Some(8),
+            volume_id: "OPTIBURN".to_string(),
+        };
+        assert_eq!(
+            grow_args(&job),
+            os(&[
+                "-dev",
+                "/dev/sr0",
+                "-speed",
+                "8",
+                "-volid",
+                "OPTIBURN",
+                "-joliet",
+                "on",
+                "-map",
+                "/tmp/stage",
+                "/",
+                "-commit"
+            ])
+        );
+    }
+
+    #[test]
+    fn grow_args_omit_speed_when_unset() {
+        let job = GrowJob {
+            src: PathBuf::from("/tmp/stage"),
+            device: "/dev/sr0".to_string(),
+            speed: None,
+            volume_id: "OPTIBURN".to_string(),
+        };
+        assert!(!grow_args(&job).contains(&OsString::from("-speed")));
     }
 
     #[cfg(unix)]
