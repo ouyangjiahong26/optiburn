@@ -105,9 +105,55 @@ jobs:
           path: src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
 
+  build-gui-linux:
+    name: 构建 Linux GUI 安装包 (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - arch: aarch64
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Tauri 的 Linux 构建前置（webkit2gtk 供 wry/tauri 编译期 pkg-config 探测），与 CI 的 gui job 同一套。
+      - name: Install Tauri Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui-${{ matrix.target }}
+          workspaces: src-tauri -> target
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      # AppImage 与 deb 打包走 tauri CLI：先编前端（beforeBuildCommand），再编译 src-tauri 并出两种包。
+      - name: 构建 AppImage 与 deb
+        run: npm --prefix frontend exec -- tauri build --target ${{ matrix.target }} --bundles appimage,deb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: optiburn-gui-linux-${{ matrix.arch }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: error
+
   release:
     name: 发布
-    needs: [build-linux, build-windows, build-gui-windows]
+    needs: [build-linux, build-windows, build-gui-windows, build-gui-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-08
+
+**中文**
+
+本版把图形前端带到 Linux：x86_64 与 aarch64 各发 AppImage（单文件免安装）与 deb 安装包，四个页面对应四个子命令，刻录类任务可中止，刻录仍要求 xorriso 在 PATH 上。Windows 侧维持 NSIS 安装包不变。CLI 对外行为不变，本版无破坏性变更。
+
+### FEAT
+
+- **Linux 图形前端安装包（AppImage 与 deb）**：`release.yml` 新增 `build-gui-linux` job，
+  x86_64 在 `ubuntu-latest`、aarch64 在公开仓库免费的 `ubuntu-24.04-arm` 原生 runner 上
+  构建，各产出 AppImage 与 deb。GUI 代码本身零平台分支（CI 的 gui job 已在 ubuntu 上
+  编译并测试），刻录仍要求 PATH 上的 xorriso，安装包不内嵌外部工具。决策见 ADR-0009。(PR #18)
+
+**Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.1...v0.1.2
+
 ## [0.1.1] - 2026-10-08
 
 **中文**
