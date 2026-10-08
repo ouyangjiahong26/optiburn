@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-08
+
+**中文**
+
+本版新增图形前端（Tauri 2 + React，Windows 发 NSIS 安装包），四个页面对应四个子命令，刻录类任务可中止，任务未结束时关窗需要确认。核心 crate 同步增强：刻录前门禁下沉 `optiburn-mmc`，`optiburn-engine` 新增协作式取消，`optiburn-transport` 补齐 Windows 光驱枚举。CLI 对外行为不变，本版无破坏性变更。
+
 ### FEAT
 
 - **图形前端（Tauri 2 + React）**：新增 `src-tauri/`（Tauri 2 命令层，包 `optiburn-gui`）与
@@ -16,7 +22,9 @@
   Windows 发 NSIS 安装包（x64 与 arm64）。核心 crate 同步增强：`optiburn-mmc` 下沉就绪
   等待与写入门禁（`wait_until_ready`、`approve_write`），`optiburn-engine` 新增协作式
   取消令牌（`CancelToken`、`BurnError::Cancelled`），`optiburn-transport` 补齐 Windows
-  光驱枚举。决策见 ADR-0008。
+  光驱枚举。决策见 ADR-0008。(PR #15)
+
+**Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.0...v0.1.1
 
 ## [0.1.0] - 2026-10-08
 

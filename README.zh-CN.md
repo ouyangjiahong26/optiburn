@@ -9,16 +9,17 @@
 
 optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Linux 与 Windows 的 x86_64/arm64。它解决的核心问题是：在 Linux 上刻的盘，Windows 要能直接读。它先把目录做成 Windows 能读的镜像（ISO 9660 + Joliet + UDF Bridge），再把镜像写到光驱。
 
-## 当前能力（0.1.0）
+## 当前能力（0.1.1）
 
 | 命令 | 现状 |
 |---|---|
 | `optiburn build-image` | 可用。生成 ISO 9660 + Joliet + UDF Bridge 镜像，测试中与 xorriso 对拍验证。 |
-| `optiburn burn` | Linux 可用。默认多区段（盘保持可追加），`--close-disc` 才封盘。 |
-| `optiburn append` | Linux 可用。增长模式追加目录并合并已有区段，旧文件保持可见。 |
-| `optiburn probe` | Linux 可用（`/dev/sr*`）。其它平台找不到设备时报“未发现光驱”（退出码 0）。 |
+| `optiburn burn` | Linux 可用（Windows 已能构建并枚举光驱，未做真机验证）。默认多区段（盘保持可追加），`--close-disc` 才封盘。 |
+| `optiburn append` | Linux 可用（Windows 未做真机验证）。增长模式追加目录并合并已有区段，旧文件保持可见。 |
+| `optiburn probe` | Linux（`/dev/sr*`）与 Windows（盘符）可用。找不到设备时报“未发现光驱”（退出码 0）。 |
+| `OptiBurn` 图形前端 | 0.1.1 新增（Tauri 2 + React）。四个页面对应四个子命令，刻录类任务可中止。Windows 安装包（NSIS，x64 与 arm64）从 Release 页下载。 |
 
-原生 MMC 写入（不借助外部工具）是下一个里程碑，不属于 0.1.0。分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，介质与文件系统矩阵见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。
+原生 MMC 写入（不借助外部工具）是下一个里程碑，不属于 0.1.1。分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，介质与文件系统矩阵见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。
 
 ## 安装
 
@@ -30,7 +31,8 @@ cargo build --release
 ```
 
 - Rust 1.98.1（由 `rust-toolchain.toml` 固定）。
-- `xorriso` 在 `PATH` 上，只有 `burn` 需要（0.1.0 通过子进程调用）：Debian/Ubuntu 用 `sudo apt install xorriso`，MSYS2 用 `pacman -S xorriso`。
+- `xorriso` 在 `PATH` 上，只有 `burn` 需要（0.1.1 通过子进程调用）：Debian/Ubuntu 用 `sudo apt install xorriso`，MSYS2 用 `pacman -S xorriso`。
+- 图形前端：从 Release 页下载 `OptiBurn_0.1.1_x64-setup.exe`（或 arm64 版）。刻录仍要求 `xorriso` 在 `PATH` 上，与 CLI 相同。
 - 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
 
 ## 用法
@@ -89,7 +91,7 @@ done
 ## 致谢
 
 - [hadris](https://github.com/hxyulin/hadris)：MIT 许可的 Rust 镜像生成库（`hadris-cd`），UDF Bridge 镜像由它产出。
-- [xorriso / libburnia](https://www.gnu.org/software/xorriso/)：本项目测试对拍的参考实现，也是 0.1.0 的刻录后端（子进程调用，不链接 GPL 代码）。
+- [xorriso / libburnia](https://www.gnu.org/software/xorriso/)：本项目测试对拍的参考实现，也是 0.1.1 的刻录后端（子进程调用，不链接 GPL 代码）。
 - [alight](https://github.com/vicr123/alight)：Linux `SG_IO` 传输层结构的参考，未复制代码（该仓库没有许可证）。
 
 ## 许可
