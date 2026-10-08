@@ -7,9 +7,7 @@
 
 ## 简介
 
-optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Linux 与 Windows 的
-x86_64/arm64。它解决的核心问题是：在 Linux 上刻的盘，Windows 要能直接读。它先把
-目录做成 Windows 能读的镜像（ISO 9660 + Joliet + UDF Bridge），再把镜像写到光驱。
+optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Linux 与 Windows 的 x86_64/arm64。它解决的核心问题是：在 Linux 上刻的盘，Windows 要能直接读。它先把目录做成 Windows 能读的镜像（ISO 9660 + Joliet + UDF Bridge），再把镜像写到光驱。
 
 ## 当前能力（0.1.0）
 

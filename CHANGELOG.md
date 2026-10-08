@@ -11,59 +11,35 @@
 
 **中文**
 
-本版发布首个可用版本，覆盖四个方面：Windows 可读的镜像生成（ISO 9660 + Joliet +
-UDF Bridge）、xorriso 子进程刻录引擎、默认多区段与增长模式追加、只读 probe。镜像层
-经 xorriso 回读逐字节对拍验证，刻录与追加在真实光驱上实测（空白 CD-R 先刻后追加，
-回读逐字节一致）。本版无破坏性变更，这是第一个发布版本。
+本版发布首个可用版本，覆盖四个方面：Windows 可读的镜像生成（ISO 9660 + Joliet + UDF Bridge）、xorriso 子进程刻录引擎、默认多区段与增长模式追加、只读 probe。镜像层经 xorriso 回读逐字节对拍验证，刻录与追加在真实光驱上实测（空白 CD-R 先刻后追加，回读逐字节一致）。本版无破坏性变更，这是第一个发布版本。
 
 ### FEAT
 
-- **5-crate Cargo workspace 骨架**：`optiburn-transport`（SG_IO/SPTI SCSI 传输）、
-  `optiburn-mmc`（MMC 读侧命令）、`optiburn-mastering`（hadris-cd ISO9660/Joliet/UDF
-  镜像生成）、`optiburn-engine`（xorriso 子进程刻录引擎）、`optiburn-cli`。(PR #1)
-- **`optiburn append <目录>` 增长模式追加刻录**：xorriso 增长模式
-  （`-dev … -map <目录> / -commit`）读出盘上已有区段的目录树，新区段同时携带新旧
-  文件，旧文件保持可见。空盘时直接写第一区段，等价于首刻。(PR #10)
-- **刻录前置检查自动路由介质状态**：`burn` 与 `append` 共用前置检查，先等介质就绪
-  （20 秒内每 500 ms 重试），再按盘片状态路由：空盘放行，已封口拒绝，可追加盘拒绝
-  镜像路径并指引 `append`（独立镜像会遮住已有区段的文件），随机可写介质（DVD-RAM、
-  BD-RE）放行。(PR #10)
-- **`burn` 默认多区段不封盘**：默认保持盘可追加，`--close-disc` 显式封盘。`append`
-  的同名参数在提交前加 `-close on`，对随机可写介质不生效（xorriso 手册明示）。(PR #10)
+- **5-crate Cargo workspace 骨架**：`optiburn-transport`（SG_IO/SPTI SCSI 传输）、`optiburn-mmc`（MMC 读侧命令）、`optiburn-mastering`（hadris-cd ISO9660/Joliet/UDF 镜像生成）、`optiburn-engine`（xorriso 子进程刻录引擎）、`optiburn-cli`。(PR #1)
+- **`optiburn append <目录>` 增长模式追加刻录**：xorriso 增长模式（`-dev … -map <目录> / -commit`）读出盘上已有区段的目录树，新区段同时携带新旧文件，旧文件保持可见。空盘时直接写第一区段，等价于首刻。(PR #10)
+- **刻录前置检查自动路由介质状态**：`burn` 与 `append` 共用前置检查，先等介质就绪（20 秒内每 500 ms 重试），再按盘片状态路由：空盘放行，已封口拒绝，可追加盘拒绝镜像路径并指引 `append`（独立镜像会遮住已有区段的文件），随机可写介质（DVD-RAM、BD-RE）放行。(PR #10)
+- **`burn` 默认多区段不封盘**：默认保持盘可追加，`--close-disc` 显式封盘。`append` 的同名参数在提交前加 `-close on`，对随机可写介质不生效（xorriso 手册明示）。(PR #10)
 
 ### FIX
 
-- **Linux 打开光驱设备节点一律带 `O_NONBLOCK`**：空白盘上 `O_RDWR` 阻塞打开被内核判
-  `EROFS`，随盘片识别时序间歇复现。怪癖记录见 ADR-0007。(PR #10)
+- **Linux 打开光驱设备节点一律带 `O_NONBLOCK`**：空白盘上 `O_RDWR` 阻塞打开被内核判 `EROFS`，随盘片识别时序间歇复现。怪癖记录见 ADR-0007。(PR #10)
 - **CLI 顶层帮助文案改为中文**：与本仓库“面向用户的文案用中文”的约定一致。(PR #3)
-- **`ImageInfo.sectors` 只在字节数是 2048 整数倍时给出**：否则返回新错误
-  `MisalignedImage`，不再用向上取整推算一个无法核实的扇区数。(PR #3)
-- **镜像路径按 `OsStr` 原样传给 xorriso**：非 UTF-8 路径不再被替换成 U+FFFD，并有
-  回归测试钉住。(PR #3)
-- **平台相关修正**：Windows 目标不再产生未使用导入与死代码警告（cross-check 现在以
-  `-D warnings` 跑）。其它平台的传输层测试不再假定 `open()` 必然返回 `NotFound`。
-  (PR #3)
-- **CLI 中文文案的冒号与括号改为全角**：“错误：”“打开失败：”“其它（3）”等。
-  (#5, PR #9)
+- **`ImageInfo.sectors` 只在字节数是 2048 整数倍时给出**：否则返回新错误 `MisalignedImage`，不再用向上取整推算一个无法核实的扇区数。(PR #3)
+- **镜像路径按 `OsStr` 原样传给 xorriso**：非 UTF-8 路径不再被替换成 U+FFFD，并有回归测试钉住。(PR #3)
+- **平台相关修正**：Windows 目标不再产生未使用导入与死代码警告（cross-check 现在以 `-D warnings` 跑）。其它平台的传输层测试不再假定 `open()` 必然返回 `NotFound`。(PR #3)
+- **CLI 中文文案的冒号与括号改为全角**：“错误：”“打开失败：”“其它（3）”等。(#5, PR #9)
 
 ### CLEANUP
 
-- **probe 的设备枚举移到 `optiburn_transport::list_optical_devices`**：与设备打开
-  并列按平台分发，CLI 删除全部 `#[cfg(target_os)]`。非 Linux 平台从报
-  “probe 尚未支持该平台”改为报“未发现光驱”，退出码同为 0。(#6, PR #9)
+- **probe 的设备枚举移到 `optiburn_transport::list_optical_devices`**：与设备打开并列按平台分发，CLI 删除全部 `#[cfg(target_os)]`。非 Linux 平台从报“probe 尚未支持该平台”改为报“未发现光驱”，退出码同为 0。(#6, PR #9)
 
 ### DOC
 
-- **软件设计文档**：架构分层、Windows 兼容性矩阵、7 份 ADR（0006 默认多区段与增长
-  模式、0007 Linux 打开光驱必须 O_NONBLOCK）、术语表（`docs/`）。(PR #1, PR #10)
-- **治理**：CI（lint/test/cross-check）、发布工作流、分支保护、安全报告、议题与
-  PR 模板。(PR #1)
-- **文档纠正三处不实声明**：镜像“字节跨次一致”（实际含构建时刻时间戳）、引擎区分
-  `unsupported`、以及 `READ DISC INFORMATION` 字节 3 的语义（盘上首轨号）。(PR #3)
-- **文档与注释统一为弯引号，术语改用 `CONTEXT.md` 术语表词汇**（盘片状态、区段、
-  设备路径、UDF Bridge）。(PR #3)
-- **新增中文 README（`README.zh-CN.md`）**：英文 README 同步四个子命令与默认行为。
-  (PR #11)
+- **软件设计文档**：架构分层、Windows 兼容性矩阵、7 份 ADR（0006 默认多区段与增长模式、0007 Linux 打开光驱必须 O_NONBLOCK）、术语表（`docs/`）。(PR #1, PR #10)
+- **治理**：CI（lint/test/cross-check）、发布工作流、分支保护、安全报告、议题与 PR 模板。(PR #1)
+- **文档纠正三处不实声明**：镜像“字节跨次一致”（实际含构建时刻时间戳）、引擎区分 `unsupported`、以及 `READ DISC INFORMATION` 字节 3 的语义（盘上首轨号）。(PR #3)
+- **文档与注释统一为弯引号，术语改用 `CONTEXT.md` 术语表词汇**（盘片状态、区段、设备路径、UDF Bridge）。(PR #3)
+- **新增中文 README（`README.zh-CN.md`）**：英文 README 同步四个子命令与默认行为。(PR #11)
 
 完整决策依据见 `docs/adr/` 对应 ADR，工程术语见 `CONTEXT.md`。
 
@@ -71,80 +47,37 @@ UDF Bridge）、xorriso 子进程刻录引擎、默认多区段与增长模式�
 
 **English**
 
-This release ships the first usable version across four areas: Windows-readable
-image mastering (ISO 9660 + Joliet + UDF Bridge), the xorriso subprocess burn
-engine, multi-session by default with grow-mode appends, and a read-only probe.
-The image layer is verified by a byte-for-byte xorriso round trip, and burning
-plus appending were exercised on a real drive (blank CD-R, burn then append,
-byte-for-byte match on read-back). No breaking changes; this is the first
-release.
+This release ships the first usable version across four areas: Windows-readable image mastering (ISO 9660 + Joliet + UDF Bridge), the xorriso subprocess burn engine, multi-session by default with grow-mode appends, and a read-only probe. The image layer is verified by a byte-for-byte xorriso round trip, and burning plus appending were exercised on a real drive (blank CD-R, burn then append, byte-for-byte match on read-back). No breaking changes; this is the first release.
 
 ### FEAT
 
-- **5-crate Cargo workspace skeleton**: `optiburn-transport` (SG_IO/SPTI SCSI
-  transport), `optiburn-mmc` (MMC read-side commands), `optiburn-mastering`
-  (ISO 9660/Joliet/UDF image building via hadris-cd), `optiburn-engine` (xorriso
-  subprocess burn engine), `optiburn-cli`. (PR #1)
-- **`optiburn append <directory>` grow-mode appending**: xorriso grow mode
-  (`-dev … -map <directory> / -commit`) reads the existing session tree from the
-  disc and writes a new session carrying both old and new files, so files from
-  earlier sessions stay visible. On a blank disc it writes the first session,
-  equivalent to a first burn. (PR #10)
-- **Pre-burn media checks shared by `burn` and `append`**: wait for the medium
-  to become ready (retry every 500 ms for up to 20 s), then route on disc state:
-  blank discs proceed, finalized discs are rejected, appendable discs reject the
-  image path with a pointer to `append` (a standalone image would shadow earlier
-  sessions), randomly writable media (DVD-RAM, BD-RE) proceed. (PR #10)
-- **`burn` is multi-session by default**: the disc stays appendable unless
-  `--close-disc` is passed. The `append` counterpart adds `-close on` before
-  committing, which has no effect on randomly writable media (as the xorriso
-  manual states). (PR #10)
+- **5-crate Cargo workspace skeleton**: `optiburn-transport` (SG_IO/SPTI SCSI transport), `optiburn-mmc` (MMC read-side commands), `optiburn-mastering` (ISO 9660/Joliet/UDF image building via hadris-cd), `optiburn-engine` (xorriso subprocess burn engine), `optiburn-cli`. (PR #1)
+- **`optiburn append <directory>` grow-mode appending**: xorriso grow mode (`-dev … -map <directory> / -commit`) reads the existing session tree from the disc and writes a new session carrying both old and new files, so files from earlier sessions stay visible. On a blank disc it writes the first session, equivalent to a first burn. (PR #10)
+- **Pre-burn media checks shared by `burn` and `append`**: wait for the medium to become ready (retry every 500 ms for up to 20 s), then route on disc state: blank discs proceed, finalized discs are rejected, appendable discs reject the image path with a pointer to `append` (a standalone image would shadow earlier sessions), randomly writable media (DVD-RAM, BD-RE) proceed. (PR #10)
+- **`burn` is multi-session by default**: the disc stays appendable unless `--close-disc` is passed. The `append` counterpart adds `-close on` before committing, which has no effect on randomly writable media (as the xorriso manual states). (PR #10)
 
 ### FIX
 
-- **Optical device nodes on Linux always open with `O_NONBLOCK`**: on blank
-  discs a blocking `O_RDWR` open can be judged `EROFS` by the kernel, depending
-  on disc-detection timing. The quirk is recorded in ADR-0007. (PR #10)
-- **CLI top-level help text switched to Chinese**: consistent with the repo rule
-  that user-facing text is Chinese. (PR #3)
-- **`ImageInfo.sectors` only when the byte count is a multiple of 2048**:
-  otherwise a new `MisalignedImage` error is returned instead of rounding up an
-  unverifiable sector count. (PR #3)
-- **Image paths are passed to xorriso as raw `OsStr`**: non-UTF-8 paths are no
-  longer replaced with U+FFFD; a regression test pins this. (PR #3)
-- **Platform-related corrections**: Windows targets no longer produce
-  unused-import and dead-code warnings (cross-check now runs with
-  `-D warnings`); transport-layer tests on other platforms no longer assume
-  `open()` returns `NotFound`. (PR #3)
-- **CLI Chinese text now uses full-width colons and brackets**: “错误：”
-  “打开失败：”“其它（3）” and others. (#5, PR #9)
+- **Optical device nodes on Linux always open with `O_NONBLOCK`**: on blank discs a blocking `O_RDWR` open can be judged `EROFS` by the kernel, depending on disc-detection timing. The quirk is recorded in ADR-0007. (PR #10)
+- **CLI top-level help text switched to Chinese**: consistent with the repo rule that user-facing text is Chinese. (PR #3)
+- **`ImageInfo.sectors` only when the byte count is a multiple of 2048**: otherwise a new `MisalignedImage` error is returned instead of rounding up an unverifiable sector count. (PR #3)
+- **Image paths are passed to xorriso as raw `OsStr`**: non-UTF-8 paths are no longer replaced with U+FFFD; a regression test pins this. (PR #3)
+- **Platform-related corrections**: Windows targets no longer produce unused-import and dead-code warnings (cross-check now runs with `-D warnings`); transport-layer tests on other platforms no longer assume `open()` returns `NotFound`. (PR #3)
+- **CLI Chinese text now uses full-width colons and brackets**: “错误：”“打开失败：”“其它（3）” and others. (#5, PR #9)
 
 ### CLEANUP
 
-- **probe device enumeration moved to
-  `optiburn_transport::list_optical_devices`**: dispatched per platform next to
-  `open`, removing every `#[cfg(target_os)]` from the CLI. On non-Linux
-  platforms probe changed from “probe 尚未支持该平台” to “未发现光驱”, exit
-  code 0 in both cases. (#6, PR #9)
+- **probe device enumeration moved to `optiburn_transport::list_optical_devices`**: dispatched per platform next to `open`, removing every `#[cfg(target_os)]` from the CLI. On non-Linux platforms probe changed from “probe 尚未支持该平台” to “未发现光驱”, exit code 0 in both cases. (#6, PR #9)
 
 ### DOC
 
-- **Design documentation**: layered architecture, Windows compatibility matrix,
-  7 ADRs (0006 multi-session by default and grow mode, 0007 `O_NONBLOCK` when
-  opening optical devices), glossary (`docs/`). (PR #1, PR #10)
-- **Governance**: CI (lint/test/cross-check), release workflow, branch
-  protection, security reporting, issue and PR templates. (PR #1)
-- **Three false documentation claims corrected**: “bytes identical across
-  runs” (the image embeds a build timestamp), the engine having an
-  `unsupported` branch, and the meaning of `READ DISC INFORMATION` byte 3 (first
-  track on disc). (PR #3)
-- **Curly quotes and `CONTEXT.md` terminology unified across docs and comments**
-  (disc state, session, device path, UDF Bridge). (PR #3)
-- **Chinese README added (`README.zh-CN.md`)**: the English README gained the
-  four subcommands and the new default behavior. (PR #11)
+- **Design documentation**: layered architecture, Windows compatibility matrix, 7 ADRs (0006 multi-session by default and grow mode, 0007 `O_NONBLOCK` when opening optical devices), glossary (`docs/`). (PR #1, PR #10)
+- **Governance**: CI (lint/test/cross-check), release workflow, branch protection, security reporting, issue and PR templates. (PR #1)
+- **Three false documentation claims corrected**: “bytes identical across runs” (the image embeds a build timestamp), the engine having an `unsupported` branch, and the meaning of `READ DISC INFORMATION` byte 3 (first track on disc). (PR #3)
+- **Curly quotes and `CONTEXT.md` terminology unified across docs and comments** (disc state, session, device path, UDF Bridge). (PR #3)
+- **Chinese README added (`README.zh-CN.md`)**: the English README gained the four subcommands and the new default behavior. (PR #11)
 
-Full rationale lives in the ADRs under `docs/adr/`; terminology in
-`CONTEXT.md`.
+Full rationale lives in the ADRs under `docs/adr/`; terminology in `CONTEXT.md`.
 
 ---
 

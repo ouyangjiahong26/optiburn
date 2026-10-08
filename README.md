@@ -5,9 +5,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Cross-platform optical disc burning toolkit in Rust for Linux and Windows on
-x86_64 and arm64. It builds disc images that Windows can read (ISO 9660 + Joliet
-+ UDF Bridge) and writes them to a drive.
+Cross-platform optical disc burning toolkit in Rust for Linux and Windows on x86_64 and arm64. It builds disc images that Windows can read (ISO 9660 + Joliet + UDF Bridge) and writes them to a drive.
 
 ## What it does today (0.1.0)
 
