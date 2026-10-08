@@ -25,6 +25,9 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
   （`[[bin]] name`），不是 `optiburn-cli`。`burn` 默认多区段不封盘，追加刻录走
   `append`（xorriso 增长模式，ADR-0006）。
 
+图形前端在 `src-tauri/`（Tauri 2，包 `optiburn-gui`）与 `frontend/`（React + Vite + TS），
+不在根 workspace 内，以路径依赖引用核心 crate（ADR-0008）。
+
 ## Development Commands
 
 ```bash
@@ -43,6 +46,12 @@ done
 cargo run -p optiburn-cli -- build-image docs -o /tmp/e2e.iso --profile dvd --volume-id E2E
 xorriso -indev /tmp/e2e.iso -ls /
 cargo run -p optiburn-cli -- probe      # 期望“未发现光驱”，退出码 0
+
+# 图形前端（Tauri 2 + React）
+npm ci --prefix frontend
+npm run build --prefix frontend                # tsc --noEmit + vite build
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 ```
 
 硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real` 需要
@@ -57,7 +66,9 @@ cargo run -p optiburn-cli -- probe      # 期望“未发现光驱”，退出�
 | `crates/optiburn-mastering/` | `build_image` + profile 映射。`tests/roundtrip.rs` 是 xorriso 对拍 |
 | `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`）、`xorriso.rs`（参数与进度解析） |
 | `crates/optiburn-cli/` | `src/main.rs` 三个子命令 |
-| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0005） |
+| `src-tauri/` | GUI 的 Rust 侧：Tauri 命令层，调用核心 crate |
+| `frontend/` | GUI 的 React 页面，Vite + TS |
+| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0008） |
 | `CONTEXT.md` | 领域术语表（术语/定义/禁用同义词三列），命名一律照它 |
 | `.github/workflows/` | `ci.yml`（job 名即分支保护的 required checks）、`release.yml` |
 
@@ -68,7 +79,9 @@ cargo run -p optiburn-cli -- probe      # 期望“未发现光驱”，退出�
 - 新公开符号配错误类型：错误用 `thiserror`，`#[error]` 文案英文。CLI 面向用户的
   文案中文。
 - 注释写中文，只写“为什么”。文件 < 1000 行、函数 < 50 行。
-- 不加 GUI 依赖，不引 GPL 依赖（链接层面必须保持 MIT 可分发，子进程调 GPL 工具可以）。
+- 核心五个 crate 不加 GUI 依赖。GUI 依赖（Tauri、React）只允许出现在 src-tauri 与
+  frontend（ADR-0008）。不引 GPL 依赖（链接层面必须保持 MIT 可分发，子进程调 GPL
+  工具可以）。
 - 平台分支只能出现在 `optiburn-transport`。别处出现 `#[cfg(target_os)]` 前先想清楚。
 - 上游怪癖要写进代码注释与 ADR（例：hadris 需要读写句柄，它的文档注释里 UDF VRS 的
   扇区号是错的，实测在 20–22）。这类事实写下来，避免下一个人重踩。
