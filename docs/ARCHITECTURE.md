@@ -91,20 +91,24 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 
 ### optiburn-engine
 
-接口：`BurnEngine::{name, burn}`，输入 `BurnJob`（镜像、设备、倍速、是否多区段），
-进度通过 `&mut dyn FnMut(f32)` 回调。
+接口：镜像刻录 `BurnEngine::{name, burn}`（输入 `BurnJob`：镜像、设备、倍速、是否
+多区段），追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标），进度都通过
+`&mut dyn FnMut(f32)` 回调。
 
-隐藏：`xorriso -as cdrecord` 的参数拼装（镜像路径按 `OsStr` 原样传递，不做有损转换）、
-stderr 上的百分比解析、失败时从 stderr 尾部取摘要、区分工具缺失（`MissingTool`，附安装
-提示）与其它 I/O 错误（`Io`）。
+隐藏：`xorriso -as cdrecord` 与增长模式（`-dev … -map <目录> / -commit`，见
+ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、stderr 上的百分比
+解析、失败时从 stderr 尾部取摘要、区分工具缺失（`MissingTool`，附安装提示）与其它
+I/O 错误（`Io`）。
 
 已知不足：v0 的进度只是粗粒度提示，cdrecord 风格输出里缓冲区/fifo 的百分比与写入
 百分比同格式，且成功时统一补发 1.0。精确进度要等原生 MMC 引擎自己数 LBA。
 
 ### optiburn-cli
 
-接口：三个子命令，其余全是实现细节。`probe` 在任何情况下都以 0 退出（没光驱不是
-错误）。真正失败（路径不存在、刻录退出码非零）退 1 并把原因写到 stderr。
+接口：四个子命令，其余全是实现细节。`burn` 与 `append` 先跑前置检查
+（`ensure_burnable`：等介质就绪，按盘片状态路由放行或拒绝，见 ADR-0006）再进引擎。
+`probe` 在任何情况下都以 0 退出（没光驱不是错误）。真正失败（路径不存在、刻录退出
+码非零）退 1 并把原因写到 stderr。
 
 ## 路线图
 
@@ -116,8 +120,8 @@ stderr 上的百分比解析、失败时从 stderr 尾部取摘要、区分工�
   这一层只多学 `optiburn-mmc` 的写侧命令，不需要新 crate。
 - v0.6：`probe` 增加介质容量（`READ CAPACITY` / `GET CONFIGURATION`），
   `build-image` 据此在写盘前就拒绝放不下的镜像。
-- 后续：多区段追加、BD-R 伪覆盖、Windows 上的 IMAPI2 校验（仅校验，不接管写入，
-  见 ADR-0005）。
+- 后续：BD-R 伪覆盖、Windows 上的 IMAPI2 校验（仅校验，不接管写入，
+  见 ADR-0005）。多区段追加已由 `append`（xorriso 增长模式）覆盖，见 ADR-0006。
 
 ## 平台支持现状
 
@@ -125,6 +129,7 @@ stderr 上的百分比解析、失败时从 stderr 尾部取摘要、区分工�
 |---|---|---|
 | `build-image` | 可用 | 可用 |
 | `burn`（xorriso 引擎） | 可用，需要 `xorriso` 与写设备权限 | 可用，需要 `xorriso`（MSYS2 等） |
+| `append`（xorriso 增长模式） | 可用，前置检查按盘片状态自动路由 | 尚未验证（设备枚举未实现） |
 | `probe` | 可用（`/dev/sr*`） | 尚未实现（枚举不到设备，报“未发现光驱”） |
 | 原生 MMC 传输 | 可用（`SG_IO`） | 编译通过，等有硬件时验证 |
 

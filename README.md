@@ -143,12 +143,18 @@ MIT, see [LICENSE](LICENSE).
 optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Linux 与 Windows 的
 x86_64/arm64。它解决的核心问题是：在 Linux 上刻的盘，Windows 要能直接读。镜像同时写 ISO 9660、Joliet 与 UDF Bridge（见 `docs/WINDOWS-COMPAT.md`）。
 
-三个命令：
+四个命令：
 
 - `optiburn build-image <目录> -o out.iso --profile dvd`：把目录做成镜像，
   `--profile` 取 `cd`/`dvd`/`bd`，决定写哪些文件系统。
-- `optiburn burn out.iso --device /dev/sr0`：把镜像写到盘上（v0 通过 xorriso 子进程）。
+- `optiburn burn out.iso --device /dev/sr0`：把镜像写到盘上（通过 xorriso 子进程）。
+  默认多区段不封盘，`--close-disc` 才封盘。
+- `optiburn append <目录> --device /dev/sr0`：把目录追加到盘上（xorriso 增长模式），
+  与已有区段合并，旧文件保持可见；空盘时等价于首刻。
 - `optiburn probe`：列出光驱与盘片状态（设备枚举只有 Linux 实现，其它平台一律报“未发现光驱”，退 0）。
+
+刻录前置检查自动处理介质状态：等盘片就绪（20 秒内重试），已封口的盘拒绝，可追加盘
+拒绝走镜像路径并提示用 `append`（独立镜像会遮住已有区段的文件）。
 
 现状与边界：镜像层已实测（测试里用 xorriso 回读并逐字节比对，含中文文件名）。
 刻录依赖 `xorriso`。probe 的设备枚举只在 Linux 实现，其它平台报“未发现光驱”，
