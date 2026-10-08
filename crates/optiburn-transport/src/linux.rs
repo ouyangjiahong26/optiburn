@@ -55,7 +55,7 @@ impl LinuxSg {
     /// 以读写方式打开设备节点。`ENOENT` 映射为 [`TransportError::NotFound`]。
     ///
     /// 必须带 `O_NONBLOCK`：内核在非阻塞打开光驱块设备时会同步做介质检查，空白盘在
-    /// 写打开路径会被判成只读设备（`EROFS`）。`SG_IO` 走 ioctl，不受这个标志影响；
+    /// 写打开路径会被判成只读设备（`EROFS`）。`SG_IO` 走 ioctl，不受这个标志影响。
     /// cdrecord 等同类工具也以非阻塞方式打开。
     pub fn open(device: &str) -> Result<Self, TransportError> {
         use std::os::unix::fs::OpenOptionsExt;
