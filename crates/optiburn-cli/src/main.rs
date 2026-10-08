@@ -2,13 +2,11 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use optiburn_engine::{BurnEngine, BurnJob, GrowJob, XorrisoEngine, grow};
+use optiburn_engine::{BurnEngine, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow};
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
-use optiburn_mmc::{DiscStatus, MmcDevice};
+use optiburn_mmc::{DiscStatus, MmcDevice, MmcError, WriteBlock};
 
 #[derive(Parser)]
 #[command(
@@ -171,7 +169,8 @@ fn burn_command(
     };
 
     let mut progress = |fraction: f32| eprint!("\r{:>5.1}%", fraction * 100.0);
-    let result = XorrisoEngine.burn(&job, &mut progress);
+    // CLI 不提供取消入口，传一个永不置位的默认令牌。
+    let result = XorrisoEngine.burn(&job, &mut progress, &CancelToken::default());
     eprintln!();
     result.map_err(|e| e.to_string())
 }
@@ -194,7 +193,7 @@ fn append_command(
 
     println!("追加 {} 到 {}。", src.display(), device);
     let mut progress = |fraction: f32| eprint!("\r{:>5.1}%", fraction * 100.0);
-    let result = grow(&job, &mut progress);
+    let result = grow(&job, &mut progress, &CancelToken::default());
     eprintln!();
     result.map_err(|e| e.to_string())
 }
@@ -207,46 +206,29 @@ fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> 
     let transport =
         optiburn_transport::open(device).map_err(|e| format!("打开 {device} 失败：{e}"))?;
     let mut mmc = MmcDevice::new(transport);
-    wait_until_ready(&mut mmc)?;
+    optiburn_mmc::wait_until_ready(&mut mmc).map_err(|e| match e {
+        MmcError::NotReady => "盘未就绪：请确认已放入可写盘片且仓门已关闭。".to_string(),
+        // 传输层故障等其它错误不该被“未就绪”文案吞掉。
+        other => format!("等待盘片就绪失败：{other}"),
+    })?;
     let info = mmc
         .read_disc_information()
         .map_err(|e| format!("读取盘片信息失败：{e}"))?;
     // 查完立刻释放句柄：刻录引擎随后要以独占方式打开设备。
     drop(mmc);
 
-    match info.status {
-        DiscStatus::Empty => Ok(()),
-        DiscStatus::Appendable if accept_appendable => {
-            println!("盘上已有 {} 个区段，将追加新区段。", info.sessions);
-            Ok(())
-        }
-        DiscStatus::Appendable => Err(
+    optiburn_mmc::approve_write(&info, accept_appendable).map_err(|e| match e {
+        WriteBlock::NeedGrowMode => {
             "盘上已有数据区段：以镜像方式追加会把已有文件遮住。请改用 optiburn append <目录>。"
-                .to_string(),
-        ),
-        DiscStatus::Finalized => Err("盘已封口，无法再写入，请更换盘片。".to_string()),
-        // 状态位 0b11 是 MMC 定义的“随机可写”（DVD-RAM、BD-RE 等），xorriso 可直接写，
-        // 不存在多区段遮蔽问题。
-        DiscStatus::Other(_) => Ok(()),
-    }
-}
-
-/// 等介质就绪：盘片上电与识别要几秒，这期间 TEST UNIT READY 报错。
-///
-/// 20 秒内每 500 ms 重试一次，超时才把决定权交还给人。
-fn wait_until_ready(mmc: &mut MmcDevice) -> Result<(), String> {
-    const DEADLINE: Duration = Duration::from_secs(20);
-    const INTERVAL: Duration = Duration::from_millis(500);
-    let start = Instant::now();
-    loop {
-        if mmc.test_unit_ready().is_ok() {
-            return Ok(());
+                .to_string()
         }
-        if start.elapsed() >= DEADLINE {
-            return Err("盘未就绪：请确认已放入可写盘片且仓门已关闭。".to_string());
-        }
-        sleep(INTERVAL);
+        WriteBlock::Finalized => "盘已封口，无法再写入，请更换盘片。".to_string(),
+    })?;
+    // 门禁放行后，可追加盘只剩追加路径，把区段数报给用户留个底。
+    if info.status == DiscStatus::Appendable {
+        println!("盘上已有 {} 个区段，将追加新区段。", info.sessions);
     }
+    Ok(())
 }
 
 /// 无 `-o` 时把源目录名当作镜像名，输出到当前目录。

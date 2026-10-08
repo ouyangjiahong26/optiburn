@@ -5,6 +5,8 @@
 //! 接缝上，不需要空壳占位。
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod xorriso;
 
@@ -48,8 +50,30 @@ pub enum BurnError {
     MissingTool(String),
     #[error("burn failed: {0}")]
     Failed(String),
+    #[error("burn cancelled")]
+    Cancelled,
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// 协作式取消令牌：取消方置位，引擎在进度循环里检查并停掉子进程。
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 置位取消。Relaxed 就够：这一位只承载“要不要停”，晚一行输出被看到
+    /// 无妨，也不需要与其它内存访问建立先后关系。
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 /// 一种把镜像写到盘上的方式。
@@ -57,6 +81,13 @@ pub trait BurnEngine {
     /// 引擎名，用于 CLI 的 `--engine` 取值与日志。
     fn name(&self) -> &'static str;
 
-    /// 执行刻录。`progress` 收到 0.0–1.0 的进度回调。
-    fn burn(&self, job: &BurnJob, progress: &mut dyn FnMut(f32)) -> Result<(), BurnError>;
+    /// 执行刻录。`progress` 收到 0.0–1.0 的进度回调；`cancel` 在进度循环里被
+    /// 检查，置位后子进程被停掉并返回 `BurnError::Cancelled`，除非子进程已自然
+    /// 写完退出——那时盘已写完，迟到取消不算数。
+    fn burn(
+        &self,
+        job: &BurnJob,
+        progress: &mut dyn FnMut(f32),
+        cancel: &CancelToken,
+    ) -> Result<(), BurnError>;
 }

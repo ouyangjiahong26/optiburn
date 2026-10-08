@@ -97,7 +97,8 @@ pub fn open(_device: &str) -> Result<Box<dyn ScsiTransport>, TransportError> {
 
 /// 枚举本机的光驱设备路径，按名字排序，路径可直接交给 [`open`]。
 ///
-/// v0 只有 Linux 能枚举（`/dev/sr*`）。其它平台返回空列表，上层按“未发现光驱”处理。
+/// Linux 枚举 `/dev/sr*` 设备节点，Windows 枚举盘符位掩码里类型为光驱的盘符；
+/// 其它平台返回空列表，上层按“未发现光驱”处理。
 /// 枚举与 [`open`] 一样按平台收在本 crate，调用方不需要平台分支。
 #[cfg(target_os = "linux")]
 pub fn list_optical_devices() -> Vec<String> {
@@ -106,9 +107,19 @@ pub fn list_optical_devices() -> Vec<String> {
 
 /// 枚举本机的光驱设备路径，按名字排序，路径可直接交给 [`open`]。
 ///
-/// v0 只有 Linux 能枚举（`/dev/sr*`）。其它平台返回空列表，上层按“未发现光驱”处理。
+/// Windows 枚举盘符位掩码里 `GetDriveTypeW` 判为光驱的盘符；
+/// 其它平台返回空列表，上层按“未发现光驱”处理。
 /// 枚举与 [`open`] 一样按平台收在本 crate，调用方不需要平台分支。
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub fn list_optical_devices() -> Vec<String> {
+    windows::list_optical_devices()
+}
+
+/// 枚举本机的光驱设备路径，按名字排序，路径可直接交给 [`open`]。
+///
+/// 除 Linux 与 Windows 外的平台暂无枚举实现，返回空列表，上层按“未发现光驱”处理。
+/// 枚举与 [`open`] 一样按平台收在本 crate，调用方不需要平台分支。
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn list_optical_devices() -> Vec<String> {
     Vec::new()
 }
@@ -137,7 +148,17 @@ mod tests {
         for device in &devices {
             assert!(device.starts_with("/dev/sr"), "{device}");
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
+        for device in &devices {
+            // Windows 侧产出的是 `X:` 形式的盘符路径。
+            let bytes = device.as_bytes();
+            assert_eq!(bytes.len(), 2, "{device}");
+            assert!(
+                bytes[0].is_ascii_uppercase() && bytes[1] == b':',
+                "{device}"
+            );
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
         assert!(devices.is_empty());
     }
 }

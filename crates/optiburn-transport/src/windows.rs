@@ -12,7 +12,8 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW,
+    GetLogicalDrives, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
@@ -35,6 +36,9 @@ const ERROR_BAD_PATHNAME: u32 = 161;
 /// `winerror.h` 的错误码：设备不支持该 IOCTL。
 const ERROR_INVALID_FUNCTION: u32 = 1;
 const ERROR_NOT_SUPPORTED: u32 = 50;
+/// `winbase.h` 的 `DRIVE_CDROM`：`GetDriveTypeW` 判定介质为光驱。windows-sys 把它
+/// 放在未启用的 `Win32_System_WindowsProgramming` feature 里，故按头文件本地定义。
+const DRIVE_CDROM: u32 = 5;
 
 /// `ntddscsi.h` 的 `_SCSI_PASS_THROUGH_DIRECT`。
 #[repr(C)]
@@ -244,6 +248,33 @@ fn map_io_error() -> TransportError {
     }
 }
 
+/// 枚举光驱盘符：从 [`GetLogicalDrives`] 的位掩码里挑出
+/// [`GetDriveTypeW`] 判为 `DRIVE_CDROM` 的盘符，产出升序的 `X:` 形式路径。
+pub(crate) fn list_optical_devices() -> Vec<String> {
+    // 位掩码第 i 位代表盘符 `A + i` 是否存在；函数失败返回 0，按“无任何盘符”处理。
+    let bitmask = unsafe { GetLogicalDrives() };
+    device_letters(bitmask)
+        .into_iter()
+        // 只有 `GetDriveTypeW` 判为 `DRIVE_CDROM` 的才是光驱；硬盘、U 盘、网络盘一律排除。
+        .filter(|letter| unsafe { GetDriveTypeW(drive_wide(letter).as_ptr()) } == DRIVE_CDROM)
+        .collect()
+}
+
+/// 位掩码第 i 位对应盘符 `A + i`（第 0 位是 `A:`），按 A 到 Z 升序产出 `X:` 形式。
+fn device_letters(bitmask: u32) -> Vec<String> {
+    (0..26)
+        .filter(|&i| bitmask & (1 << i) != 0)
+        .map(|i| format!("{}:", (b'A' + i as u8) as char))
+        .collect()
+}
+
+/// 把 `device_letters` 产出的 `X:` 拼成 `GetDriveTypeW` 要求的根路径形式
+/// `X:\` 的 UTF-16 编码（字母、`:`、`\`、NUL）。
+fn drive_wide(letter: &str) -> [u16; 4] {
+    let bytes = letter.as_bytes();
+    [u16::from(bytes[0]), u16::from(b':'), u16::from(b'\\'), 0]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +290,26 @@ mod tests {
         assert_eq!(device_name("E:"), r"\\.\E:");
         assert_eq!(device_name(r"\\.\E:"), r"\\.\E:");
         assert_eq!(device_name("/nonexistent"), "/nonexistent");
+    }
+
+    #[test]
+    fn device_letters_maps_bits_to_ascending_letters() {
+        assert!(device_letters(0).is_empty());
+        assert_eq!(device_letters(1 << 4), ["E:"]);
+        let all = device_letters(u32::MAX);
+        assert_eq!(all.len(), 26);
+        assert_eq!(all.first().map(String::as_str), Some("A:"));
+        assert_eq!(all.last().map(String::as_str), Some("Z:"));
+        let mut sorted = all.clone();
+        sorted.sort();
+        assert_eq!(all, sorted);
+    }
+
+    #[test]
+    fn drive_wide_builds_root_path_utf16() {
+        assert_eq!(
+            drive_wide("E:"),
+            [b'E' as u16, b':' as u16, b'\\' as u16, 0]
+        );
     }
 }
