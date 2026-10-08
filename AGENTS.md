@@ -21,8 +21,9 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
   （hadris 写完卷描述符会回读打补丁，只写句柄会 `EBADF`）。
 - `optiburn-engine`：`BurnEngine` trait + `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。
   原生 MMC 引擎将接在同一个 trait 上。
-- `optiburn-cli`：`optiburn build-image | burn | probe`。二进制名是 `optiburn`
-  （`[[bin]] name`），不是 `optiburn-cli`。
+- `optiburn-cli`：`optiburn build-image | burn | append | probe`。二进制名是 `optiburn`
+  （`[[bin]] name`），不是 `optiburn-cli`。`burn` 默认多区段不封盘，追加刻录走
+  `append`（xorriso 增长模式，ADR-0006）。
 
 ## Development Commands
 

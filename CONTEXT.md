@@ -9,7 +9,8 @@
 | 镜像（Image） | 一份按扇区排列的完整光盘映像文件（`.iso`）。对应 `ImageSpec`、`ImageInfo`、`build_image`。 | ISO 文件、光盘文件、映象 |
 | 母盘制作（Mastering） | 把目录树组织成镜像的过程：目录结构连同文件数据写成 ISO 9660/Joliet/UDF 元数据齐备的镜像。对应 crate `optiburn-mastering`。 | 打包、构建镜像、制作镜像 |
 | 区段（Session） | 一次写入操作在盘上形成的完整 lead-in/数据/lead-out 单位。多区段盘上 Windows 只挂载最后一个区段。 | 会话、分节 |
-| 盘片状态（DiscStatus） | `READ DISC INFORMATION` 报出的四种状态：空（Empty）、可追加（Appendable）、已封口（Finalized）、其它（Other）。对应枚举 `DiscStatus`。 | 盘状态、光盘状态、媒体状态 |
+| 增长模式（Grow） | 追加刻录的方式：引擎读出盘上已有区段的目录树，把源目录内容并入后作为新区段提交，旧文件保持可见。对应 `GrowJob`、`optiburn_engine::grow`、CLI 的 `append`。 | 续刻、增量刻录、追加镜像 |
+| 盘片状态（DiscStatus） | `READ DISC INFORMATION` 报出的四种状态：空（Empty）、可追加（Appendable）、已封口（Finalized）、随机可写（Other，状态位 0b11，例如 DVD-RAM、BD-RE）。对应枚举 `DiscStatus`。 | 盘状态、光盘状态、媒体状态 |
 | 封口（Finalize） | 写 lead-out 并让盘片状态变为已封口，之后（对 CD-R/DVD-R）不能再追加。 | 关闭、终结、close |
 | TAO（Track At Once） | 逐轨写入，轨间留链接块。适合多区段追加。 | 轨道写入 |
 | DAO（Disc At Once） | 一次性写完整个盘的写入模式，无轨间间隙，CD 音频母盘常用。 | 整盘写入 |
