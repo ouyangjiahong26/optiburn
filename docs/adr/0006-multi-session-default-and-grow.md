@@ -22,7 +22,8 @@ CD-R/DVD-R 写完就封口的话，盘不能再加内容。用户要求默认不
    首刻与追加。`-map <目录> /` 把目录内容映射到盘根，与 `build-image` 的语义一致。
    结束盘的生命周期用 `append --close-disc`，提交前加 `-close on` 把盘标记为不可
    追加。`burn --close-disc` 只对空盘有意义，因为可追加盘走镜像路径已被前置检查
-   拒绝。
+   拒绝。`-close on` 对随机可写介质不生效（xorriso 手册明示），这类盘无需封盘即可
+   覆写。
 3. `burn` 与 `append` 共用前置检查（CLI 的 `ensure_burnable`）：先按 `TEST UNIT
    READY` 等介质就绪（20 秒内每 500 ms 重试），再按 `READ DISC INFORMATION` 路由：
    空盘放行，已封口拒绝，可追加盘拒绝走镜像路径并提示改用 `append`（防止上面的

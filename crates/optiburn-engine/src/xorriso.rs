@@ -35,7 +35,8 @@ impl BurnEngine for XorrisoEngine {
 /// `-dev` 会读出盘上已有区段的目录树，提交时新区段同时携带新旧文件，Windows 等
 /// 默认挂载最后一区段的系统仍能看到全部内容。空盘时它直接写第一区段，因此
 /// `append` 不必区分首刻与追加。`close_disc` 在提交前加 `-close on`，写完把盘
-/// 标记为不可追加，这是默认多区段策略下唯一的封盘出口。
+/// 标记为不可追加，这是默认多区段策略下唯一的封盘出口。xorriso 手册明示 `-close`
+/// 对 DVD-RAM、BD-RE 这类可覆写介质不生效，这类盘无需封盘即可继续覆写。
 pub fn grow(job: &GrowJob, progress: &mut dyn FnMut(f32)) -> Result<(), BurnError> {
     run(XORRISO, &grow_args(job), progress)
 }
