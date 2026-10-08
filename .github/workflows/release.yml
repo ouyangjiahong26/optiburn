@@ -143,12 +143,17 @@ jobs:
       # AppImage 与 deb 打包走 tauri CLI：先编前端（beforeBuildCommand），再编译 src-tauri 并出两种包。
       - name: 构建 AppImage 与 deb
         run: npm --prefix frontend exec -- tauri build --target ${{ matrix.target }} --bundles appimage,deb
+      # 两个 glob 分属 appimage/ 与 deb/，upload-artifact 按最小公共祖先保留相对路径，
+      # 会带出子目录；release job 的 dist/* 与 sha256sum 只吃顶层文件，先拍平再传。
+      - name: Stage bundles
+        run: |
+          mkdir -p bundles
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage bundles/
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb bundles/
       - uses: actions/upload-artifact@v7
         with:
           name: optiburn-gui-linux-${{ matrix.arch }}
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
-            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          path: bundles/*
           if-no-files-found: error
 
   release:
