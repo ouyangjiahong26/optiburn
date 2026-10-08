@@ -1,6 +1,6 @@
 name: CI
 
-# 不加 paths-ignore/paths 过滤：lint/test/cross-check 是 main 的 required checks，
+# 不加 paths-ignore/paths 过滤：lint/test/cross-check/gui 是 main 的 required checks，
 # workflow 被路径过滤跳过时 check 永不出现，文档类 PR 会被永久 pending 阻塞。
 on:
   push:

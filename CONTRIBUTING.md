@@ -17,9 +17,14 @@ for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
          x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
   cargo check --workspace --all-targets --target "$t"
 done
+npm ci --prefix frontend
+npm run build --prefix frontend
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 
-CI 就跑这些（`lint` / `test` / `cross-check` 三个 job），本地全绿再推送。
+CI 就跑这些（`lint` / `test` / `cross-check` / `gui` 四个 job），本地全绿再推送。
 
 ## 代码约定
 
@@ -50,8 +55,8 @@ CI 就跑这些（`lint` / `test` / `cross-check` 三个 job），本地全绿�
 - 标题格式：`[意图标签] 一句话说明`，标签取 `[FEAT]`/`[FIX]`/`[DOC]`/`[TEST]`/
   `[CLEANUP]`/`[DEP]`/`[TASK]`。
 - 议题标题另有一套词汇：`[BUG]`/`[FEAT]`（议题模板已预填），与 PR 的意图标签不通用。
-- 走 PR、不直推 `main`：`main` 有分支保护，要求 `lint`/`test`/`cross-check` 三个检查
-  通过。
+- 走 PR、不直推 `main`：`main` 有分支保护，要求 `lint`/`test`/`cross-check`/`gui` 四个
+  检查通过。
 
 ### 正文写作约定
 
