@@ -66,9 +66,48 @@ jobs:
           path: optiburn-${{ matrix.target }}.zip
           if-no-files-found: error
 
+  build-gui-windows:
+    name: 构建 Windows GUI 安装包 (${{ matrix.arch }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          workspaces: src-tauri -> target
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      # NSIS 打包走 tauri CLI：先编前端，再编译 src-tauri 并出安装包。
+      - name: 构建 NSIS 安装包
+        run: npm --prefix frontend exec -- tauri build --target ${{ matrix.target }} --bundles nsis
+      - uses: actions/upload-artifact@v7
+        with:
+          name: optiburn-gui-windows-${{ matrix.arch }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
   release:
     name: 发布
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-gui-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write

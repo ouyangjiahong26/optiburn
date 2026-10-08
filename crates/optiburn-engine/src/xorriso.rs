@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
-use crate::{BurnEngine, BurnError, BurnJob, GrowJob};
+use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob};
 
 /// 依赖的可执行文件名。
 const XORRISO: &str = "xorriso";
@@ -25,8 +25,13 @@ impl BurnEngine for XorrisoEngine {
         "xorriso"
     }
 
-    fn burn(&self, job: &BurnJob, progress: &mut dyn FnMut(f32)) -> Result<(), BurnError> {
-        run(XORRISO, &cdrecord_args(job), progress)
+    fn burn(
+        &self,
+        job: &BurnJob,
+        progress: &mut dyn FnMut(f32),
+        cancel: &CancelToken,
+    ) -> Result<(), BurnError> {
+        run(XORRISO, &cdrecord_args(job), progress, cancel)
     }
 }
 
@@ -37,8 +42,12 @@ impl BurnEngine for XorrisoEngine {
 /// `append` 不必区分首刻与追加。`close_disc` 在提交前加 `-close on`，写完把盘
 /// 标记为不可追加，这是默认多区段策略下唯一的封盘出口。xorriso 手册明示 `-close`
 /// 对 DVD-RAM、BD-RE 这类可覆写介质不生效，这类盘无需封盘即可继续覆写。
-pub fn grow(job: &GrowJob, progress: &mut dyn FnMut(f32)) -> Result<(), BurnError> {
-    run(XORRISO, &grow_args(job), progress)
+pub fn grow(
+    job: &GrowJob,
+    progress: &mut dyn FnMut(f32),
+    cancel: &CancelToken,
+) -> Result<(), BurnError> {
+    run(XORRISO, &grow_args(job), progress, cancel)
 }
 
 /// 组装增长模式参数表。
@@ -71,9 +80,18 @@ fn grow_args(job: &GrowJob) -> Vec<OsString> {
 
 /// 跑一个写盘子进程，把 stderr 上的百分比转成进度，并在退出码非零时报错。
 ///
+/// 取消是协作式的：令牌只能在读到一行 stderr 的间隙里被检查，置位就杀掉子进程
+/// 并返回 [`BurnError::Cancelled`]。子进程已自然写完退出时，迟到的取消不再起
+/// 作用——盘已写完，仍按成功返回。
+///
 /// 单独抽出来是为了能用本地 shell 脚本当替身测试：`xorriso` 的参数由调用方给，
-/// 这里只管进程、进度与失败摘要。
-fn run(program: &str, args: &[OsString], progress: &mut dyn FnMut(f32)) -> Result<(), BurnError> {
+/// 这里只管进程、进度、取消与失败摘要。
+fn run(
+    program: &str,
+    args: &[OsString],
+    progress: &mut dyn FnMut(f32),
+    cancel: &CancelToken,
+) -> Result<(), BurnError> {
     let mut child = Command::new(program)
         .args(args)
         .stdout(Stdio::null())
@@ -101,6 +119,12 @@ fn run(program: &str, args: &[OsString], progress: &mut dyn FnMut(f32)) -> Resul
             tail.pop_front();
         }
         tail.push_back(line);
+        if cancel.is_cancelled() {
+            // 先杀再收尸，避免留下僵尸进程；退出码反正是 Cancelled，无须再看。
+            child.kill()?;
+            child.wait()?;
+            return Err(BurnError::Cancelled);
+        }
     }
 
     let status = child.wait()?;
@@ -162,6 +186,9 @@ fn c_len(s: &str) -> usize {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    // Duration 与 Instant 只有取消测试（unix）在用，Windows 目标上不能出现死导入。
+    #[cfg(unix)]
+    use std::time::{Duration, Instant};
 
     fn job(speed: Option<u32>, multi: bool) -> BurnJob {
         BurnJob {
@@ -335,8 +362,13 @@ mod tests {
 
     #[test]
     fn missing_binary_is_a_missing_tool_error() {
-        let err = run("optiburn-nonexistent-program", &[], &mut |_| {})
-            .expect_err("spawning a nonexistent program must fail");
+        let err = run(
+            "optiburn-nonexistent-program",
+            &[],
+            &mut |_| {},
+            &CancelToken::default(),
+        )
+        .expect_err("spawning a nonexistent program must fail");
         assert!(
             matches!(&err, BurnError::MissingTool(name) if name.starts_with("optiburn-nonexistent-program")),
             "{err:?}"
@@ -354,6 +386,7 @@ mod tests {
                 "printf 'Track 01: 25%% done\\n' >&2; printf '[buf 97%%]\\n' >&2",
             ]),
             &mut |f| seen.push(f),
+            &CancelToken::default(),
         )
         .expect("script exits 0");
 
@@ -373,6 +406,7 @@ mod tests {
                 "printf 'xorriso : FAILURE : drive is busy\\n' >&2; exit 1",
             ]),
             &mut |_| {},
+            &CancelToken::default(),
         )
         .expect_err("script exits 1");
         assert!(
@@ -396,8 +430,41 @@ mod tests {
                     multi: false,
                 },
                 &mut |f| last = f,
+                &CancelToken::default(),
             )
             .expect("burn failed");
         assert!((last - 1.0).abs() < 1e-6);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_stops_the_subprocess() {
+        let token = CancelToken::default();
+        let mut count = 0u32;
+        let start = Instant::now();
+        let result = run(
+            "sh",
+            // 全长约 5 秒的假刻录：每 50 ms 打一行百分比。
+            &os(&[
+                "-c",
+                "for i in $(seq 1 100); do echo \"${i}% done\" >&2; sleep 0.05; done",
+            ]),
+            &mut |_| {
+                count += 1;
+                if count == 3 {
+                    token.cancel();
+                }
+            },
+            &token,
+        );
+        let elapsed = start.elapsed();
+
+        assert!(matches!(result, Err(BurnError::Cancelled)), "{result:?}");
+        assert!(
+            count >= 3,
+            "cancel must land after the progress it reacts to"
+        );
+        // 取消生效必须把 5 秒的脚本砍在两秒以内，证明子进程确实被停掉了。
+        assert!(elapsed < Duration::from_secs(2), "elapsed {elapsed:?}");
     }
 }

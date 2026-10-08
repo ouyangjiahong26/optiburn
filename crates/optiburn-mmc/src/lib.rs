@@ -4,7 +4,8 @@
 //! 机器上用替身完整测试。v0 只有读侧命令。写侧（RESERVE TRACK / WRITE(10) /
 //! CLOSE TRACK）留给路线图里的原生 MMC 引擎，不在本 crate 留空壳。
 
-use std::time::Duration;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use optiburn_transport::{Direction, ScsiTransport, TransportError};
 
@@ -22,6 +23,8 @@ pub enum MmcError {
     Transport(#[from] TransportError),
     #[error("device returned {got} bytes, need {need}")]
     ShortResponse { got: usize, need: usize },
+    #[error("device not ready within timeout")]
+    NotReady,
 }
 
 /// 设备的 INQUIRY 标识字段。尾部填充的空格与 NUL 已去掉。
@@ -137,6 +140,51 @@ impl MmcDevice {
     }
 }
 
+/// 等介质就绪：盘片上电与识别要几秒，这期间 TEST UNIT READY 报错。
+/// 20 秒内每 500 ms 重试一次，超时报 [`MmcError::NotReady`]，把决定权交还给人。
+pub fn wait_until_ready(mmc: &mut MmcDevice) -> Result<(), MmcError> {
+    poll_until_ready(mmc, Duration::from_secs(20), Duration::from_millis(500))
+}
+
+/// 按 deadline 与 interval 轮询就绪。公开入口只填真实硬件的两个常量，
+/// 测试才能用毫秒级参数走同一条路径，不必为假设备等真秒数。
+fn poll_until_ready(
+    mmc: &mut MmcDevice,
+    deadline: Duration,
+    interval: Duration,
+) -> Result<(), MmcError> {
+    let start = Instant::now();
+    loop {
+        if mmc.test_unit_ready().is_ok() {
+            return Ok(());
+        }
+        if start.elapsed() >= deadline {
+            return Err(MmcError::NotReady);
+        }
+        sleep(interval);
+    }
+}
+
+/// 写盘被拒绝的原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum WriteBlock {
+    #[error("appendable disc requires grow mode")]
+    NeedGrowMode,
+    #[error("disc is finalized")]
+    Finalized,
+}
+
+/// 写前门禁：可追加盘不接受镜像写入（单区段镜像不带前面区段的目录树，会遮住
+/// 已有文件），已封口盘一律拒绝；空盘与随机可写（Other，无多区段遮蔽问题）放行。
+/// `accept_appendable` 只留给走增长模式的追加路径。
+pub fn approve_write(info: &DiscInformation, accept_appendable: bool) -> Result<(), WriteBlock> {
+    match info.status {
+        DiscStatus::Appendable if !accept_appendable => Err(WriteBlock::NeedGrowMode),
+        DiscStatus::Finalized => Err(WriteBlock::Finalized),
+        _ => Ok(()),
+    }
+}
+
 /// 把 ASCII 字段解码成字符串，去掉尾部的空格与 NUL 填充。
 fn decode_ascii(bytes: &[u8]) -> String {
     let end = bytes
@@ -149,6 +197,7 @@ fn decode_ascii(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -294,5 +343,88 @@ mod tests {
         assert_eq!(decode_ascii(b"FAKE DRIVE      "), "FAKE DRIVE");
         assert_eq!(decode_ascii(b"1.0 \0\0"), "1.0");
         assert_eq!(decode_ascii(b"        "), "");
+    }
+
+    /// TEST UNIT READY（CDB 首字节 0x00）先报固定次数的“命令失败”，之后放行；
+    /// 其余命令一律成功。模拟盘片上电识别期。
+    struct FlakyReadyTransport {
+        failures_left: Rc<Cell<u32>>,
+    }
+
+    impl ScsiTransport for FlakyReadyTransport {
+        fn issue(
+            &mut self,
+            cdb: &[u8],
+            _dir: Direction,
+            _data: &mut [u8],
+            _timeout: Duration,
+        ) -> Result<optiburn_transport::Completion, TransportError> {
+            if cdb[0] == 0x00 && self.failures_left.get() > 0 {
+                self.failures_left.set(self.failures_left.get() - 1);
+                // CHECK CONDITION 的典型形态：状态 2，sense 里带“未就绪”（2/04）。
+                return Err(TransportError::CommandFailed {
+                    cdb: cdb.to_vec(),
+                    scsi_status: 2,
+                    sense: vec![0x70, 0x00, 0x02, 0x04],
+                });
+            }
+            Ok(optiburn_transport::Completion {
+                scsi_status: 0,
+                sense: Vec::new(),
+                residual: 0,
+            })
+        }
+
+        fn device_path(&self) -> &str {
+            "/dev/fake"
+        }
+    }
+
+    #[test]
+    fn approve_write_truth_table() {
+        let info = |status| DiscInformation {
+            status,
+            sessions: 3,
+            first_track: 1,
+        };
+        assert_eq!(approve_write(&info(DiscStatus::Empty), false), Ok(()));
+        assert_eq!(approve_write(&info(DiscStatus::Appendable), true), Ok(()));
+        assert_eq!(
+            approve_write(&info(DiscStatus::Appendable), false),
+            Err(WriteBlock::NeedGrowMode)
+        );
+        assert_eq!(
+            approve_write(&info(DiscStatus::Finalized), true),
+            Err(WriteBlock::Finalized)
+        );
+        assert_eq!(approve_write(&info(DiscStatus::Other(3)), false), Ok(()));
+    }
+
+    #[test]
+    fn poll_until_ready_retries_until_the_device_answers() {
+        let failures = Rc::new(Cell::new(2));
+        let mut dev = MmcDevice::new(Box::new(FlakyReadyTransport {
+            failures_left: Rc::clone(&failures),
+        }));
+
+        poll_until_ready(&mut dev, Duration::from_secs(1), Duration::from_millis(10))
+            .expect("device must become ready");
+        assert_eq!(failures.get(), 0, "both injected failures must be retried");
+    }
+
+    #[test]
+    fn poll_until_ready_times_out_when_the_device_never_readies() {
+        let mut dev = MmcDevice::new(Box::new(FlakyReadyTransport {
+            failures_left: Rc::new(Cell::new(u32::MAX)),
+        }));
+
+        assert!(matches!(
+            poll_until_ready(
+                &mut dev,
+                Duration::from_millis(30),
+                Duration::from_millis(10)
+            ),
+            Err(MmcError::NotReady)
+        ));
     }
 }

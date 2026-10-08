@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### FEAT
+
+- **图形前端（Tauri 2 + React）**：新增 `src-tauri/`（Tauri 2 命令层，包 `optiburn-gui`）与
+  `frontend/`（React 19 + Vite + TS），与 CLI 平级覆盖四个子命令（`probe`、`build-image`、
+  `burn`、`append`），对应设备、制作镜像、刻录、追加四个页面。任务运行中锁定界面并显示
+  进度，刻录类任务可中止，任务未结束时关窗需要确认。
+  Windows 发 NSIS 安装包（x64 与 arm64）。核心 crate 同步增强：`optiburn-mmc` 下沉就绪
+  等待与写入门禁（`wait_until_ready`、`approve_write`），`optiburn-engine` 新增协作式
+  取消令牌（`CancelToken`、`BurnError::Cancelled`），`optiburn-transport` 补齐 Windows
+  光驱枚举。决策见 ADR-0008。
+
 ## [0.1.0] - 2026-10-08
 
 **中文**
