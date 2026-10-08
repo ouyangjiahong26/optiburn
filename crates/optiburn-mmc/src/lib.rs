@@ -41,7 +41,7 @@ pub enum DiscStatus {
     Appendable,
     /// 已封口。
     Finalized,
-    /// 其它状态（例如 DVD-RAM 的 `others`）。
+    /// 随机可写介质（MMC 状态位 0b11，例如 DVD-RAM、BD-RE）。
     Other(u8),
 }
 

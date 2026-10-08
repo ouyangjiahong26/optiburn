@@ -67,6 +67,9 @@ enum Command {
         /// 写入倍速，缺省交给驱动器自选
         #[arg(long)]
         speed: Option<u32>,
+        /// 写完封盘。默认保持可追加
+        #[arg(long)]
+        close_disc: bool,
     },
     /// 列出光驱与其中的盘片状态
     Probe,
@@ -110,7 +113,8 @@ fn main() -> ExitCode {
             device,
             volume_id,
             speed,
-        } => append_command(&src, &device, &volume_id, speed),
+            close_disc,
+        } => append_command(&src, &device, &volume_id, speed, close_disc),
         Command::Probe => probe_command(),
     };
 
@@ -177,6 +181,7 @@ fn append_command(
     device: &str,
     volume_id: &str,
     speed: Option<u32>,
+    close_disc: bool,
 ) -> Result<(), String> {
     ensure_burnable(device, true)?;
     let job = GrowJob {
@@ -184,6 +189,7 @@ fn append_command(
         device: device.to_string(),
         speed,
         volume_id: volume_id.to_string(),
+        close_disc,
     };
 
     println!("追加 {} 到 {}。", src.display(), device);
@@ -196,7 +202,7 @@ fn append_command(
 /// 刻录前把盘片状态查清楚：等就绪、按状态放行或拒绝。
 ///
 /// 镜像路径（`accept_appendable = false`）不接受可追加盘：单区段镜像不带前面
-/// 区段的目录树，写下去会把旧文件遮住；追加必须走 `append` 的增长模式。
+/// 区段的目录树，写下去会把旧文件遮住。追加必须走 `append` 的增长模式。
 fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> {
     let transport =
         optiburn_transport::open(device).map_err(|e| format!("打开 {device} 失败：{e}"))?;
@@ -219,13 +225,15 @@ fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> 
                 .to_string(),
         ),
         DiscStatus::Finalized => Err("盘已封口，无法再写入，请更换盘片。".to_string()),
-        DiscStatus::Other(bits) => Err(format!("盘片状态未知（状态位 {bits}），拒绝写入。")),
+        // 状态位 0b11 是 MMC 定义的“随机可写”（DVD-RAM、BD-RE 等），xorriso 可直接写，
+        // 不存在多区段遮蔽问题。
+        DiscStatus::Other(_) => Ok(()),
     }
 }
 
 /// 等介质就绪：盘片上电与识别要几秒，这期间 TEST UNIT READY 报错。
 ///
-/// 20 秒内每 500 ms 重试一次；超时才把决定权交还给人。
+/// 20 秒内每 500 ms 重试一次，超时才把决定权交还给人。
 fn wait_until_ready(mmc: &mut MmcDevice) -> Result<(), String> {
     const DEADLINE: Duration = Duration::from_secs(20);
     const INTERVAL: Duration = Duration::from_millis(500);
@@ -256,7 +264,7 @@ fn disc_status_text(status: DiscStatus) -> String {
         DiscStatus::Empty => "空盘".to_string(),
         DiscStatus::Appendable => "可追加".to_string(),
         DiscStatus::Finalized => "已封口".to_string(),
-        DiscStatus::Other(bits) => format!("其它（{bits}）"),
+        DiscStatus::Other(bits) => format!("随机可写（{bits}）"),
     }
 }
 

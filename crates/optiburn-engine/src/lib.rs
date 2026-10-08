@@ -38,6 +38,8 @@ pub struct GrowJob {
     pub speed: Option<u32>,
     /// 新区段的卷标。
     pub volume_id: String,
+    /// 提交后把盘标记为不可追加（封盘）。
+    pub close_disc: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

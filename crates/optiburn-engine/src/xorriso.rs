@@ -34,16 +34,17 @@ impl BurnEngine for XorrisoEngine {
 ///
 /// `-dev` 会读出盘上已有区段的目录树，提交时新区段同时携带新旧文件，Windows 等
 /// 默认挂载最后一区段的系统仍能看到全部内容。空盘时它直接写第一区段，因此
-/// `append` 不必区分首刻与追加。
+/// `append` 不必区分首刻与追加。`close_disc` 在提交前加 `-close on`，写完把盘
+/// 标记为不可追加，这是默认多区段策略下唯一的封盘出口。
 pub fn grow(job: &GrowJob, progress: &mut dyn FnMut(f32)) -> Result<(), BurnError> {
     run(XORRISO, &grow_args(job), progress)
 }
 
 /// 组装增长模式参数表。
 ///
-/// `-map 源目录 /` 把目录内容映射到盘根，与 `build-image` 的语义一致；不带
-/// `-eject`，写完保留盘在仓内供回读校验。增长模式的写进度走 stdout 的 I 通道，
-/// `run` 只收 stderr，所以进度只剩成功时的 1.0。
+/// `-map 源目录 /` 把目录内容映射到盘根，与 `build-image` 的语义一致。不带
+/// `-eject`，写完保留盘在仓内供回读校验。增长模式的写进度同样以行内百分比出现在
+/// stderr（实测是粗粒度输出），复用同一解析。
 fn grow_args(job: &GrowJob) -> Vec<OsString> {
     let mut args = vec![OsString::from("-dev"), OsString::from(&job.device)];
     if let Some(speed) = job.speed {
@@ -59,8 +60,11 @@ fn grow_args(job: &GrowJob) -> Vec<OsString> {
         // 用 OsStr 而不是 `display()`：后者会把非 UTF-8 字节替换成 U+FFFD，写盘就会找错文件。
         job.src.as_os_str().to_os_string(),
         OsString::from("/"),
-        OsString::from("-commit"),
     ]);
+    if job.close_disc {
+        args.extend([OsString::from("-close"), OsString::from("on")]);
+    }
+    args.push(OsString::from("-commit"));
     args
 }
 
@@ -231,6 +235,7 @@ mod tests {
             device: "/dev/sr0".to_string(),
             speed: Some(8),
             volume_id: "OPTIBURN".to_string(),
+            close_disc: false,
         };
         assert_eq!(
             grow_args(&job),
@@ -258,8 +263,37 @@ mod tests {
             device: "/dev/sr0".to_string(),
             speed: None,
             volume_id: "OPTIBURN".to_string(),
+            close_disc: false,
         };
         assert!(!grow_args(&job).contains(&OsString::from("-speed")));
+    }
+
+    #[test]
+    fn grow_args_close_disc_marks_medium_not_appendable() {
+        let job = GrowJob {
+            src: PathBuf::from("/tmp/stage"),
+            device: "/dev/sr0".to_string(),
+            speed: None,
+            volume_id: "OPTIBURN".to_string(),
+            close_disc: true,
+        };
+        assert_eq!(
+            grow_args(&job),
+            os(&[
+                "-dev",
+                "/dev/sr0",
+                "-volid",
+                "OPTIBURN",
+                "-joliet",
+                "on",
+                "-map",
+                "/tmp/stage",
+                "/",
+                "-close",
+                "on",
+                "-commit"
+            ])
+        );
     }
 
     #[cfg(unix)]

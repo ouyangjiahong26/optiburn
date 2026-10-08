@@ -60,10 +60,12 @@ Bridge), `bd` (UDF 2.50). Without `-o` the image is written to
 optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
-Windows device names are drive letters: `--device E:`. `--multi` appends as a
-new session instead of closing the disc; read the multi-session notes in
-[docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) before using it, because
-Windows only mounts the last session. The only engine in v0 is `xorriso`
+Windows device names are drive letters: `--device E:`. By default the disc is
+left appendable (multi-session); pass `--close-disc` to finalize it. Use
+`optiburn append <directory> --device /dev/sr0` to append a directory as a
+merged new session, so files from earlier sessions stay visible. See
+[docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) for the multi-session notes.
+The only engine is `xorriso`
 (`--engine xorriso`, the default); other values fail with an explicit
 "not implemented" error rather than silently doing something else.
 
@@ -150,7 +152,7 @@ x86_64/arm64。它解决的核心问题是：在 Linux 上刻的盘，Windows �
 - `optiburn burn out.iso --device /dev/sr0`：把镜像写到盘上（通过 xorriso 子进程）。
   默认多区段不封盘，`--close-disc` 才封盘。
 - `optiburn append <目录> --device /dev/sr0`：把目录追加到盘上（xorriso 增长模式），
-  与已有区段合并，旧文件保持可见；空盘时等价于首刻。
+  与已有区段合并，旧文件保持可见。空盘时等价于首刻。
 - `optiburn probe`：列出光驱与盘片状态（设备枚举只有 Linux 实现，其它平台一律报“未发现光驱”，退 0）。
 
 刻录前置检查自动处理介质状态：等盘片就绪（20 秒内重试），已封口的盘拒绝，可追加盘

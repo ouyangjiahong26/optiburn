@@ -92,8 +92,8 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 ### optiburn-engine
 
 接口：镜像刻录 `BurnEngine::{name, burn}`（输入 `BurnJob`：镜像、设备、倍速、是否
-多区段），追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标），进度都通过
-`&mut dyn FnMut(f32)` 回调。
+多区段），追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘），
+进度都通过 `&mut dyn FnMut(f32)` 回调。
 
 隐藏：`xorriso -as cdrecord` 与增长模式（`-dev … -map <目录> / -commit`，见
 ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、stderr 上的百分比
