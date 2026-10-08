@@ -3,16 +3,19 @@
 [![CI](https://github.com/ouyangjiahong26/optiburn/actions/workflows/ci.yml/badge.svg)](https://github.com/ouyangjiahong26/optiburn/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/ouyangjiahong26/optiburn)](https://github.com/ouyangjiahong26/optiburn/blob/main/LICENSE)
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Cross-platform optical disc burning toolkit in Rust for Linux and Windows on
 x86_64 and arm64. It builds disc images that Windows can read (ISO 9660 + Joliet
 + UDF Bridge) and writes them to a drive.
 
-## What it does today (v0)
+## What it does today (0.1.0)
 
 | Command | State |
 |---|---|
 | `optiburn build-image` | Works: builds ISO 9660 + Joliet + UDF Bridge images. Verified against xorriso in tests. |
-| `optiburn burn` | Works on Linux through the `xorriso -as cdrecord` subprocess engine. |
+| `optiburn burn` | Works on Linux through the xorriso subprocess engine. Multi-session by default (the disc stays appendable); --close-disc finalizes. |
+| `optiburn append` | Works on Linux. Appends a directory as a merged session (grow mode), so files from earlier sessions stay visible. |
 | `optiburn probe` | Works on Linux (`/dev/sr*`). On other platforms it finds no devices and reports `未发现光驱` (exit 0), because device enumeration is Linux-only so far. |
 
 Native MMC writing (no external tools) is the next milestone, not part of v0.
@@ -61,13 +64,24 @@ optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
 Windows device names are drive letters: `--device E:`. By default the disc is
-left appendable (multi-session); pass `--close-disc` to finalize it. Use
-`optiburn append <directory> --device /dev/sr0` to append a directory as a
-merged new session, so files from earlier sessions stay visible. See
+left appendable (multi-session); pass `--close-disc` to finalize it. See
 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) for the multi-session notes.
 The only engine is `xorriso`
 (`--engine xorriso`, the default); other values fail with an explicit
 "not implemented" error rather than silently doing something else.
+
+### Append to a disc
+
+```bash
+optiburn append photos --device /dev/sr0 --volume-id PHOTOS
+```
+
+`append` appends the directory contents at the disc root as a merged new
+session: files from earlier sessions stay visible, and Windows (which mounts
+the last session) sees all of them. On a blank disc this is equivalent to
+the first burn. `--close-disc` finalizes after committing; on randomly
+writable media (DVD-RAM, BD-RE) it has no effect, and xorriso keeps the disc
+rewritable.
 
 ### Inspect a drive
 
@@ -104,13 +118,14 @@ CI installs it, so a skip there is a failure to notice.
 
 ## Roadmap
 
-- v0: image mastering, xorriso subprocess engine, read-only probe (this).
+- v0 (0.1.0): image mastering, xorriso subprocess engine, multi-session
+  append, read-only probe (this).
 - v0.5: native MMC writing on top of `optiburn-transport`, sending
   `RESERVE TRACK`, `WRITE(10)`, `SYNCHRONIZE CACHE` and `CLOSE TRACK` in
   sequence, no external burn tool needed.
 - v0.6: capacity checks before burning (`READ CAPACITY`,
   `GET CONFIGURATION`), and `probe` on Windows.
-- Later: multi-session appends, BD-R pseudo-overwrite.
+- Later: BD-R pseudo-overwrite.
 
 ## Design decisions
 
@@ -124,6 +139,10 @@ CI installs it, so a skip there is a failure to notice.
   the v0 burn engine.
 - [ADR-0005](docs/adr/0005-spti-windows.md): hand-written SPTI bindings on
   Windows, not IMAPI2.
+- [ADR-0006](docs/adr/0006-multi-session-default-and-grow.md): multi-session
+  by default, appends via xorriso grow mode.
+- [ADR-0007](docs/adr/0007-scsi-open-noblock.md): `O_NONBLOCK` when opening
+  `/dev/sr*`.
 
 ## Acknowledgements
 
@@ -141,6 +160,8 @@ CI installs it, so a skip there is a failure to notice.
 MIT, see [LICENSE](LICENSE).
 
 ## 中文速览
+
+完整中文文档见 [README.zh-CN.md](README.zh-CN.md)。
 
 optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Linux 与 Windows 的
 x86_64/arm64。它解决的核心问题是：在 Linux 上刻的盘，Windows 要能直接读。镜像同时写 ISO 9660、Joliet 与 UDF Bridge（见 `docs/WINDOWS-COMPAT.md`）。
