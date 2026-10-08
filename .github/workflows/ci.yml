@@ -19,7 +19,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # job 名（lint / test / cross-check）就是分支保护里的 required check 名，改名即断保护。
+  # job 名（lint / test / cross-check / gui）就是分支保护里的 required check 名，改名即断保护。
   lint:
     name: lint
     runs-on: ubuntu-latest
