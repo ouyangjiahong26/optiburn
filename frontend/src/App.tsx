@@ -4,6 +4,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { Disc3, FileArchive, Flame, FolderPlus } from "lucide-react";
 import { cancelJob, confirmClose, onCloseBlocked, onJobDone, onJobProgress } from "./api";
 import type { ActiveJob, JobKind, JobResult } from "./types";
+import { t } from "./i18n";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ProgressBar } from "./components/ProgressBar";
 import { AppendPage } from "./pages/AppendPage";
@@ -14,27 +15,36 @@ import { DevicesPage } from "./pages/DevicesPage";
 type PageId = "devices" | "build" | "burn" | "append";
 
 const NAV_ITEMS: { id: PageId; label: string; icon: typeof Disc3 }[] = [
-  { id: "devices", label: "设备", icon: Disc3 },
-  { id: "append", label: "追加", icon: FolderPlus },
-  { id: "burn", label: "刻录", icon: Flame },
-  { id: "build", label: "制作镜像", icon: FileArchive },
+  { id: "devices", label: t("Devices", "设备"), icon: Disc3 },
+  { id: "append", label: t("Append", "追加"), icon: FolderPlus },
+  { id: "burn", label: t("Burn", "刻录"), icon: Flame },
+  { id: "build", label: t("Create Image", "制作镜像"), icon: FileArchive },
 ];
 
 // 制作镜像没有进度回调，只显示动作本身；其余两种有百分比就带上。
 function jobStatusText(job: ActiveJob): string {
   if (job.kind === "build") {
-    return "正在制作镜像……";
+    return t("Creating image…", "正在制作镜像……");
   }
   if (job.kind === "verify") {
-    return "正在校验盘上内容……";
+    return t("Verifying disc contents…", "正在校验盘上内容……");
   }
   if (job.kind === "copy") {
-    return "正在复制盘上文件……";
+    return t("Copying files from disc…", "正在复制盘上文件……");
   }
-  const action = job.kind === "burn" ? "刻录" : "追加";
   return job.fraction === null
-    ? `正在${action}……`
-    : `正在${action}，已写入 ${Math.round(job.fraction * 100)}%`;
+    ? t(
+        job.kind === "burn" ? "Burning…" : "Appending…",
+        job.kind === "burn" ? "正在刻录……" : "正在追加……",
+      )
+    : t(
+        job.kind === "burn"
+          ? `Burning… ${Math.round(job.fraction * 100)}% written`
+          : `Appending… ${Math.round(job.fraction * 100)}% written`,
+        job.kind === "burn"
+          ? `正在刻录，已写入 ${Math.round(job.fraction * 100)}%`
+          : `正在追加，已写入 ${Math.round(job.fraction * 100)}%`,
+      );
 }
 
 export function App() {
@@ -132,7 +142,7 @@ export function App() {
                   className="btn btn-danger"
                   onClick={() => setCancelDialogOpen(true)}
                 >
-                  停止
+                  {t("Stop", "停止")}
                 </button>
               )}
             </div>
@@ -180,14 +190,20 @@ export function App() {
       </main>
       <ConfirmDialog
         open={cancelDialogOpen}
-        title="停止任务"
+        title={t("Stop task", "停止任务")}
         message={
           discWriting
-            ? "停止后盘片内容不完整，确认停止？"
-            : "停止后本次任务不会完成，盘上内容不受影响。确认停止？"
+            ? t(
+                "Stopping now leaves the disc with incomplete contents. Stop anyway?",
+                "停止后盘片内容不完整，确认停止？",
+              )
+            : t(
+                "The task will not complete, but the disc contents are unaffected. Stop anyway?",
+                "停止后本次任务不会完成，盘上内容不受影响。确认停止？",
+              )
         }
-        confirmText="停止"
-        cancelText="继续"
+        confirmText={t("Stop", "停止")}
+        cancelText={t("Continue", "继续")}
         tone="danger"
         onConfirm={() => {
           setCancelDialogOpen(false);
@@ -198,14 +214,20 @@ export function App() {
       />
       <ConfirmDialog
         open={closeDialogOpen}
-        title="退出 OptiBurn"
+        title={t("Quit OptiBurn", "退出 OptiBurn")}
         message={
           discWriting
-            ? "有任务正在进行。停止后盘片内容不完整，确认停止并退出？"
-            : "有任务正在进行。停止后本次任务不会完成，盘上内容不受影响。确认停止并退出？"
+            ? t(
+                "A task is running. Stopping now leaves the disc with incomplete contents. Stop and quit anyway?",
+                "有任务正在进行。停止后盘片内容不完整，确认停止并退出？",
+              )
+            : t(
+                "A task is running. The task will not complete, but the disc contents are unaffected. Stop and quit anyway?",
+                "有任务正在进行。停止后本次任务不会完成，盘上内容不受影响。确认停止并退出？",
+              )
         }
-        confirmText="停止并退出"
-        cancelText="继续运行"
+        confirmText={t("Stop and quit", "停止并退出")}
+        cancelText={t("Keep running", "继续运行")}
         tone="danger"
         onConfirm={() => {
           setCloseDialogOpen(false);

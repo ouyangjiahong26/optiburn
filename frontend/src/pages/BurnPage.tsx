@@ -4,7 +4,8 @@ import type { FormEvent } from "react";
 import { RefreshCw } from "lucide-react";
 import { speedOption, startBurn, startVerify } from "../api";
 import { useDeviceProbe, useGateNotice } from "../hooks";
-import { DISC_STATUS_LABEL } from "../discStatus";
+import { discStatusLabel } from "../discStatus";
+import { t } from "../i18n";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormRow } from "../components/FormRow";
 import { PathField } from "../components/PathField";
@@ -57,21 +58,21 @@ export function BurnPage({ locked, result, active, onJobStart, onJobAbort }: Dis
     <div className="page">
       <header className="page-header">
         <div>
-          <h1>刻录</h1>
-          <p>把镜像文件写入一张空盘。</p>
+          <h1>{t("Burn", "刻录")}</h1>
+          <p>{t("Write an image file to a blank disc.", "把镜像文件写入一张空盘。")}</p>
         </div>
       </header>
       <form className="form" onSubmit={(event) => void handleSubmit(event)}>
-        <FormRow label="镜像文件">
+        <FormRow label={t("Image file", "镜像文件")}>
           <PathField
             mode="openIso"
             value={image}
             onChange={setImage}
             disabled={locked}
-            placeholder="选择 .iso 镜像"
+            placeholder={t("Choose an .iso image", "选择 .iso 镜像")}
           />
         </FormRow>
-        <FormRow label="设备">
+        <FormRow label={t("Device", "设备")}>
           <div className="inline-controls">
             <select
               value={device}
@@ -80,15 +81,18 @@ export function BurnPage({ locked, result, active, onJobStart, onJobAbort }: Dis
             >
               <option value="">
                 {devices === null
-                  ? "正在探测设备……"
+                  ? t("Probing devices…", "正在探测设备……")
                   : devices.length === 0
-                    ? "未发现光驱"
-                    : "请选择设备"}
+                    ? t("No optical drives found", "未发现光驱")
+                    : t("Select a device", "请选择设备")}
               </option>
               {devices !== null &&
                 devices.map((item) => (
                   <option key={item.path} value={item.path}>
-                    {`${item.path}（${item.status === null ? "状态未知" : DISC_STATUS_LABEL[item.status]}）`}
+                    {t(
+                      `${item.path} (${item.status === null ? "Unknown" : discStatusLabel(item.status)})`,
+                      `${item.path}（${item.status === null ? "状态未知" : discStatusLabel(item.status)}）`,
+                    )}
                   </option>
                 ))}
             </select>
@@ -99,23 +103,26 @@ export function BurnPage({ locked, result, active, onJobStart, onJobAbort }: Dis
               onClick={() => void refresh()}
             >
               <RefreshCw size={13} className={probing ? "spin" : undefined} />
-              刷新
+              {t("Refresh", "刷新")}
             </button>
           </div>
         </FormRow>
-        <FormRow label="倍速" htmlFor="burn-speed">
+        <FormRow label={t("Speed", "倍速")} htmlFor="burn-speed">
           <input
             id="burn-speed"
             type="number"
             className="text-input speed-input"
             min={1}
-            placeholder="留空交给驱动自选"
+            placeholder={t("Leave blank to let the drive choose", "留空交给驱动自选")}
             value={speed}
             disabled={locked}
             onChange={(event) => setSpeed(event.target.value)}
           />
         </FormRow>
-        <FormRow label="写完封盘" hint="勾选后不能再追加">
+        <FormRow
+          label={t("Finalize disc", "写完封盘")}
+          hint={t("Cannot append after finalizing", "勾选后不能再追加")}
+        >
           <label className="option">
             <input
               type="checkbox"
@@ -123,7 +130,7 @@ export function BurnPage({ locked, result, active, onJobStart, onJobAbort }: Dis
               disabled={locked}
               onChange={(event) => setCloseDisc(event.target.checked)}
             />
-            刻录完成后封盘
+            {t("Finalize after burning", "刻录完成后封盘")}
           </label>
         </FormRow>
         <div className="form-actions">
@@ -133,25 +140,28 @@ export function BurnPage({ locked, result, active, onJobStart, onJobAbort }: Dis
             disabled={locked || image.trim() === "" || device === ""}
             onClick={() => void handleVerify()}
           >
-            校验盘片
+            {t("Verify disc", "校验盘片")}
           </button>
           <button
             type="submit"
             className="btn btn-primary"
             disabled={locked || image.trim() === "" || device === ""}
           >
-            开始刻录
+            {t("Burn", "开始刻录")}
           </button>
         </div>
       </form>
       {verify !== null && (
-        <VerifyCard report={verify} passNote="盘上内容与镜像逐项一致。" />
+        <VerifyCard
+          report={verify}
+          passNote={t("Disc contents match the image item by item.", "盘上内容与镜像逐项一致。")}
+        />
       )}
       <ConfirmDialog
         open={gateNotice !== null}
-        title="无法刻录这张盘"
+        title={t("Cannot burn this disc", "无法刻录这张盘")}
         message={gateNotice ?? ""}
-        confirmText="知道了"
+        confirmText={t("OK", "知道了")}
         onConfirm={dismissGate}
         onCancel={dismissGate}
       />

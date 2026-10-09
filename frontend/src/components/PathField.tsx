@@ -1,9 +1,10 @@
 // 输入框 + 浏览按钮：目录选择、保存 iso、打开 iso 三种模式由 mode 决定。
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { t } from "../i18n";
 
 export type PathFieldMode = "directory" | "saveIso" | "openIso";
 
-const ISO_FILTER = { name: "镜像文件", extensions: ["iso"] };
+const ISO_FILTER = { name: t("Image files", "镜像文件"), extensions: ["iso"] };
 
 export function PathField({
   mode,
@@ -53,7 +54,7 @@ export function PathField({
         disabled={disabled}
         onClick={() => void browse()}
       >
-        浏览
+        {t("Browse", "浏览")}
       </button>
     </div>
   );

@@ -10,6 +10,7 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use super::{JobError, begin_job, fail_job, finish_job, job_error_text, set_join, unique_temp_dir};
+use crate::i18n::{Lang, lang, pick};
 use crate::job::{JobKind, JobState};
 
 /// 盘上条目的 DTO，对应前端 `DiscEntry`。
@@ -36,7 +37,7 @@ pub async fn list_disc(device: String) -> Result<Vec<DiscEntryDto>, String> {
         // 空盘本来就没有内容，返回空清单。盘上有区段却读不出 ISO 9660（例如 UDF
         // 盘）时按错误上报，不能显示成空盘。
         Err(BurnError::NoIsoSession) if disc_is_empty(&device) => Ok(Vec::new()),
-        Err(error) => Err(disc_read_error(&device, error)),
+        Err(error) => Err(disc_read_error(lang(), &device, error)),
     })
     .await
     .expect("list worker did not panic")
@@ -89,7 +90,7 @@ pub async fn copy_disc_files(
     paths: Vec<String>,
 ) -> Result<(), String> {
     if paths.is_empty() {
-        return Err("没有选中文件。".to_string());
+        return Err(pick(lang(), "没有选中文件。", "No files are selected.").into());
     }
     let cancel = begin_job(&state)?;
     let worker = app.clone();
@@ -99,16 +100,27 @@ pub async fn copy_disc_files(
                 &worker,
                 JobKind::Copy,
                 "done",
-                format!(
-                    "已复制 {} 个文件（{}）到系统剪贴板，去文件管理器里粘贴即可。",
-                    report.count,
-                    human_bytes(report.bytes)
-                ),
+                None,
+                match lang() {
+                    Lang::Zh => format!(
+                        "已复制 {} 个文件（{}）到系统剪贴板，去文件管理器里粘贴即可。",
+                        report.count,
+                        human_bytes(lang(), report.bytes)
+                    ),
+                    Lang::En => format!(
+                        "Copied {} files ({}) to the clipboard — paste them in your file manager.",
+                        report.count,
+                        human_bytes(lang(), report.bytes)
+                    ),
+                },
             ),
             Err(error) => {
                 // 失败原因随失败事件广播，同时写一份到 stderr 备查（取消不算失败）。
-                if !matches!(error, JobError::Cancelled(_)) {
-                    eprintln!("optiburn: 复制盘上文件失败：{}", job_error_text(&error));
+                if !matches!(error, JobError::Cancelled { .. }) {
+                    eprintln!(
+                        "optiburn: 复制盘上文件失败：{}",
+                        job_error_text(lang(), &error)
+                    );
                 }
                 fail_job(&worker, JobKind::Copy, error);
             }
@@ -118,15 +130,18 @@ pub async fn copy_disc_files(
     Ok(())
 }
 
-/// 人类可读的字节数，口径与设备页一致（GB、MB、KB、字节）。
-fn human_bytes(bytes: u64) -> String {
+/// 人类可读的字节数，口径与设备页一致（GB、MB、KB、字节/bytes）。
+fn human_bytes(lang: Lang, bytes: u64) -> String {
     const UNITS: [(&str, u64); 3] = [("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)];
     for (unit, scale) in UNITS {
         if bytes >= scale {
             return format!("{:.1} {unit}", bytes as f64 / scale as f64);
         }
     }
-    format!("{bytes} 字节")
+    match lang {
+        Lang::Zh => format!("{bytes} 字节"),
+        Lang::En => format!("{bytes} bytes"),
+    }
 }
 
 /// 读取系统剪贴板里的文件，供追加页的粘贴入口使用。
@@ -148,19 +163,27 @@ fn copy_disc_files_blocking(
 ) -> Result<CopyReport, JobError> {
     let root = copy_root().map_err(JobError::Input)?;
     let staging = root.join(COPY_SEQUENCE.fetch_add(1, Ordering::Relaxed).to_string());
-    std::fs::create_dir_all(&staging)
-        .map_err(|e| JobError::Input(format!("创建暂存目录失败：{e}")))?;
+    std::fs::create_dir_all(&staging).map_err(|e| match lang() {
+        Lang::Zh => JobError::Input(format!("创建暂存目录失败：{e}")),
+        Lang::En => JobError::Input(format!("Failed to create the staging directory: {e}")),
+    })?;
     if let Err(error) = extract_paths(device, paths, &staging, cancel) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(match error {
-            BurnError::Cancelled => JobError::Cancelled("复制"),
-            other => JobError::Input(disc_read_error(device, other)),
+            BurnError::Cancelled => JobError::Cancelled {
+                zh: "复制",
+                en: "copy",
+            },
+            other => JobError::Input(disc_read_error(lang(), device, other)),
         });
     }
     let mut files = Vec::new();
     if let Err(e) = collect_files(&staging, &mut files) {
         let _ = std::fs::remove_dir_all(&staging);
-        return Err(JobError::Input(format!("扫描暂存目录失败：{e}")));
+        return Err(JobError::Input(match lang() {
+            Lang::Zh => format!("扫描暂存目录失败：{e}"),
+            Lang::En => format!("Failed to scan the staging directory: {e}"),
+        }));
     }
     if let Err(e) = crate::clipboard::copy_files(&files) {
         let _ = std::fs::remove_dir_all(&staging);
@@ -198,19 +221,36 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 读取盘片失败的中文文案：盘被挂载占用时给出卸载指引，末区段与路径问题单独说清。
-fn disc_read_error(device: &str, error: BurnError) -> String {
-    match &error {
-        BurnError::NoIsoSession => {
-            "盘上末区段不是 ISO 9660（例如 Windows 写入的 UDF 盘），读不出内容。".to_string()
-        }
-        BurnError::UnsafePath(path) => format!("盘上存在不安全的路径，已拒绝抽取：{path}"),
-        _ => match optiburn_transport::mounted_at(device) {
-            Some(point) => format!(
-                "读取盘片失败，且光盘正被系统挂载在 {}：先在文件管理器里卸载（或运行 udisksctl unmount -b {device}）再试。",
-                point.display()
+/// 读取盘片失败的文案：盘被挂载占用时给出卸载指引，末区段与路径问题单独说清。
+fn disc_read_error(lang: Lang, device: &str, error: BurnError) -> String {
+    match (&lang, &error) {
+        (_, BurnError::NoIsoSession) => pick(
+            lang,
+            "盘上末区段不是 ISO 9660（例如 Windows 写入的 UDF 盘），读不出内容。",
+            "The last session on this disc is not ISO 9660 (e.g. a UDF disc written by Windows), so its contents cannot be listed.",
+        )
+        .to_string(),
+        (_, BurnError::UnsafePath(path)) => match lang {
+            Lang::Zh => format!("盘上存在不安全的路径，已拒绝抽取：{path}"),
+            Lang::En => format!(
+                "The disc contains an unsafe path, which was rejected for extraction: {path}"
             ),
-            None => format!("读取盘片失败：{error}"),
+        },
+        _ => match optiburn_transport::mounted_at(device) {
+            Some(point) => match lang {
+                Lang::Zh => format!(
+                    "读取盘片失败，且光盘正被系统挂载在 {}：先在文件管理器里卸载（或运行 udisksctl unmount -b {device}）再试。",
+                    point.display()
+                ),
+                Lang::En => format!(
+                    "Failed to read the disc, and it is currently mounted at {}: unmount it in the file manager (or run udisksctl unmount -b {device}) first.",
+                    point.display()
+                ),
+            },
+            None => match lang {
+                Lang::Zh => format!("读取盘片失败：{error}"),
+                Lang::En => format!("Failed to read the disc: {error}"),
+            },
         },
     }
 }
@@ -221,8 +261,8 @@ mod tests {
 
     #[test]
     fn human_bytes_matches_device_page_wording() {
-        assert_eq!(human_bytes(512), "512 字节");
-        assert_eq!(human_bytes(1536), "1.5 KB");
-        assert_eq!(human_bytes(3 * (1 << 20)), "3.0 MB");
+        assert_eq!(human_bytes(Lang::Zh, 512), "512 字节");
+        assert_eq!(human_bytes(Lang::Zh, 1536), "1.5 KB");
+        assert_eq!(human_bytes(Lang::Zh, 3 * (1 << 20)), "3.0 MB");
     }
 }

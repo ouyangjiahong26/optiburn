@@ -1,4 +1,4 @@
-//! Tauri 命令层：把核心 crate 的能力暴露给前端，并统一中文文案。
+//! Tauri 命令层：把核心 crate 的能力暴露给前端，文案按系统语言输出中英文。
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,7 @@ use optiburn_mmc::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::i18n::{Lang, lang, pick};
 use crate::job::{JobKind, JobState, RunningJob};
 
 pub(crate) mod copy;
@@ -50,12 +51,15 @@ struct JobProgress {
 }
 
 /// 完成事件载荷（事件名 `job-done`），outcome 取 "done" | "cancelled" | "failed"。
+/// gate 仅在门禁类失败时给出，供前端弹对应的引导对话框。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct JobDone {
     kind: JobKind,
     outcome: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate: Option<&'static str>,
 }
 
 /// 刻录/追加前门禁与刻录本体可能失败的来源，文案映射集中在 [`job_error_text`]。
@@ -74,7 +78,10 @@ enum JobError {
     /// 待刻录列表或暂存阶段的输入问题，文案已由下层给出。
     Input(String),
     /// 用户中止了可取消的只读任务（复制、校验）。
-    Cancelled(&'static str),
+    Cancelled {
+        zh: &'static str,
+        en: &'static str,
+    },
     /// 等待介质就绪或读取盘片信息失败。
     Disc(MmcError),
     /// 写前门禁拒绝。
@@ -94,12 +101,15 @@ fn status_fields(status: DiscStatus) -> (String, Option<u8>) {
 }
 
 /// 前端介质字符串到 [`DiscProfile`] 的映射。
-fn profile_from_str(profile: &str) -> Result<DiscProfile, String> {
+fn profile_from_str(lang: Lang, profile: &str) -> Result<DiscProfile, String> {
     match profile {
         "cd" => Ok(DiscProfile::Cd),
         "dvd" => Ok(DiscProfile::Dvd),
         "bd" => Ok(DiscProfile::Bd),
-        other => Err(format!("未知的介质类型：{other}")),
+        other => Err(match lang {
+            Lang::Zh => format!("未知的介质类型：{other}"),
+            Lang::En => format!("Unknown media profile: {other}"),
+        }),
     }
 }
 
@@ -118,35 +128,91 @@ fn default_output(src: &Path) -> PathBuf {
     }
 }
 
-/// 任务失败的中文文案。与 CLI 同源，只按 GUI 的说法调整指引（“追加页”而非命令行）。
-fn job_error_text(error: &JobError) -> String {
+/// 任务失败的文案，按界面语言输出中英文。与 CLI 同源的说法按 GUI 调整（“追加页”而非命令行）。
+fn job_error_text(lang: Lang, error: &JobError) -> String {
     match error {
-        JobError::Open { device, source } => format!("打开 {device} 失败：{source}"),
-        JobError::Mounted { device, point } => format!(
-            "光盘已被系统挂载在 {}：在文件管理器里卸载该光盘，或运行 udisksctl unmount -b {device} 后再试。",
-            point.display()
-        ),
-        JobError::NoIsoSession => "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。".into(),
+        JobError::Open { device, source } => match lang {
+            Lang::Zh => format!("打开 {device} 失败：{source}"),
+            Lang::En => format!("Failed to open {device}: {source}"),
+        },
+        JobError::Mounted { device, point } => match lang {
+            Lang::Zh => format!(
+                "光盘已被系统挂载在 {}：在文件管理器里卸载该光盘，或运行 udisksctl unmount -b {device} 后再试。",
+                point.display()
+            ),
+            Lang::En => format!(
+                "The disc is mounted at {}: unmount it in the file manager (or run udisksctl unmount -b {device}) and try again.",
+                point.display()
+            ),
+        },
+        JobError::NoIsoSession => pick(
+            lang,
+            "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。",
+            "The last session on this disc is not ISO 9660 (e.g. a UDF disc written by Windows): appending an ISO session would leave systems that mount the last session seeing only the new content. This tool cannot append to such discs yet — use a blank disc instead.",
+        )
+        .into(),
         JobError::Input(message) => message.clone(),
-        JobError::Disc(MmcError::NotReady) => "盘未就绪：请确认已放入可写盘片且仓门已关闭。".into(),
-        JobError::Disc(other) => format!("读取盘片信息失败：{other}"),
-        JobError::Gate(WriteBlock::NeedGrowMode) => {
-            "盘上已有数据区段：以镜像方式追加会把已有文件遮住。请改用追加页。".into()
+        JobError::Disc(MmcError::NotReady) => pick(
+            lang,
+            "盘未就绪：请确认已放入可写盘片且仓门已关闭。",
+            "Disc not ready: make sure a writable disc is inserted and the tray is closed.",
+        )
+        .into(),
+        JobError::Disc(other) => match lang {
+            Lang::Zh => format!("读取盘片信息失败：{other}"),
+            Lang::En => format!("Failed to read disc information: {other}"),
+        },
+        JobError::Gate(WriteBlock::NeedGrowMode) => pick(
+            lang,
+            "盘上已有数据区段：以镜像方式追加会把已有文件遮住。请改用追加页。",
+            "The disc already has data sessions: writing an image over it would shadow existing files. Use the append page instead.",
+        )
+        .into(),
+        JobError::Gate(WriteBlock::Finalized) => pick(
+            lang,
+            "盘已封口，无法再写入，请更换盘片。",
+            "The disc is finalized and cannot be written again. Use another disc.",
+        )
+        .into(),
+        JobError::Burn(BurnError::MissingTool(_)) => pick(
+            lang,
+            "缺少刻录工具 xorriso，请先安装后再刻录。",
+            "The burn tool xorriso is missing. Install it first.",
+        )
+        .into(),
+        JobError::Burn(BurnError::Cancelled) => pick(
+            lang,
+            "已中止：盘片内容不完整。",
+            "Cancelled: the disc content is incomplete.",
+        )
+        .into(),
+        JobError::Cancelled { zh, en } => match lang {
+            Lang::Zh => format!("已中止：{zh}没有完成。"),
+            Lang::En => format!("Cancelled: {en} did not finish."),
+        },
+        JobError::Burn(BurnError::Failed(tail)) => {
+            let failure = BurnFailure::classify(tail);
+            match lang {
+                Lang::Zh => failure.user_text(tail),
+                Lang::En => match failure {
+                    BurnFailure::DriveLost => "The burn was interrupted: the drive lost connection during writing (loose cable, power glitch, or unplugged). This session was not finished; existing content on the disc is unaffected. Reconnect the drive and try again, and check the disc before reusing it.".to_string(),
+                    BurnFailure::DeviceBusy => "The device is busy: the drive is in use by another program — most commonly the disc is mounted by the system. Unmount the disc or close the other program, then retry.".to_string(),
+                    BurnFailure::Other => format!("Burn failed: {tail}"),
+                },
+            }
         }
-        JobError::Gate(WriteBlock::Finalized) => "盘已封口，无法再写入，请更换盘片。".into(),
-        JobError::Burn(BurnError::MissingTool(_)) => {
-            "缺少刻录工具 xorriso，请先安装后再刻录。".into()
-        }
-        JobError::Burn(BurnError::Cancelled) => "已中止：盘片内容不完整。".into(),
-        JobError::Cancelled(action) => format!("已中止：{action}没有完成。"),
-        JobError::Burn(BurnError::Failed(tail)) => BurnFailure::classify(tail).user_text(tail),
-        JobError::Burn(other) => format!("刻录失败：{other}"),
-        JobError::Mastering(MasteringError::SourceNotFound(path)) => {
-            format!("源目录不存在：{}", path.display())
-        }
-        JobError::Mastering(MasteringError::SourceNotDirectory(path)) => {
-            format!("源路径不是目录：{}", path.display())
-        }
+        JobError::Burn(other) => match lang {
+            Lang::Zh => format!("刻录失败：{other}"),
+            Lang::En => format!("Burn failed: {other}"),
+        },
+        JobError::Mastering(MasteringError::SourceNotFound(path)) => match lang {
+            Lang::Zh => format!("源目录不存在：{}", path.display()),
+            Lang::En => format!("Source directory not found: {}", path.display()),
+        },
+        JobError::Mastering(MasteringError::SourceNotDirectory(path)) => match lang {
+            Lang::Zh => format!("源路径不是目录：{}", path.display()),
+            Lang::En => format!("Source path is not a directory: {}", path.display()),
+        },
         JobError::Mastering(other) => format!("{other}"),
     }
 }
@@ -173,7 +239,10 @@ fn probe_one(path: String) -> DeviceInfo {
     let transport = match optiburn_transport::open(&info.path) {
         Ok(transport) => transport,
         Err(e) => {
-            info.error = Some(format!("打开失败：{e}"));
+            info.error = Some(match lang() {
+                Lang::Zh => format!("打开失败：{e}"),
+                Lang::En => format!("Failed to open the device: {e}"),
+            });
             return info;
         }
     };
@@ -186,7 +255,10 @@ fn probe_one(path: String) -> DeviceInfo {
             ));
         }
         Err(e) => {
-            info.error = Some(format!("读取设备信息失败：{e}"));
+            info.error = Some(match lang() {
+                Lang::Zh => format!("读取设备信息失败：{e}"),
+                Lang::En => format!("Failed to read device information: {e}"),
+            });
             return info;
         }
     }
@@ -197,7 +269,12 @@ fn probe_one(path: String) -> DeviceInfo {
             info.status_bits = bits;
             info.sessions = Some(disc.sessions);
         }
-        Err(e) => info.error = Some(format!("读取盘片信息失败：{e}")),
+        Err(e) => {
+            info.error = Some(match lang() {
+                Lang::Zh => format!("读取盘片信息失败：{e}"),
+                Lang::En => format!("Failed to read disc information: {e}"),
+            });
+        }
     }
     info
 }
@@ -206,7 +283,12 @@ fn probe_one(path: String) -> DeviceInfo {
 fn begin_job(state: &State<'_, JobState>) -> Result<CancelToken, String> {
     let mut slot = state.0.lock().expect("job state mutex");
     if slot.is_some() {
-        return Err("已有任务在进行，请等它结束。".into());
+        return Err(pick(
+            lang(),
+            "已有任务在进行，请等它结束。",
+            "A task is already running. Wait for it to finish.",
+        )
+        .into());
     }
     let cancel = CancelToken::default();
     *slot = Some(RunningJob {
@@ -224,7 +306,13 @@ fn set_join(state: &State<'_, JobState>, join: tauri::async_runtime::JoinHandle<
 }
 
 /// 清空任务槽并广播完成事件。
-fn finish_job(app: &AppHandle, kind: JobKind, outcome: &str, message: String) {
+fn finish_job(
+    app: &AppHandle,
+    kind: JobKind,
+    outcome: &str,
+    gate: Option<&'static str>,
+    message: String,
+) {
     app.state::<JobState>()
         .0
         .lock()
@@ -236,8 +324,20 @@ fn finish_job(app: &AppHandle, kind: JobKind, outcome: &str, message: String) {
             kind,
             outcome: outcome.to_string(),
             message,
+            gate,
         },
     );
+}
+
+/// 门禁类失败的 gate 标记：前端据其弹对应的引导对话框。
+fn gate_of(error: &JobError) -> Option<&'static str> {
+    match error {
+        JobError::Gate(WriteBlock::NeedGrowMode) => Some("append"),
+        JobError::Gate(WriteBlock::Finalized) => Some("finalized"),
+        JobError::Mounted { .. } => Some("mounted"),
+        JobError::NoIsoSession => Some("noIsoSession"),
+        _ => None,
+    }
 }
 
 /// 失败收尾：广播 job-done，并把同一份文案返回给调用方（invoke 拒绝分支复用）。
@@ -248,14 +348,15 @@ fn fail_job(app: &AppHandle, kind: JobKind, error: JobError) -> String {
     }
     let outcome = if matches!(
         error,
-        JobError::Burn(BurnError::Cancelled) | JobError::Cancelled(_)
+        JobError::Burn(BurnError::Cancelled) | JobError::Cancelled { .. }
     ) {
         "cancelled"
     } else {
         "failed"
     };
-    let text = job_error_text(&error);
-    finish_job(app, kind, outcome, text.clone());
+    let gate = gate_of(&error);
+    let text = job_error_text(lang(), &error);
+    finish_job(app, kind, outcome, gate, text.clone());
     text
 }
 
@@ -269,7 +370,7 @@ pub async fn start_build_image(
     profile: String,
     volume_id: String,
 ) -> Result<ImageInfoDto, String> {
-    let profile = profile_from_str(&profile)?;
+    let profile = profile_from_str(lang(), &profile)?;
     let output = match output.as_deref().filter(|o| !o.is_empty()) {
         Some(path) => PathBuf::from(path),
         None => default_output(Path::new(&src)),
@@ -290,7 +391,11 @@ pub async fn start_build_image(
                     &app,
                     JobKind::Build,
                     "done",
-                    format!("镜像已生成：{}", output.display()),
+                    None,
+                    match lang() {
+                        Lang::Zh => format!("镜像已生成：{}", output.display()),
+                        Lang::En => format!("Image created: {}", output.display()),
+                    },
                 );
                 Ok(ImageInfoDto {
                     sectors: info.sectors,
@@ -337,7 +442,7 @@ pub async fn start_burn(
             })
         });
         match result {
-            Ok(message) => finish_job(&worker, JobKind::Burn, "done", message),
+            Ok(message) => finish_job(&worker, JobKind::Burn, "done", None, message),
             Err(e) => {
                 fail_job(&worker, JobKind::Burn, e);
             }
@@ -359,7 +464,7 @@ pub async fn start_append(
     close_disc: bool,
 ) -> Result<(), String> {
     if files.is_empty() {
-        return Err("待刻录列表是空的。".into());
+        return Err(pick(lang(), "待刻录列表是空的。", "The file list is empty.").into());
     }
     let cancel = begin_job(&state)?;
     let worker = app.clone();
@@ -368,7 +473,7 @@ pub async fn start_append(
             &worker, &cancel, files, &device, &volume_id, speed, close_disc,
         );
         match result {
-            Ok(message) => finish_job(&worker, JobKind::Append, "done", message),
+            Ok(message) => finish_job(&worker, JobKind::Append, "done", None, message),
             Err(e) => {
                 fail_job(&worker, JobKind::Append, e);
             }
@@ -391,7 +496,7 @@ fn run_append_task(
     // 门禁先跑：挂载、封口、末区段格式这些拒绝都发生在把文件拷进暂存之前。
     check_write_gates(device, true)?;
     let stage = unique_temp_dir("optiburn-stage").map_err(JobError::Input)?;
-    if let Err(message) = stage_files(&files, &stage) {
+    if let Err(message) = stage_files(lang(), &files, &stage) {
         // 暂存阶段的失败同样要清目录，不留用户文件的副本。
         let _ = std::fs::remove_dir_all(&stage);
         return Err(JobError::Input(message));
@@ -414,38 +519,64 @@ fn run_append_task(
 /// 把待刻录文件收进暂存目录，盘根就是这些文件的文件名。
 ///
 /// 同名文件直接报错而不覆盖（文件来自不同目录时可能出现），目录与复制失败同样报错。
-fn stage_files(files: &[String], stage_dir: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(stage_dir).map_err(|e| format!("创建暂存目录失败：{e}"))?;
+fn stage_files(lang: Lang, files: &[String], stage_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(stage_dir).map_err(|e| match lang {
+        Lang::Zh => format!("创建暂存目录失败：{e}"),
+        Lang::En => format!("Failed to create the staging directory: {e}"),
+    })?;
     for file in files {
         let source = Path::new(file);
-        let name = source
-            .file_name()
-            .ok_or_else(|| format!("路径没有文件名：{file}"))?;
-        // 粘贴入口可能混进目录或特殊文件（FIFO 等），提前给出中文解释，不让
+        let name = source.file_name().ok_or_else(|| match lang {
+            Lang::Zh => format!("路径没有文件名：{file}"),
+            Lang::En => format!("Path has no file name: {file}"),
+        })?;
+        // 粘贴入口可能混进目录或特殊文件（FIFO 等），提前给出解释，不让
         // fs::copy 抛英文错误，也不让打开 FIFO 这类操作把任务卡死。
-        let metadata = std::fs::metadata(source)
-            .map_err(|e| format!("读取 {} 的信息失败：{e}", source.display()))?;
+        let metadata = std::fs::metadata(source).map_err(|e| match lang {
+            Lang::Zh => format!("读取 {} 的信息失败：{e}", source.display()),
+            Lang::En => format!("Failed to stat {}: {e}", source.display()),
+        })?;
         if metadata.is_dir() {
-            return Err(format!(
-                "待刻录列表里有目录 {}，本版本只接受文件。请展开目录后逐个选择文件。",
-                name.to_string_lossy()
-            ));
+            return Err(match lang {
+                Lang::Zh => format!(
+                    "待刻录列表里有目录 {}，本版本只接受文件。请展开目录后逐个选择文件。",
+                    name.to_string_lossy()
+                ),
+                Lang::En => format!(
+                    "The list contains a directory, {}: this version accepts files only. Expand it and pick files one by one.",
+                    name.to_string_lossy()
+                ),
+            });
         }
         if !metadata.is_file() {
-            return Err(format!(
-                "待刻录列表里有非常规文件 {}，本版本只接受普通文件。",
-                name.to_string_lossy()
-            ));
+            return Err(match lang {
+                Lang::Zh => format!(
+                    "待刻录列表里有非常规文件 {}，本版本只接受普通文件。",
+                    name.to_string_lossy()
+                ),
+                Lang::En => format!(
+                    "The list contains a non-regular file, {}: only regular files are accepted.",
+                    name.to_string_lossy()
+                ),
+            });
         }
         let target = stage_dir.join(name);
         if target.exists() {
-            return Err(format!(
-                "待刻录列表里有同名文件 {}，请改名或分批写入。",
-                name.to_string_lossy()
-            ));
+            return Err(match lang {
+                Lang::Zh => format!(
+                    "待刻录列表里有同名文件 {}，请改名或分批写入。",
+                    name.to_string_lossy()
+                ),
+                Lang::En => format!(
+                    "The list contains two entries named {}: rename one of them or burn in batches.",
+                    name.to_string_lossy()
+                ),
+            });
         }
-        std::fs::copy(source, &target)
-            .map_err(|e| format!("复制 {} 失败：{e}", source.display()))?;
+        std::fs::copy(source, &target).map_err(|e| match lang {
+            Lang::Zh => format!("复制 {} 失败：{e}", source.display()),
+            Lang::En => format!("Failed to copy {}: {e}", source.display()),
+        })?;
     }
     Ok(())
 }
@@ -465,17 +596,30 @@ fn unique_temp_dir(prefix: &str) -> Result<PathBuf, String> {
         match std::fs::create_dir(&path) {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("创建暂存目录失败：{error}")),
+            Err(error) => {
+                return Err(match lang() {
+                    Lang::Zh => format!("创建暂存目录失败：{error}"),
+                    Lang::En => format!("Failed to create the staging directory: {error}"),
+                });
+            }
         }
     }
-    Err("创建暂存目录失败：名称连续冲突。".to_string())
+    Err(pick(
+        lang(),
+        "创建暂存目录失败：名称连续冲突。",
+        "Failed to create the staging directory: names kept colliding.",
+    )
+    .to_string())
 }
 
 /// 读盘上最后一个区段的卷标，供追加页预填。读不到时前端保持默认值。
 #[tauri::command]
 pub async fn disc_volume_id(device: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        read_volume_id(&device).map_err(|e| format!("读取卷标失败：{e}"))
+        read_volume_id(&device).map_err(|e| match lang() {
+            Lang::Zh => format!("读取卷标失败：{e}"),
+            Lang::En => format!("Failed to read the volume label: {e}"),
+        })
     })
     .await
     .expect("volume id worker did not panic")
@@ -490,7 +634,7 @@ pub fn cancel_job(state: State<'_, JobState>) -> Result<(), String> {
             job.cancel.cancel();
             Ok(())
         }
-        None => Err("当前没有进行中的任务。".into()),
+        None => Err(pick(lang(), "当前没有进行中的任务。", "No task is running.").into()),
     }
 }
 
@@ -571,8 +715,10 @@ fn check_write_gates(device: &str, append: bool) -> Result<(), JobError> {
     approve_write(&info, append).map_err(JobError::Gate)?;
     // 追加路径再过一道：末区段不是 ISO 9660 的盘（例如 UDF 盘）拒绝，见 ADR-0010。
     if append && info.status == DiscStatus::Appendable {
-        let iso_readable = last_session_is_iso(device)
-            .map_err(|e| JobError::Input(format!("读取末区段格式失败：{e}")))?;
+        let iso_readable = last_session_is_iso(device).map_err(|e| match lang() {
+            Lang::Zh => JobError::Input(format!("读取末区段格式失败：{e}")),
+            Lang::En => JobError::Input(format!("Failed to check the last session format: {e}")),
+        })?;
         if !iso_readable {
             return Err(JobError::NoIsoSession);
         }
@@ -605,11 +751,15 @@ fn progress_emitter<'a>(app: &'a AppHandle, kind: JobKind) -> impl FnMut(f32) + 
 fn sessions_message(device: &str) -> String {
     let text = optiburn_transport::open(device).ok().and_then(|transport| {
         let mut mmc = MmcDevice::new(transport);
-        mmc.read_disc_information()
-            .ok()
-            .map(|info| format!("盘上现有 {} 个区段。", info.sessions))
+        mmc.read_disc_information().ok().map(|info| match lang() {
+            Lang::Zh => format!("盘上现有 {} 个区段。", info.sessions),
+            Lang::En => format!("The disc now has {} sessions.", info.sessions),
+        })
     });
-    text.unwrap_or_else(|| "刻录完成。".into())
+    text.unwrap_or_else(|| match lang() {
+        Lang::Zh => "刻录完成。".into(),
+        Lang::En => "Burn finished.".into(),
+    })
 }
 
 #[cfg(test)]
@@ -618,10 +768,10 @@ mod tests {
 
     #[test]
     fn profile_mapping_covers_three_media() {
-        assert_eq!(profile_from_str("cd"), Ok(DiscProfile::Cd));
-        assert_eq!(profile_from_str("dvd"), Ok(DiscProfile::Dvd));
-        assert_eq!(profile_from_str("bd"), Ok(DiscProfile::Bd));
-        assert!(profile_from_str("hddvd").is_err());
+        assert_eq!(profile_from_str(Lang::Zh, "cd"), Ok(DiscProfile::Cd));
+        assert_eq!(profile_from_str(Lang::Zh, "dvd"), Ok(DiscProfile::Dvd));
+        assert_eq!(profile_from_str(Lang::Zh, "bd"), Ok(DiscProfile::Bd));
+        assert!(profile_from_str(Lang::Zh, "hddvd").is_err());
     }
 
     #[test]
@@ -644,53 +794,80 @@ mod tests {
     #[test]
     fn job_error_text_matches_the_pinned_wording() {
         assert_eq!(
-            job_error_text(&JobError::Burn(BurnError::MissingTool(
-                "xorriso (sudo apt install xorriso)".into()
-            ))),
+            job_error_text(
+                Lang::Zh,
+                &JobError::Burn(BurnError::MissingTool(
+                    "xorriso (sudo apt install xorriso)".into()
+                ))
+            ),
             "缺少刻录工具 xorriso，请先安装后再刻录。"
         );
         assert_eq!(
-            job_error_text(&JobError::Burn(BurnError::Cancelled)),
+            job_error_text(Lang::Zh, &JobError::Burn(BurnError::Cancelled)),
             "已中止：盘片内容不完整。"
         );
         assert_eq!(
-            job_error_text(&JobError::Cancelled("复制")),
+            job_error_text(
+                Lang::Zh,
+                &JobError::Cancelled {
+                    zh: "复制",
+                    en: "copy"
+                }
+            ),
             "已中止：复制没有完成。"
         );
         assert_eq!(
-            job_error_text(&JobError::Burn(BurnError::Failed("fifo busy".into()))),
+            job_error_text(
+                Lang::En,
+                &JobError::Cancelled {
+                    zh: "复制",
+                    en: "copy"
+                }
+            ),
+            "Cancelled: copy did not finish."
+        );
+        assert_eq!(
+            job_error_text(
+                Lang::Zh,
+                &JobError::Burn(BurnError::Failed("fifo busy".into()))
+            ),
             "刻录失败：fifo busy"
         );
         assert_eq!(
-            job_error_text(&JobError::Disc(MmcError::NotReady)),
+            job_error_text(Lang::Zh, &JobError::Disc(MmcError::NotReady)),
             "盘未就绪：请确认已放入可写盘片且仓门已关闭。"
         );
         assert_eq!(
-            job_error_text(&JobError::Gate(WriteBlock::NeedGrowMode)),
+            job_error_text(Lang::Zh, &JobError::Gate(WriteBlock::NeedGrowMode)),
             "盘上已有数据区段：以镜像方式追加会把已有文件遮住。请改用追加页。"
         );
         assert_eq!(
-            job_error_text(&JobError::Gate(WriteBlock::Finalized)),
+            job_error_text(Lang::Zh, &JobError::Gate(WriteBlock::Finalized)),
             "盘已封口，无法再写入，请更换盘片。"
         );
         assert_eq!(
-            job_error_text(&JobError::Mastering(MasteringError::SourceNotFound(
-                PathBuf::from("/x")
-            ))),
+            job_error_text(
+                Lang::Zh,
+                &JobError::Mastering(MasteringError::SourceNotFound(PathBuf::from("/x")))
+            ),
             "源目录不存在：/x"
         );
         assert_eq!(
-            job_error_text(&JobError::Mastering(MasteringError::SourceNotDirectory(
-                PathBuf::from("/x")
-            ))),
+            job_error_text(
+                Lang::Zh,
+                &JobError::Mastering(MasteringError::SourceNotDirectory(PathBuf::from("/x")))
+            ),
             "源路径不是目录：/x"
         );
         assert_eq!(
-            job_error_text(&JobError::NoIsoSession),
+            job_error_text(Lang::Zh, &JobError::NoIsoSession),
             "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
         );
         assert_eq!(
-            job_error_text(&JobError::Input("复制 /x 失败：no such file".to_string())),
+            job_error_text(
+                Lang::Zh,
+                &JobError::Input("复制 /x 失败：no such file".to_string())
+            ),
             "复制 /x 失败：no such file"
         );
     }
@@ -698,22 +875,31 @@ mod tests {
     #[test]
     fn mount_and_classified_failure_texts_are_pinned() {
         assert_eq!(
-            job_error_text(&JobError::Mounted {
-                device: "/dev/sr0".to_string(),
-                point: PathBuf::from("/run/media/u/我的光盘"),
-            }),
+            job_error_text(
+                Lang::Zh,
+                &JobError::Mounted {
+                    device: "/dev/sr0".to_string(),
+                    point: PathBuf::from("/run/media/u/我的光盘"),
+                }
+            ),
             "光盘已被系统挂载在 /run/media/u/我的光盘：在文件管理器里卸载该光盘，或运行 udisksctl unmount -b /dev/sr0 后再试。"
         );
         assert_eq!(
-            job_error_text(&JobError::Burn(BurnError::Failed(
-                "libburn : FATAL : Lost connection to drive\n".to_string()
-            ))),
+            job_error_text(
+                Lang::Zh,
+                &JobError::Burn(BurnError::Failed(
+                    "libburn : FATAL : Lost connection to drive\n".to_string()
+                ))
+            ),
             "刻录中断：光驱在写入过程中失去了连接，常见原因是线缆松动、供电不稳或被意外拔出。本次区段没有写完，旧内容不受影响。请重新插拔光驱后重试。这张盘如果要继续使用，建议先检查再写。"
         );
         assert_eq!(
-            job_error_text(&JobError::Burn(BurnError::Failed(
-                "libburn : SORRY : Cannot open busy device '/dev/sr0'\n".to_string()
-            ))),
+            job_error_text(
+                Lang::Zh,
+                &JobError::Burn(BurnError::Failed(
+                    "libburn : SORRY : Cannot open busy device '/dev/sr0'\n".to_string()
+                ))
+            ),
             "设备被占用：光驱正被其它程序使用，常见是系统挂载了这张光盘。先卸载光盘或关闭占用程序再试。"
         );
     }
@@ -733,7 +919,7 @@ mod tests {
             src.join("b/y.txt").display().to_string(),
         ];
         let stage = base.join("stage");
-        stage_files(&files, &stage).expect("stage two files");
+        stage_files(Lang::Zh, &files, &stage).expect("stage two files");
         assert_eq!(std::fs::read(stage.join("x.txt")).unwrap(), b"one");
         assert_eq!(std::fs::read(stage.join("y.txt")).unwrap(), b"two");
 
@@ -742,17 +928,20 @@ mod tests {
             src.join("a/x.txt").display().to_string(),
             src.join("a/x.txt").display().to_string(),
         ];
-        let err = stage_files(&clashing, &base.join("stage-clash")).expect_err("must fail");
+        let err =
+            stage_files(Lang::Zh, &clashing, &base.join("stage-clash")).expect_err("must fail");
         assert!(err.contains("同名文件"), "{err}");
 
         // 不存在的源文件同样报错。
         let missing = vec![src.join("a/none.txt").display().to_string()];
-        let err = stage_files(&missing, &base.join("stage-missing")).expect_err("must fail");
+        let err =
+            stage_files(Lang::Zh, &missing, &base.join("stage-missing")).expect_err("must fail");
         assert!(err.contains("none.txt"), "{err}");
 
         // 列表里混进目录时给出中文解释，而不是让 fs::copy 抛英文 EISDIR。
         let directory = vec![src.join("a").display().to_string()];
-        let err = stage_files(&directory, &base.join("stage-dir")).expect_err("must fail");
+        let err =
+            stage_files(Lang::Zh, &directory, &base.join("stage-dir")).expect_err("must fail");
         assert!(err.contains("目录"), "{err}");
 
         let _ = std::fs::remove_dir_all(&base);

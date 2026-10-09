@@ -16,13 +16,13 @@ WRITE(10) 的 CDB 十六进制、宿主机错误码和关闭区段的失败，�
    `DriveLost`（Lost connection to drive、SG_ERR_DID_ERROR，实测拔线样本）与
    `DeviceBusy`（Cannot open busy device，实测挂载样本），其余归 `Other`。条目按
    真实遇到的报错逐步补充。
-2. GUI 与 CLI 的失败文案按归类给出中文说明：讲清发生了什么、对盘的影响、下一步
+2. GUI 与 CLI 的失败文案按归类给出可读说明（GUI 随界面语言，CLI 中文）：讲清发生了什么、对盘的影响、下一步
    怎么做。只有 `Other` 保留原始输出。
 3. 原始输出写到 stderr（GUI 的失败收尾与 CLI 都打），诊断信息不丢。
 
 ## 后果
 
-- 用户看到的是中文说明而不是 SCSI 报文。需要细节时从终端启动应用或看 CLI 的 stderr
+- 用户看到的是归类后的可读说明（随界面语言）而不是 SCSI 报文。需要细节时从终端启动应用或看 CLI 的 stderr
   （桌面启动的 GUI 与 Windows 侧没有控制台，暂无落盘日志）。
 - 分类规则是字符串匹配，xorriso 换版本改写文案时可能失配，`Other` 兜底所以只会
   退化、不会误导。测试锁定了两个实机样本。

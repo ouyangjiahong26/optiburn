@@ -37,7 +37,7 @@
     ],
     "windows": {
       "nsis": {
-        "languages": ["SimpChinese"]
+        "languages": ["English", "SimpChinese"]
       }
     }
   }

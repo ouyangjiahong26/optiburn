@@ -5,6 +5,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { Copy, FileText, Folder, RefreshCw } from "lucide-react";
 import { copyDiscFiles, listDisc } from "../api";
 import { useDeviceProbe } from "../hooks";
+import { t } from "../i18n";
 import type { DiscEntry, JobControls } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
 
@@ -24,7 +25,7 @@ function formatBytes(bytes: number): string {
   if (bytes >= 1024) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
-  return `${bytes} 字节`;
+  return `${bytes} ${t("bytes", "字节")}`;
 }
 
 export function DevicesPage({
@@ -180,8 +181,8 @@ export function DevicesPage({
     <div className="page">
       <header className="page-header">
         <div>
-          <h1>设备</h1>
-          <p>查看本机光驱与盘片状态。点击盘片可以查看盘上文件。</p>
+          <h1>{t("Devices", "设备")}</h1>
+          <p>{t("View local optical drives and disc status. Click a disc to browse its files.", "查看本机光驱与盘片状态。点击盘片可以查看盘上文件。")}</p>
         </div>
         <button
           type="button"
@@ -193,16 +194,20 @@ export function DevicesPage({
           }}
         >
           <RefreshCw size={13} className={probing ? "spin" : undefined} />
-          刷新
+          {t("Refresh", "刷新")}
         </button>
       </header>
       {error !== null && (
-        <div className="result-banner warn">探测设备失败：{error}</div>
+        <div className="result-banner warn">
+          {t(`Device probe failed: ${error}`, `探测设备失败：${error}`)}
+        </div>
       )}
       {devices === null ? (
-        error === null && <p className="page-note">正在探测设备……</p>
+        error === null && (
+          <p className="page-note">{t("Probing devices…", "正在探测设备……")}</p>
+        )
       ) : devices.length === 0 ? (
-        <div className="empty-state">未发现光驱</div>
+        <div className="empty-state">{t("No optical drives found", "未发现光驱")}</div>
       ) : (
         <ul className="device-list">
           {devices.map((device) => (
@@ -226,13 +231,22 @@ export function DevicesPage({
                 <span className="device-path">{device.path}</span>
                 {device.status !== null && <StatusBadge status={device.status} />}
                 <span className="device-toggle">
-                  {openDevice === device.path ? "收起" : "查看盘上文件"}
+                  {openDevice === device.path
+                    ? t("Collapse", "收起")
+                    : t("Browse files", "查看盘上文件")}
                 </span>
               </div>
               <div className="device-meta">
-                <span>{device.identity ?? "未知型号"}</span>
+                <span>{device.identity ?? t("Unknown model", "未知型号")}</span>
                 {device.sessions !== null && (
-                  <span>{device.sessions} 个区段</span>
+                  <span>
+                    {t(
+                      device.sessions === 1
+                        ? "1 session"
+                        : `${device.sessions} sessions`,
+                      `${device.sessions} 个区段`,
+                    )}
+                  </span>
                 )}
               </div>
               {device.error !== null && (
@@ -241,7 +255,9 @@ export function DevicesPage({
               {openDevice === device.path && (
                 <div className="disc-listing">
                   {listing?.kind === "loading" && (
-                    <p className="page-note">正在读取盘上内容……</p>
+                    <p className="page-note">
+                      {t("Reading disc contents…", "正在读取盘上内容……")}
+                    </p>
                   )}
                   {listing?.kind === "error" && (
                     <p className="device-error">{listing.message}</p>
@@ -250,8 +266,24 @@ export function DevicesPage({
                     <>
                       <div className="disc-toolbar">
                         <span className="disc-count">
-                          共 {files.length} 个文件，已选 {selected.length} 个
-                          {selected.length > 0 ? `（${formatBytes(selectedBytes)}）` : ""}
+                          {t(
+                            files.length === 1
+                              ? "1 file"
+                              : `${files.length} files`,
+                            `共 ${files.length} 个文件`,
+                          )}
+                          {t(
+                            selected.length === 1
+                              ? ", 1 selected"
+                              : `, ${selected.length} selected`,
+                            `，已选 ${selected.length} 个`,
+                          )}
+                          {selected.length > 0
+                            ? t(
+                                ` (${formatBytes(selectedBytes)})`,
+                                `（${formatBytes(selectedBytes)}）`,
+                              )
+                            : ""}
                         </span>
                         <button
                           type="button"
@@ -260,11 +292,13 @@ export function DevicesPage({
                           onClick={() => void handleCopy()}
                         >
                           <Copy size={11} />
-                          复制选中文件
+                          {t("Copy selected files", "复制选中文件")}
                         </button>
                       </div>
                       {listing.entries.length === 0 ? (
-                        <p className="file-empty">盘上没有文件。</p>
+                        <p className="file-empty">
+                          {t("No files on the disc.", "盘上没有文件。")}
+                        </p>
                       ) : (
                         <ul className="disc-entries">
                           {listing.entries.map((entry) => {
@@ -294,7 +328,10 @@ export function DevicesPage({
                         </ul>
                       )}
                       <p className="disc-hint">
-                        单击选中，按住指针拖动可框选，Ctrl 或 Shift 加选。复制会先把文件从光盘读出来（需要一点时间），完成后到系统文件管理器里粘贴即可。粘贴前请不要关闭本应用。
+                        {t(
+                          "Click to select, hold and drag to select a range, Ctrl or Shift to add. Copying first reads the files off the disc (this takes a moment); once it finishes, paste them in your system file manager. Keep this app open until you have pasted.",
+                          "单击选中，按住指针拖动可框选，Ctrl 或 Shift 加选。复制会先把文件从光盘读出来（需要一点时间），完成后到系统文件管理器里粘贴即可。粘贴前请不要关闭本应用。",
+                        )}
                       </p>
                     </>
                   )}

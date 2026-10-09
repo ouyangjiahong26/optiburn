@@ -8,23 +8,35 @@
 use std::io::Read;
 use std::path::Path;
 
-/// 单向对比两棵目录树，返回中文差异描述，空表示一致。
+/// 单向对比两棵目录树，返回差异描述（`lang` 传 `"zh"` 或 `"en"`），空表示一致。
 ///
 /// `source` 是写入内容的来源（追加的源目录或抽取出的镜像树），`disc` 是盘上树抽到
 /// 本地的目录。符号链接不参与对比：链接是否落盘、读取端把它还原成链接还是目标
 /// 文件，取决于写入参数与抽取方式，语义不稳定，内容承诺只覆盖普通文件与目录。
-pub fn compare_trees(source: &Path, disc: &Path) -> Vec<String> {
+pub fn compare_trees(source: &Path, disc: &Path, lang: &str) -> Vec<String> {
     let mut differences = Vec::new();
-    compare_dir(source, disc, Path::new(""), &mut differences);
+    compare_dir(source, disc, Path::new(""), lang, &mut differences);
     differences
 }
 
 /// 比较一个目录层级。`relative` 是自根起的相对路径，用于差异描述。
-fn compare_dir(source: &Path, disc: &Path, relative: &Path, differences: &mut Vec<String>) {
+fn compare_dir(
+    source: &Path,
+    disc: &Path,
+    relative: &Path,
+    lang: &str,
+    differences: &mut Vec<String>,
+) {
     let entries = match sorted_entries(source) {
         Ok(entries) => entries,
         Err(e) => {
-            differences.push(format!("无法读取源目录 {}：{e}", display_path(relative)));
+            differences.push(match lang {
+                "zh" => format!("无法读取源目录 {}：{e}", display_path(relative)),
+                _ => format!(
+                    "Failed to read source directory {}: {e}",
+                    display_path(relative)
+                ),
+            });
             return;
         }
     };
@@ -33,7 +45,13 @@ fn compare_dir(source: &Path, disc: &Path, relative: &Path, differences: &mut Ve
         let child_relative = relative.join(&name);
         let disc_path = disc.join(&name);
         let Ok(kind) = entry.file_type() else {
-            differences.push(format!("无法读取源条目：{}", display_path(&child_relative)));
+            differences.push(match lang {
+                "zh" => format!("无法读取源条目：{}", display_path(&child_relative)),
+                _ => format!(
+                    "Failed to read source entry: {}",
+                    display_path(&child_relative)
+                ),
+            });
             continue;
         };
         if kind.is_symlink() {
@@ -41,62 +59,100 @@ fn compare_dir(source: &Path, disc: &Path, relative: &Path, differences: &mut Ve
         }
         if kind.is_dir() {
             if !disc_path.is_dir() {
-                differences.push(format!("盘上缺少目录：{}", display_path(&child_relative)));
+                differences.push(match lang {
+                    "zh" => format!("盘上缺少目录：{}", display_path(&child_relative)),
+                    _ => format!(
+                        "Directory missing on disc: {}",
+                        display_path(&child_relative)
+                    ),
+                });
                 continue;
             }
             compare_dir(
                 &source.join(&name),
                 &disc_path,
                 &child_relative,
+                lang,
                 differences,
             );
         } else if kind.is_file() {
             if !disc_path.is_file() {
-                differences.push(format!("盘上缺少文件：{}", display_path(&child_relative)));
+                differences.push(match lang {
+                    "zh" => format!("盘上缺少文件：{}", display_path(&child_relative)),
+                    _ => format!("File missing on disc: {}", display_path(&child_relative)),
+                });
                 continue;
             }
             compare_file(
                 &source.join(&name),
                 &disc_path,
                 &child_relative,
+                lang,
                 differences,
             );
         } else {
-            differences.push(format!(
-                "未支持的条目不参与比较：{}",
-                display_path(&child_relative)
-            ));
+            differences.push(match lang {
+                "zh" => format!("未支持的条目不参与比较：{}", display_path(&child_relative)),
+                _ => format!(
+                    "Unsupported entry skipped: {}",
+                    display_path(&child_relative)
+                ),
+            });
         }
     }
 }
 
 /// 按大小与字节比较两个文件，把差异写进列表。
-fn compare_file(source: &Path, disc: &Path, relative: &Path, differences: &mut Vec<String>) {
+fn compare_file(
+    source: &Path,
+    disc: &Path,
+    relative: &Path,
+    lang: &str,
+    differences: &mut Vec<String>,
+) {
     let source_len = match std::fs::metadata(source) {
         Ok(metadata) => metadata.len(),
         Err(e) => {
-            differences.push(format!("无法读取源文件 {}：{e}", display_path(relative)));
+            differences.push(match lang {
+                "zh" => format!("无法读取源文件 {}：{e}", display_path(relative)),
+                _ => format!("Failed to stat source file {}: {e}", display_path(relative)),
+            });
             return;
         }
     };
     let disc_len = match std::fs::metadata(disc) {
         Ok(metadata) => metadata.len(),
         Err(e) => {
-            differences.push(format!("无法读取盘上文件 {}：{e}", display_path(relative)));
+            differences.push(match lang {
+                "zh" => format!("无法读取盘上文件 {}：{e}", display_path(relative)),
+                _ => format!("Failed to stat disc file {}: {e}", display_path(relative)),
+            });
             return;
         }
     };
     if source_len != disc_len {
-        differences.push(format!(
-            "大小不一致：{}（盘上 {disc_len} 字节，源 {source_len} 字节）",
-            display_path(relative)
-        ));
+        differences.push(match lang {
+            "zh" => format!(
+                "大小不一致：{}（盘上 {disc_len} 字节，源 {source_len} 字节）",
+                display_path(relative)
+            ),
+            _ => format!(
+                "Size mismatch: {} ({disc_len} bytes on disc, {source_len} bytes in source)",
+                display_path(relative)
+            ),
+        });
         return;
     }
     match files_equal(source, disc) {
         Ok(true) => {}
-        Ok(false) => differences.push(format!("内容不一致：{}", display_path(relative))),
-        Err(e) => differences.push(format!("比较失败：{}：{e}", display_path(relative))),
+        Ok(false) => differences.push(match lang {
+            "zh" => format!("内容不一致：{}", display_path(relative)),
+            _ => format!("Content mismatch: {}", display_path(relative)),
+        }),
+        Err(e) => differences.push(match lang {
+            "zh" => format!("比较失败：{}：{e}", display_path(relative)),
+            _ => format!("Comparison failed for {}: {e}", display_path(relative)),
+        }),
     }
 }
 
@@ -181,7 +237,7 @@ mod tests {
         write(&disc.join("a.txt"), b"hello");
         write(&source.join("sub/b.bin"), &[0u8, 1, 2, 3]);
         write(&disc.join("sub/b.bin"), &[0u8, 1, 2, 3]);
-        assert_eq!(compare_trees(&source, &disc), Vec::<String>::new());
+        assert_eq!(compare_trees(&source, &disc, "zh"), Vec::<String>::new());
         let _ = std::fs::remove_dir_all(&source);
         let _ = std::fs::remove_dir_all(&disc);
     }
@@ -198,7 +254,7 @@ mod tests {
         write(&source.join("dir/deep.txt"), b"y");
         // 盘上多出的条目不算差异：多区段盘上还有旧文件。
         write(&disc.join("old-session.txt"), b"z");
-        let differences = compare_trees(&source, &disc);
+        let differences = compare_trees(&source, &disc, "zh");
         assert_eq!(differences.len(), 4, "{differences:?}");
         assert!(
             differences
@@ -226,6 +282,14 @@ mod tests {
             !differences.iter().any(|d| d.contains("old-session")),
             "盘上多出的文件不该出现在差异里：{differences:?}"
         );
+        // 英文清单同样按语言输出。
+        let differences = compare_trees(&source, &disc, "en");
+        assert!(
+            differences
+                .iter()
+                .any(|d| d.contains("File missing on disc: gone.txt")),
+            "{differences:?}"
+        );
         let _ = std::fs::remove_dir_all(&source);
         let _ = std::fs::remove_dir_all(&disc);
     }
@@ -235,7 +299,7 @@ mod tests {
         let source = temp_dir("empty-src");
         let disc = temp_dir("empty-disc");
         write(&disc.join("something.bin"), b"data");
-        assert_eq!(compare_trees(&source, &disc), Vec::<String>::new());
+        assert_eq!(compare_trees(&source, &disc, "zh"), Vec::<String>::new());
         let _ = std::fs::remove_dir_all(&source);
         let _ = std::fs::remove_dir_all(&disc);
     }
