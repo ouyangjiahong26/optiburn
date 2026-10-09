@@ -524,12 +524,6 @@ select:disabled,
   font-size: var(--text-2xs);
 }
 
-.disc-note {
-  margin: 0;
-  color: var(--color-green);
-  font-size: var(--text-xs);
-}
-
 .empty-state {
   display: flex;
   align-items: center;

@@ -1,5 +1,5 @@
 // 追加：把待刻录文件写入空盘或已有区段的盘，文件在盘根平铺。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { RefreshCw, X } from "lucide-react";
 import { discVolumeId, pasteFiles, pickFiles, speedOption, startAppend, startVerify } from "../api";
@@ -28,16 +28,24 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
     }
   }, [active, refresh]);
 
-  // 选中设备后读盘上现有卷标预填，避免以默认值静默改掉盘标。读不到（空盘、盘被
-  // 挂载占用等）就保持现值，等用户主动刷新设备时再试。
+  // 选中设备后读盘上现有卷标预填，避免以默认值静默改掉盘上的卷标。读不到（空盘、
+  // 盘被挂载占用等）就回到默认卷标，不把上一张盘的值带进新盘。序号守卫防迟到的
+  // 响应覆盖后选的设备。
+  const volumeSeqRef = useRef(0);
   const refreshVolumeId = useCallback(async () => {
     if (device === "") {
       return;
     }
+    const seq = ++volumeSeqRef.current;
     try {
-      setVolumeId(await discVolumeId(device));
+      const id = await discVolumeId(device);
+      if (volumeSeqRef.current === seq) {
+        setVolumeId(id);
+      }
     } catch {
-      // 预填只是防错小工具，读不到不算任务失败。
+      if (volumeSeqRef.current === seq) {
+        setVolumeId("OPTIBURN");
+      }
     }
   }, [device]);
 

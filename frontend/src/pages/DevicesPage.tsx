@@ -47,10 +47,12 @@ export function DevicesPage({
   // 清单加载的请求序号：迟到的响应按序号丢弃（见 loadListing）。
   const listingSeqRef = useRef(0);
 
-  // 页面常驻挂载，探测只在页面可见时刷新：切回来时按当前盘片重读状态。
+  // 页面常驻挂载，探测只在页面可见时刷新：切回来时按当前盘片重读状态。重探时
+  // 展开中的清单一并重读，盘可能已经换过。
   useEffect(() => {
     if (active) {
       void refresh();
+      reloadExpanded();
     }
   }, [active, refresh]);
 
@@ -60,11 +62,7 @@ export function DevicesPage({
     }
     void refresh();
     // 任务结束后盘上内容可能已变：展开中的清单重读，选择与锚点清零。
-    if (openDevice !== null) {
-      anchorRef.current = null;
-      setSelected([]);
-      void loadListing(openDevice);
-    }
+    reloadExpanded();
   }, [refreshSignal, refresh]);
 
   // 拖动框选在指针抬起时收尾，指针可能落在列表外，所以挂在 document 上。
@@ -95,6 +93,16 @@ export function DevicesPage({
         setListing({ kind: "error", message: String(cause) });
       }
     }
+  }
+
+  // 重读展开中的清单：设备重探（切页回来或点刷新）后盘可能已换，旧清单与选择作废。
+  function reloadExpanded() {
+    if (openDevice === null) {
+      return;
+    }
+    anchorRef.current = null;
+    setSelected([]);
+    void loadListing(openDevice);
   }
 
   async function toggleDevice(path: string) {
@@ -178,7 +186,10 @@ export function DevicesPage({
           type="button"
           className="btn"
           disabled={locked || probing}
-          onClick={() => void refresh()}
+          onClick={() => {
+            void refresh();
+            reloadExpanded();
+          }}
         >
           <RefreshCw size={13} className={probing ? "spin" : undefined} />
           刷新

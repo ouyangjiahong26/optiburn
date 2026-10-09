@@ -96,6 +96,8 @@ export function App() {
   }, []);
 
   const locked = job !== null;
+  // 写盘类任务停止会留下不完整的盘，只读任务（复制、校验）不会，文案要分开。
+  const discWriting = job !== null && (job.kind === "burn" || job.kind === "append");
 
   return (
     <div className="app">
@@ -179,7 +181,11 @@ export function App() {
       <ConfirmDialog
         open={cancelDialogOpen}
         title="停止任务"
-        message="停止后盘片内容不完整，确认停止？"
+        message={
+          discWriting
+            ? "停止后盘片内容不完整，确认停止？"
+            : "停止后本次任务不会完成，盘上内容不受影响。确认停止？"
+        }
         confirmText="停止"
         cancelText="继续"
         tone="danger"
@@ -193,7 +199,11 @@ export function App() {
       <ConfirmDialog
         open={closeDialogOpen}
         title="退出 OptiBurn"
-        message="有任务正在进行。停止后盘片内容不完整，确认停止并退出？"
+        message={
+          discWriting
+            ? "有任务正在进行。停止后盘片内容不完整，确认停止并退出？"
+            : "有任务正在进行。停止后本次任务不会完成，盘上内容不受影响。确认停止并退出？"
+        }
         confirmText="停止并退出"
         cancelText="继续运行"
         tone="danger"
