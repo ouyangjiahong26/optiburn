@@ -106,12 +106,18 @@ jobs:
           $dir = "src-tauri/target/${{ matrix.target }}/release"
           Copy-Item "$dir/optiburn-gui.exe" "$dir/optiburn.exe"
           Compress-Archive -Path "$dir/optiburn.exe" -DestinationPath "optiburn-gui-${{ matrix.target }}-portable.zip"
+      # 两个来源的根目录不同（nsis 子目录与仓库根），不拍平的话 artifact 会带出
+      # src-tauri/... 子目录，发布阶段的 sha256sum 只扫顶层文件并会因目录报错。
+      - name: Stage bundles
+        shell: pwsh
+        run: |
+          mkdir bundles
+          Copy-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" bundles/
+          Copy-Item "optiburn-gui-${{ matrix.target }}-portable.zip" bundles/
       - uses: actions/upload-artifact@v7
         with:
           name: optiburn-gui-windows-${{ matrix.arch }}
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
-            optiburn-gui-${{ matrix.target }}-portable.zip
+          path: bundles/*
           if-no-files-found: error
 
   build-gui-linux:
