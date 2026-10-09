@@ -11,14 +11,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod readback;
 mod verify;
 mod xorriso;
 
-pub use verify::compare_trees;
-pub use xorriso::{
-    BurnFailure, DiscEntry, XorrisoEngine, extract_paths, extract_tree, grow, last_session_is_iso,
-    list_tree, read_volume_id,
+pub use readback::{
+    DiscEntry, extract_paths, extract_tree, last_session_is_iso, list_tree, read_volume_id,
 };
+pub use verify::compare_trees;
+pub use xorriso::{BurnFailure, XorrisoEngine, grow};
+
+/// 依赖的可执行文件名。
+pub(crate) const XORRISO: &str = "xorriso";
+/// 子进程失败时保留多少行 stderr 作为摘要。
+pub(crate) const TAIL_LINES: usize = 10;
 
 /// 一次镜像刻录任务的输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
