@@ -20,7 +20,7 @@ pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
         return Err(BurnError::NoIsoSession);
     }
     parse_volume_id(&stdout)
-        .ok_or_else(|| BurnError::Failed("xorriso did not report a Volume Id".to_string()))
+        .ok_or_else(|| BurnError::ReadFailed("xorriso did not report a Volume Id".to_string()))
 }
 
 /// 判断 xorriso 是否因为盘上没有 ISO 9660 而兜底造了一个空镜像。
@@ -32,7 +32,7 @@ fn is_blank_image_fallback(stderr: &str) -> bool {
     stderr.contains("Creating blank image") || stderr.contains("No ISO 9660 image")
 }
 
-/// 读卷标时视为「没有真实卷标」的两种形态：读不出 ISO 9660 的兜底空镜像，或本身
+/// 读卷标时视为“没有真实卷标”的两种形态：读不出 ISO 9660 的兜底空镜像，或本身
 /// 是空白介质（0 区段，xorriso 不读 ISO 头，stderr 报 `Media status : is blank`，
 /// stdout 报合成的默认卷标 `ISOIMAGE`，实测 1.5.6）。
 ///
@@ -148,9 +148,11 @@ fn list_args(device: &str) -> Vec<OsString> {
 
 /// 解析 `lsdl` 的输出：`-rw-r--r-- 1 1000 1000 7797 Oct 9 10:25 '/路径'`。
 ///
-/// 大小取按空白切分的第 5 个字段。路径按 shell 引号拼接解出：名字里的单引号会写成
-/// `'"'"'`，名字里的换行原样出现（条目因此可能跨物理行），符号链接行后面还跟着
-/// ` -> '目标'`，只取链接自身的路径。根目录 `/` 自身不进列表（实测 xorriso 1.5.6）。
+/// 大小取按空白切分的第 5 个字段。只列普通文件、目录与符号链接（`d`、`-`、`l`
+/// 前缀），FIFO 与设备这类非常规条目不进清单。路径按 shell 引号拼接解出：名字里
+/// 的单引号会写成 `'"'"'`，名字里的换行原样出现（条目因此可能跨物理行），符号链接行
+/// 后面还跟着 ` -> '目标'`，只取链接自身的路径。根目录 `/` 自身不进列表（实测
+/// xorriso 1.5.6）。
 fn parse_lsdl(stdout: &str) -> Vec<DiscEntry> {
     let mut entries = Vec::new();
     let mut cursor = 0;
@@ -232,26 +234,38 @@ pub fn extract_paths(
     )
 }
 
-/// 校验盘内路径并转成本地相对路径：只接受常规段，拒绝 `..`、盘符前缀与 Windows
-/// 的分隔符。
+/// 校验盘内路径并转成本地相对路径：只接受常规段，拒绝 `..`、首段的盘符前缀与
+/// Windows 的分隔符。
 ///
 /// 盘片内容不能当可信输入：Windows 上 `C:/x` 这类带盘符的路径会让 `Path::join`
 /// 直接替换掉暂存目标，把文件抽到暂存目录之外（实测 xorriso 能写出这样的镜像）。
+/// 盘符前缀只在首段构成逃逸，其余段里的冒号按普通字符放行（Linux 上是合法名字）。
 fn safe_relative_path(path: &str) -> Result<PathBuf, BurnError> {
     let mut relative = PathBuf::new();
+    let mut first = true;
     for segment in path.split('/') {
         if segment.is_empty() || segment == "." {
             continue;
         }
-        if segment == ".." || segment.contains('\\') || segment.contains(':') {
+        if first && is_drive_prefix(segment) {
+            return Err(BurnError::UnsafePath(path.to_string()));
+        }
+        if segment == ".." || segment.contains('\\') {
             return Err(BurnError::UnsafePath(path.to_string()));
         }
         relative.push(segment);
+        first = false;
     }
     if relative.as_os_str().is_empty() {
         return Err(BurnError::UnsafePath(path.to_string()));
     }
     Ok(relative)
+}
+
+/// 段是否是 Windows 盘符前缀形态（单个 ASCII 字母加冒号）。
+fn is_drive_prefix(segment: &str) -> bool {
+    let bytes = segment.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// 组装多路径抽取的参数表：一次加载盘片，按序执行每条 `-extract`。
@@ -290,7 +304,7 @@ fn run_output(program: &str, args: &[OsString]) -> Result<(String, String), Burn
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(BurnError::Failed(tail_of(&stderr)));
+        return Err(BurnError::ReadFailed(tail_of(&stderr)));
     }
     Ok((
         String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -442,13 +456,22 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
             safe_relative_path("/子目录/中文文件.txt").unwrap(),
             PathBuf::from("子目录/中文文件.txt")
         );
-        // Windows 盘符前缀、`..` 与反斜杠分隔符都拒绝。盘内路径来自盘片，不能信。
+        // 首段的盘符前缀、`..` 与反斜杠分隔符都拒绝。盘内路径来自盘片，不能信。
         for bad in ["/C:/escaped", "/../etc/passwd", "/a\\b", "/", ""] {
             assert!(
                 matches!(safe_relative_path(bad), Err(BurnError::UnsafePath(_))),
                 "{bad}"
             );
         }
+        // 非首段的冒号是 Linux 上的合法文件名，放行。
+        assert_eq!(
+            safe_relative_path("/12:30.txt").unwrap(),
+            PathBuf::from("12:30.txt")
+        );
+        assert_eq!(
+            safe_relative_path("/报告/12:30.txt").unwrap(),
+            PathBuf::from("报告/12:30.txt")
+        );
     }
 
     #[test]
@@ -507,7 +530,7 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
         let err = run_output("sh", &os(&["-c", "printf 'boom\\n' >&2; exit 3"]))
             .expect_err("script exits 3");
         assert!(
-            matches!(&err, BurnError::Failed(msg) if msg.contains("boom")),
+            matches!(&err, BurnError::ReadFailed(msg) if msg.contains("boom")),
             "{err:?}"
         );
     }

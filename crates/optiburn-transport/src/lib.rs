@@ -137,7 +137,7 @@ pub fn mounted_at(device: &str) -> Option<PathBuf> {
 /// 设备被系统挂载时返回挂载点，未挂载返回 `None`。
 ///
 /// Windows 的“挂载”是盘符卷，占用由 SPTI 打开设备时的错误表达，没有 Linux 式的
-/// 挂载点可查。等设备枚举落地、有真机可验证时再按打开错误分类补齐（ADR-0005）。
+/// 挂载点可查。枚举已落地但没有真机可验证，有真机时再按打开错误分类补齐（ADR-0005）。
 #[cfg(windows)]
 pub fn mounted_at(device: &str) -> Option<PathBuf> {
     windows::mounted_at(device)
