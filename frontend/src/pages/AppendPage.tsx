@@ -1,21 +1,22 @@
-// 追加：在可追加的盘上继续写入目录，交互与刻录页一致。
-import { useEffect, useState } from "react";
+// 追加：把待刻录文件写入空盘或已有区段的盘，文件在盘根平铺。
+import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { RefreshCw } from "lucide-react";
-import { speedOption, startAppend } from "../api";
+import { RefreshCw, X } from "lucide-react";
+import { discVolumeId, pasteFiles, pickFiles, speedOption, startAppend, startVerify } from "../api";
 import { useDeviceProbe, useGateNotice } from "../hooks";
 import { DISC_STATUS_LABEL } from "../discStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormRow } from "../components/FormRow";
-import { PathField } from "../components/PathField";
-import type { DiscPageProps } from "../types";
+import type { DiscPageProps, VerifyReport } from "../types";
 
 export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageProps) {
-  const [src, setSrc] = useState("");
+  const [files, setFiles] = useState<string[]>([]);
   const [device, setDevice] = useState("");
   const [volumeId, setVolumeId] = useState("OPTIBURN");
   const [speed, setSpeed] = useState("");
   const [closeDisc, setCloseDisc] = useState(false);
+  const [verify, setVerify] = useState<VerifyReport | null>(null);
+  const [pasteNote, setPasteNote] = useState<string | null>(null);
   const { devices, probing, refresh } = useDeviceProbe();
   const { notice: gateNotice, dismiss: dismissGate } = useGateNotice("append", result);
 
@@ -23,12 +24,87 @@ export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageP
     void refresh();
   }, [refresh]);
 
+  // 选中设备后读盘上现有卷标预填，避免以默认值静默改掉盘标。读不到（空盘、盘被
+  // 挂载占用等）就保持现值，等用户主动刷新设备时再试。
+  const refreshVolumeId = useCallback(async () => {
+    if (device === "") {
+      return;
+    }
+    try {
+      setVolumeId(await discVolumeId(device));
+    } catch {
+      // 预填只是防错小工具，读不到不算任务失败。
+    }
+  }, [device]);
+
+  useEffect(() => {
+    void refreshVolumeId();
+  }, [refreshVolumeId]);
+
+  // 添加入口共用：去重后并入列表。同名不同路径的文件由后端在暂存阶段拒绝。
+  const addFiles = useCallback((paths: string[]) => {
+    setFiles((current) => {
+      const merged = [...current];
+      for (const path of paths) {
+        if (!merged.includes(path)) {
+          merged.push(path);
+        }
+      }
+      return merged;
+    });
+  }, []);
+
+  // Ctrl+V 把系统剪贴板里的文件加进列表。WebKit 的 paste 事件在焦点不在可编辑
+  // 控件上时不可靠（实测无响应），这里改为拦截按键再经 GTK 读剪贴板。焦点在输入
+  // 框里时不拦截，让文本正常粘贴。
+  const handlePasteFromClipboard = useCallback(async () => {
+    setPasteNote(null);
+    try {
+      const paths = await pasteFiles();
+      if (paths.length === 0) {
+        setPasteNote("剪贴板里没有文件。请先在文件管理器里复制文件，再回到本页。");
+        return;
+      }
+      addFiles(paths);
+    } catch (cause) {
+      setPasteNote(String(cause));
+    }
+  }, [addFiles]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "v") {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      const editable =
+        target !== null &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      if (editable) {
+        return;
+      }
+      event.preventDefault();
+      void handlePasteFromClipboard();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handlePasteFromClipboard]);
+
+  const ready = files.length > 0 && device !== "";
+
+  async function handlePickFiles() {
+    addFiles(await pickFiles());
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setVerify(null);
     onJobStart("append");
     try {
       await startAppend({
-        src: src.trim(),
+        files,
         device,
         volumeId: volumeId.trim(),
         speed: speedOption(speed),
@@ -39,23 +115,81 @@ export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageP
     }
   }
 
+  async function handleVerify() {
+    setVerify(null);
+    onJobStart("verify");
+    try {
+      setVerify(await startVerify({ device, source: "", files, mode: "append" }));
+    } catch (cause) {
+      onJobAbort("verify", String(cause));
+    }
+  }
+
   return (
     <div className="page">
       <header className="page-header">
         <div>
           <h1>追加</h1>
-          <p>在已有数据区段的盘上继续写入一个目录。</p>
+          <p>把待刻录文件写入空盘或已有区段的盘，空盘上就是首刻。</p>
         </div>
       </header>
       <form className="form" onSubmit={(event) => void handleSubmit(event)}>
-        <FormRow label="源目录">
-          <PathField
-            mode="directory"
-            value={src}
-            onChange={setSrc}
-            disabled={locked}
-            placeholder="选择要追加的目录"
-          />
+        <FormRow label="待刻录文件">
+          <div className="file-picker">
+            {files.length === 0 ? (
+              <p className="file-empty">
+                {"还没有文件。点“添加文件”从文件管理器多选，或先在文件管理器复制文件，回到本页按 Ctrl+V 粘贴，也可以点“粘贴”。"}
+              </p>
+            ) : (
+              <ul className="file-list">
+                {files.map((path) => (
+                  <li key={path}>
+                    <span className="file-name" title={path}>
+                      {path.split(/[\\/]/).pop() ?? path}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      disabled={locked}
+                      aria-label={`移除 ${path}`}
+                      onClick={() =>
+                        setFiles((current) => current.filter((item) => item !== path))
+                      }
+                    >
+                      <X size={11} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="inline-controls">
+              <button
+                type="button"
+                className="btn"
+                disabled={locked}
+                onClick={() => void handlePickFiles()}
+              >
+                添加文件
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked}
+                onClick={() => void handlePasteFromClipboard()}
+              >
+                粘贴
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || files.length === 0}
+                onClick={() => setFiles([])}
+              >
+                清空
+              </button>
+            </div>
+            {pasteNote !== null && <p className="file-empty">{pasteNote}</p>}
+          </div>
         </FormRow>
         <FormRow label="设备">
           <div className="inline-controls">
@@ -82,7 +216,10 @@ export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageP
               type="button"
               className="btn"
               disabled={locked || probing}
-              onClick={() => void refresh()}
+              onClick={() => {
+                void refresh();
+                void refreshVolumeId();
+              }}
             >
               <RefreshCw size={13} className={probing ? "spin" : undefined} />
               刷新
@@ -124,14 +261,32 @@ export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageP
         </FormRow>
         <div className="form-actions">
           <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={locked || src.trim() === "" || device === ""}
+            type="button"
+            className="btn"
+            disabled={locked || !ready}
+            onClick={() => void handleVerify()}
           >
+            校验盘片
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={locked || !ready}>
             开始追加
           </button>
         </div>
       </form>
+      {verify !== null && (
+        <section className="result-card">
+          <h2>{verify.differences.length === 0 ? "校验通过" : "校验未通过"}</h2>
+          {verify.differences.length === 0 ? (
+            <p className="result-note">盘上内容与所选文件逐项一致。</p>
+          ) : (
+            <ul className="diff-list">
+              {verify.differences.map((line, index) => (
+                <li key={index}>{line}</li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
       <ConfirmDialog
         open={gateNotice !== null}
         title="无法追加这张盘"

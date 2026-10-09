@@ -11,15 +11,33 @@ export type DeviceInfo = {
   error: string | null;
 };
 
+// 盘上条目：path 以 / 开头，目录 size 为 0。
+export type DiscEntry = {
+  path: string;
+  size: number;
+  isDir: boolean;
+};
+
+// 把盘上文件复制到剪贴板的结果。
+export type CopyReport = {
+  count: number;
+  bytes: number;
+};
+
 export type ImageInfoDto = {
   sectors: number;
   bytes: number;
   filesystems: string[];
 };
 
+// 回读校验结果：差异为空表示盘上内容与源一致，条目是中文描述，直接展示。
+export type VerifyReport = {
+  differences: string[];
+};
+
 export type DiscProfile = "cd" | "dvd" | "bd";
 
-export type JobKind = "build" | "burn" | "append";
+export type JobKind = "build" | "burn" | "append" | "verify";
 
 export type JobOutcome = "done" | "cancelled" | "failed";
 

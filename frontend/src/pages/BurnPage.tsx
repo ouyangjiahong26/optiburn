@@ -2,19 +2,20 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { RefreshCw } from "lucide-react";
-import { speedOption, startBurn } from "../api";
+import { speedOption, startBurn, startVerify } from "../api";
 import { useDeviceProbe, useGateNotice } from "../hooks";
 import { DISC_STATUS_LABEL } from "../discStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormRow } from "../components/FormRow";
 import { PathField } from "../components/PathField";
-import type { DiscPageProps } from "../types";
+import type { DiscPageProps, VerifyReport } from "../types";
 
 export function BurnPage({ locked, result, onJobStart, onJobAbort }: DiscPageProps) {
   const [image, setImage] = useState("");
   const [device, setDevice] = useState("");
   const [speed, setSpeed] = useState("");
   const [closeDisc, setCloseDisc] = useState(false);
+  const [verify, setVerify] = useState<VerifyReport | null>(null);
   const { devices, probing, refresh } = useDeviceProbe();
   const { notice: gateNotice, dismiss: dismissGate } = useGateNotice("burn", result);
 
@@ -24,6 +25,7 @@ export function BurnPage({ locked, result, onJobStart, onJobAbort }: DiscPagePro
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setVerify(null);
     onJobStart("burn");
     try {
       await startBurn({
@@ -34,6 +36,16 @@ export function BurnPage({ locked, result, onJobStart, onJobAbort }: DiscPagePro
       });
     } catch (cause) {
       onJobAbort("burn", String(cause));
+    }
+  }
+
+  async function handleVerify() {
+    setVerify(null);
+    onJobStart("verify");
+    try {
+      setVerify(await startVerify({ device, source: image.trim(), files: [], mode: "burn" }));
+    } catch (cause) {
+      onJobAbort("verify", String(cause));
     }
   }
 
@@ -112,6 +124,14 @@ export function BurnPage({ locked, result, onJobStart, onJobAbort }: DiscPagePro
         </FormRow>
         <div className="form-actions">
           <button
+            type="button"
+            className="btn"
+            disabled={locked || image.trim() === "" || device === ""}
+            onClick={() => void handleVerify()}
+          >
+            校验盘片
+          </button>
+          <button
             type="submit"
             className="btn btn-primary"
             disabled={locked || image.trim() === "" || device === ""}
@@ -120,6 +140,20 @@ export function BurnPage({ locked, result, onJobStart, onJobAbort }: DiscPagePro
           </button>
         </div>
       </form>
+      {verify !== null && (
+        <section className="result-card">
+          <h2>{verify.differences.length === 0 ? "校验通过" : "校验未通过"}</h2>
+          {verify.differences.length === 0 ? (
+            <p className="result-note">盘上内容与镜像逐项一致。</p>
+          ) : (
+            <ul className="diff-list">
+              {verify.differences.map((line, index) => (
+                <li key={index}>{line}</li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
       <ConfirmDialog
         open={gateNotice !== null}
         title="无法刻录这张盘"

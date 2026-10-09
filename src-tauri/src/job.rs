@@ -12,6 +12,7 @@ pub enum JobKind {
     Build,
     Burn,
     Append,
+    Verify,
 }
 
 /// 一次阻塞任务的运行时信息。

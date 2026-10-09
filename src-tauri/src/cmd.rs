@@ -1,8 +1,13 @@
 //! Tauri 命令层：把核心 crate 的能力暴露给前端，并统一中文文案。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use optiburn_engine::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow};
+use optiburn_engine::{
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, XorrisoEngine,
+    compare_trees, extract_paths, extract_tree, grow, last_session_is_iso, list_tree,
+    read_volume_id,
+};
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
     DiscInformation, DiscStatus, MmcDevice, MmcError, WriteBlock, approve_write, wait_until_ready,
@@ -58,6 +63,15 @@ enum JobError {
         device: String,
         source: optiburn_transport::TransportError,
     },
+    /// 光盘被系统挂载，写盘或抽取都拿不到独占访问。
+    Mounted {
+        device: String,
+        point: PathBuf,
+    },
+    /// 追加路径上末区段不是 ISO 9660（例如 UDF 盘），续写会遮住原有内容。
+    NoIsoSession,
+    /// 待刻录列表或暂存阶段的输入问题，文案已由下层给出。
+    Input(String),
     /// 等待介质就绪或读取盘片信息失败。
     Disc(MmcError),
     /// 写前门禁拒绝。
@@ -66,7 +80,16 @@ enum JobError {
     Mastering(MasteringError),
 }
 
-/// 盘片状态到前端字段（status, status_bits）的映射。
+/// 刻录失败文案：先归类成面向人的成因，认不出的形态保留原始输出。
+///
+/// 原始输出始终会另写进应用日志（见 [`fail_job`]），界面不展示英文长文。
+fn burn_failure_text(tail: &str) -> String {
+    match BurnFailure::classify(tail) {
+        BurnFailure::DriveLost => "刻录中断：光驱在写入过程中失去了连接，常见原因是线缆松动、供电不稳或被意外拔出。本次区段没有写完，旧内容不受影响。请重新插拔光驱后重试。这张盘如果要继续使用，建议先检查再写。".to_string(),
+        BurnFailure::DeviceBusy => "设备被占用：光驱正被其它程序使用，常见是系统挂载了这张光盘。先卸载光盘或关闭占用程序再试。".to_string(),
+        BurnFailure::Other => format!("刻录失败：{tail}"),
+    }
+}
 fn status_fields(status: DiscStatus) -> (String, Option<u8>) {
     match status {
         DiscStatus::Empty => ("empty".into(), None),
@@ -105,6 +128,12 @@ fn default_output(src: &Path) -> PathBuf {
 fn job_error_text(error: &JobError) -> String {
     match error {
         JobError::Open { device, source } => format!("打开 {device} 失败：{source}"),
+        JobError::Mounted { device, point } => format!(
+            "光盘已被系统挂载在 {}：在文件管理器里卸载该光盘，或运行 udisksctl unmount -b {device} 后再试。",
+            point.display()
+        ),
+        JobError::NoIsoSession => "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘。".into(),
+        JobError::Input(message) => message.clone(),
         JobError::Disc(MmcError::NotReady) => "盘未就绪：请确认已放入可写盘片且仓门已关闭。".into(),
         JobError::Disc(other) => format!("读取盘片信息失败：{other}"),
         JobError::Gate(WriteBlock::NeedGrowMode) => {
@@ -115,7 +144,7 @@ fn job_error_text(error: &JobError) -> String {
             "缺少刻录工具 xorriso，请先安装后再刻录。".into()
         }
         JobError::Burn(BurnError::Cancelled) => "已中止：盘片内容不完整。".into(),
-        JobError::Burn(BurnError::Failed(tail)) => format!("刻录失败：{tail}"),
+        JobError::Burn(BurnError::Failed(tail)) => burn_failure_text(tail),
         JobError::Burn(other) => format!("刻录失败：{other}"),
         JobError::Mastering(MasteringError::SourceNotFound(path)) => {
             format!("源目录不存在：{}", path.display())
@@ -218,6 +247,10 @@ fn finish_job(app: &AppHandle, kind: JobKind, outcome: &str, message: String) {
 
 /// 失败收尾：广播 job-done，并把同一份文案返回给调用方（invoke 拒绝分支复用）。
 fn fail_job(app: &AppHandle, kind: JobKind, error: JobError) -> String {
+    // 面向用户的文案经过归类，原始细节写进应用日志备查。
+    if let JobError::Burn(BurnError::Failed(tail)) = &error {
+        eprintln!("optiburn: 刻录失败原始输出：{tail}");
+    }
     let outcome = if matches!(error, JobError::Burn(BurnError::Cancelled)) {
         "cancelled"
     } else {
@@ -314,32 +347,26 @@ pub async fn start_burn(
     Ok(())
 }
 
-/// 把目录追加到盘上（增长模式），交互与刻录一致。
+/// 把待刻录文件追加到盘上（增长模式）：文件先收进暂存目录，再按盘根写入。
 #[tauri::command]
 pub async fn start_append(
     app: AppHandle,
     state: State<'_, JobState>,
-    src: String,
+    files: Vec<String>,
     device: String,
     volume_id: String,
     speed: Option<u32>,
     close_disc: bool,
 ) -> Result<(), String> {
+    if files.is_empty() {
+        return Err("待刻录列表是空的。".into());
+    }
     let cancel = begin_job(&state)?;
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
-        let src = PathBuf::from(src);
-        let result = run_disc_task(DiscTask {
-            app: &worker,
-            kind: JobKind::Append,
-            append: true,
-            path: &src,
-            device: &device,
-            volume_id: &volume_id,
-            speed,
-            close_disc,
-            cancel: &cancel,
-        });
+        let result = run_append_task(
+            &worker, &cancel, files, &device, &volume_id, speed, close_disc,
+        );
         match result {
             Ok(message) => finish_job(&worker, JobKind::Append, "done", message),
             Err(e) => {
@@ -349,6 +376,326 @@ pub async fn start_append(
     });
     set_join(&state, join);
     Ok(())
+}
+
+/// 追加任务主体：待刻录文件收进暂存目录，写入完成或失败后都清掉暂存。
+fn run_append_task(
+    app: &AppHandle,
+    cancel: &CancelToken,
+    files: Vec<String>,
+    device: &str,
+    volume_id: &str,
+    speed: Option<u32>,
+    close_disc: bool,
+) -> Result<String, JobError> {
+    let stage = std::env::temp_dir().join(format!("optiburn-stage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&stage);
+    stage_files(&files, &stage).map_err(JobError::Input)?;
+    let result = run_disc_task(DiscTask {
+        app,
+        kind: JobKind::Append,
+        append: true,
+        path: &stage,
+        device,
+        volume_id,
+        speed,
+        close_disc,
+        cancel,
+    });
+    let _ = std::fs::remove_dir_all(&stage);
+    result
+}
+
+/// 把待刻录文件收进暂存目录，盘根就是这些文件的文件名。
+///
+/// 同名文件直接报错而不覆盖（文件来自不同目录时可能出现），复制失败同样报错。
+fn stage_files(files: &[String], stage_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(stage_dir).map_err(|e| format!("创建暂存目录失败：{e}"))?;
+    for file in files {
+        let source = Path::new(file);
+        let name = source
+            .file_name()
+            .ok_or_else(|| format!("路径没有文件名：{file}"))?;
+        let target = stage_dir.join(name);
+        if target.exists() {
+            return Err(format!(
+                "待刻录列表里有同名文件 {}，请改名或分批写入。",
+                name.to_string_lossy()
+            ));
+        }
+        std::fs::copy(source, &target)
+            .map_err(|e| format!("复制 {} 失败：{e}", source.display()))?;
+    }
+    Ok(())
+}
+
+/// 读盘上最后一个区段的卷标，供追加页预填。读不到时前端保持默认值。
+#[tauri::command]
+pub async fn disc_volume_id(device: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_volume_id(&device).map_err(|e| format!("读取卷标失败：{e}"))
+    })
+    .await
+    .expect("volume id worker did not panic")
+}
+
+/// 盘上条目的 DTO，对应前端 `DiscEntry`。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscEntryDto {
+    path: String,
+    size: u64,
+    is_dir: bool,
+}
+
+/// 列出盘上最后一区段的内容（只读），供设备页浏览。
+#[tauri::command]
+pub async fn list_disc(device: String) -> Result<Vec<DiscEntryDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_tree(&device)
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| DiscEntryDto {
+                        path: entry.path,
+                        size: entry.size,
+                        is_dir: entry.is_dir,
+                    })
+                    .collect()
+            })
+            .map_err(|e| disc_read_error(&device, e))
+    })
+    .await
+    .expect("list worker did not panic")
+}
+
+/// 复制结果，对应前端 `CopyReport`。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyReportDto {
+    count: usize,
+    bytes: u64,
+}
+
+/// 每次复制使用一个新的序号子目录，复制成功后清掉更早的暂存。
+static COPY_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+/// 把盘上选中的文件复制出来，并放进系统剪贴板，供文件管理器粘贴。
+#[tauri::command]
+pub async fn copy_disc_files(device: String, paths: Vec<String>) -> Result<CopyReportDto, String> {
+    if paths.is_empty() {
+        return Err("没有选中文件。".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = copy_disc_files_blocking(&device, &paths);
+        // 界面可能已经切走、没人展示这次结果，错误同时写进应用日志备查。
+        if let Err(error) = &result {
+            eprintln!("optiburn: 复制盘上文件失败：{error}");
+        }
+        result
+    })
+    .await
+    .expect("copy worker did not panic")
+}
+
+/// 读取系统剪贴板里的文件，供追加页的粘贴入口使用。
+#[tauri::command]
+pub async fn paste_files() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(crate::clipboard::read_files)
+        .await
+        .expect("paste worker did not panic")
+}
+
+/// 复制主体：抽取到新序号暂存目录，写清剪贴板后再清掉旧暂存。
+///
+/// 顺序是有意的：剪贴板指向的文件在切换完成前一直保留，用户中途粘贴不受影响。
+/// 失败只清这一次的暂存，不碰仍被旧剪贴板引用的目录。
+fn copy_disc_files_blocking(device: &str, paths: &[String]) -> Result<CopyReportDto, String> {
+    let root = std::env::temp_dir().join(format!("optiburn-copy-{}", std::process::id()));
+    let staging = root.join(COPY_SEQUENCE.fetch_add(1, Ordering::Relaxed).to_string());
+    std::fs::create_dir_all(&staging).map_err(|e| format!("创建暂存目录失败：{e}"))?;
+    if let Err(e) = extract_paths(device, paths, &staging, &CancelToken::default()) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(disc_read_error(device, e));
+    }
+    let mut files = Vec::new();
+    if let Err(e) = collect_files(&staging, &mut files) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(format!("扫描暂存目录失败：{e}"));
+    }
+    if let Err(e) = crate::clipboard::copy_files(&files) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    // 剪贴板已指向新目录，旧暂存不再被使用。
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            if entry.path() != staging {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    let bytes = files
+        .iter()
+        .filter_map(|file| std::fs::metadata(file).ok())
+        .map(|meta| meta.len())
+        .sum();
+    Ok(CopyReportDto {
+        count: files.len(),
+        bytes,
+    })
+}
+
+/// 递归收集目录下的全部文件。
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            collect_files(&entry.path(), out)?;
+        } else {
+            out.push(entry.path());
+        }
+    }
+    Ok(())
+}
+
+/// 读取盘片失败的中文文案：盘被挂载占用时给出卸载指引。
+fn disc_read_error(device: &str, error: BurnError) -> String {
+    match optiburn_transport::mounted_at(device) {
+        Some(point) => format!(
+            "读取盘片失败，且光盘正被系统挂载在 {}：先在文件管理器里卸载（或运行 udisksctl unmount -b {device}）再试。",
+            point.display()
+        ),
+        None => format!("读取盘片失败：{error}"),
+    }
+}
+
+/// 校验模式：追加校验对比源目录，刻录校验对比镜像。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum VerifyMode {
+    Append,
+    Burn,
+}
+
+/// 前端的模式字符串到 [`VerifyMode`] 的映射。
+fn verify_mode_from_str(mode: &str) -> Result<VerifyMode, String> {
+    match mode {
+        "append" => Ok(VerifyMode::Append),
+        "burn" => Ok(VerifyMode::Burn),
+        other => Err(format!("未知的校验模式：{other}")),
+    }
+}
+
+/// 回读校验结果，对应前端 `VerifyReport`。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyReportDto {
+    differences: Vec<String>,
+}
+
+/// 回读校验（只读）：把盘上最后一区段的树抽到临时目录，再按内容与源对比（ADR-0010）。
+/// 追加校验用 `files` 重新暂存后对比，刻录校验用 `source` 指向的镜像。
+#[tauri::command]
+pub async fn start_verify(
+    app: AppHandle,
+    state: State<'_, JobState>,
+    device: String,
+    source: String,
+    files: Vec<String>,
+    mode: String,
+) -> Result<VerifyReportDto, String> {
+    let mode = verify_mode_from_str(&mode)?;
+    let cancel = begin_job(&state)?;
+    let worker = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        match run_verify(&device, Path::new(&source), &files, mode, &cancel) {
+            Ok(differences) => {
+                let outcome = if differences.is_empty() {
+                    "done"
+                } else {
+                    "failed"
+                };
+                finish_job(
+                    &worker,
+                    JobKind::Verify,
+                    outcome,
+                    verify_message(mode, &differences),
+                );
+                Ok(VerifyReportDto { differences })
+            }
+            Err(e) => Err(fail_job(&worker, JobKind::Verify, e)),
+        }
+    })
+    .await
+    .expect("verify worker did not panic")
+}
+
+/// 校验主体：门禁、抽取、对比。临时目录用完即删，失败路径也要删。
+fn run_verify(
+    device: &str,
+    source: &Path,
+    files: &[String],
+    mode: VerifyMode,
+    cancel: &CancelToken,
+) -> Result<Vec<String>, JobError> {
+    if let Some(point) = optiburn_transport::mounted_at(device) {
+        return Err(JobError::Mounted {
+            device: device.to_string(),
+            point,
+        });
+    }
+    let temp = std::env::temp_dir().join(format!("optiburn-verify-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp);
+    let result = extract_and_compare(device, source, files, mode, &temp, cancel);
+    let _ = std::fs::remove_dir_all(&temp);
+    result
+}
+
+/// 抽取与对比：先把盘上树抽到临时目录，再准备参照。追加校验把待刻录文件重新
+/// 暂存成目录，刻录校验把镜像树抽出来，最后按内容单向对比。
+fn extract_and_compare(
+    device: &str,
+    source: &Path,
+    files: &[String],
+    mode: VerifyMode,
+    temp: &Path,
+    cancel: &CancelToken,
+) -> Result<Vec<String>, JobError> {
+    let disc_tree = temp.join("disc");
+    std::fs::create_dir_all(&disc_tree).map_err(|e| JobError::Burn(BurnError::Io(e)))?;
+    extract_tree(Path::new(device), &disc_tree, cancel).map_err(JobError::Burn)?;
+    let reference = match mode {
+        VerifyMode::Append => {
+            if files.is_empty() {
+                return Err(JobError::Input("请先选择要刻录的文件。".to_string()));
+            }
+            let staged = temp.join("source");
+            stage_files(files, &staged).map_err(JobError::Input)?;
+            staged
+        }
+        VerifyMode::Burn => {
+            let image_tree = temp.join("image");
+            std::fs::create_dir_all(&image_tree).map_err(|e| JobError::Burn(BurnError::Io(e)))?;
+            extract_tree(source, &image_tree, cancel).map_err(JobError::Burn)?;
+            image_tree
+        }
+    };
+    Ok(compare_trees(&reference, &disc_tree))
+}
+
+/// 校验完成文案（job-done 消息）。
+fn verify_message(mode: VerifyMode, differences: &[String]) -> String {
+    if differences.is_empty() {
+        match mode {
+            VerifyMode::Append => "校验通过：盘上内容与源目录一致。".to_string(),
+            VerifyMode::Burn => "校验通过：盘上内容与镜像一致。".to_string(),
+        }
+    } else {
+        format!(
+            "校验未通过：发现 {} 处差异，明细见页面。",
+            differences.len()
+        )
+    }
 }
 
 /// 取消当前任务：置位令牌，引擎在下一个进度行停掉子进程。
@@ -397,9 +744,23 @@ struct DiscTask<'a> {
 
 /// 刻录/追加的阻塞主体：门禁、引擎、完成后读一次区段数放进完成消息。
 fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
+    // 挂载占用必挂：libburn 拿不到独占设备时只回英文报错，这里先换成卸载指引。
+    if let Some(point) = optiburn_transport::mounted_at(task.device) {
+        return Err(JobError::Mounted {
+            device: task.device.to_string(),
+            point,
+        });
+    }
     let info = open_gate(task.device)?;
     // 镜像路径不接受可追加盘（单区段镜像会遮住已有区段的文件），增长模式放行。
     approve_write(&info, task.append).map_err(JobError::Gate)?;
+    // 追加路径再过一道：末区段不是 ISO 9660 的盘（例如 UDF 盘）拒绝，见 ADR-0010。
+    if task.append
+        && info.status == DiscStatus::Appendable
+        && !last_session_is_iso(task.device).map_err(JobError::Burn)?
+    {
+        return Err(JobError::NoIsoSession);
+    }
 
     let mut progress = progress_emitter(task.app, task.kind);
     let result = if task.append {
@@ -525,6 +886,90 @@ mod tests {
                 PathBuf::from("/x")
             ))),
             "源路径不是目录：/x"
+        );
+        assert_eq!(
+            job_error_text(&JobError::Mounted {
+                device: "/dev/sr0".to_string(),
+                point: PathBuf::from("/run/media/u/我的光盘"),
+            }),
+            "光盘已被系统挂载在 /run/media/u/我的光盘：在文件管理器里卸载该光盘，或运行 udisksctl unmount -b /dev/sr0 后再试。"
+        );
+        assert_eq!(
+            job_error_text(&JobError::NoIsoSession),
+            "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘。"
+        );
+        assert_eq!(
+            job_error_text(&JobError::Input("复制 /x 失败：no such file".to_string())),
+            "复制 /x 失败：no such file"
+        );
+        assert_eq!(
+            job_error_text(&JobError::Burn(BurnError::Failed(
+                "libburn : FATAL : Lost connection to drive\n".to_string()
+            ))),
+            "刻录中断：光驱在写入过程中失去了连接，常见原因是线缆松动、供电不稳或被意外拔出。本次区段没有写完，旧内容不受影响。请重新插拔光驱后重试。这张盘如果要继续使用，建议先检查再写。"
+        );
+        assert_eq!(
+            job_error_text(&JobError::Burn(BurnError::Failed(
+                "libburn : SORRY : Cannot open busy device '/dev/sr0'\n".to_string()
+            ))),
+            "设备被占用：光驱正被其它程序使用，常见是系统挂载了这张光盘。先卸载光盘或关闭占用程序再试。"
+        );
+    }
+
+    #[test]
+    fn stage_files_copies_and_rejects_duplicates() {
+        let base = std::env::temp_dir().join(format!("optiburn-stage-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("src");
+        std::fs::create_dir_all(src.join("a")).unwrap();
+        std::fs::create_dir_all(src.join("b")).unwrap();
+        std::fs::write(src.join("a/x.txt"), b"one").unwrap();
+        std::fs::write(src.join("b/y.txt"), b"two").unwrap();
+
+        let files = vec![
+            src.join("a/x.txt").display().to_string(),
+            src.join("b/y.txt").display().to_string(),
+        ];
+        let stage = base.join("stage");
+        stage_files(&files, &stage).expect("stage two files");
+        assert_eq!(std::fs::read(stage.join("x.txt")).unwrap(), b"one");
+        assert_eq!(std::fs::read(stage.join("y.txt")).unwrap(), b"two");
+
+        // 同名文件必须报错，不能悄悄覆盖先到的那个。
+        let clashing = vec![
+            src.join("a/x.txt").display().to_string(),
+            src.join("a/x.txt").display().to_string(),
+        ];
+        let err = stage_files(&clashing, &base.join("stage-clash")).expect_err("must fail");
+        assert!(err.contains("同名文件"), "{err}");
+
+        // 不存在的源文件同样报错。
+        let missing = vec![src.join("a/none.txt").display().to_string()];
+        let err = stage_files(&missing, &base.join("stage-missing")).expect_err("must fail");
+        assert!(err.contains("复制"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn verify_mode_and_message_wording() {
+        assert_eq!(verify_mode_from_str("append"), Ok(VerifyMode::Append));
+        assert_eq!(verify_mode_from_str("burn"), Ok(VerifyMode::Burn));
+        assert_eq!(
+            verify_mode_from_str("copy"),
+            Err("未知的校验模式：copy".to_string())
+        );
+        assert_eq!(
+            verify_message(VerifyMode::Append, &[]),
+            "校验通过：盘上内容与源目录一致。"
+        );
+        assert_eq!(
+            verify_message(VerifyMode::Burn, &[]),
+            "校验通过：盘上内容与镜像一致。"
+        );
+        assert_eq!(
+            verify_message(VerifyMode::Append, &["盘上缺少文件：a.txt".to_string()]),
+            "校验未通过：发现 1 处差异，明细见页面。"
         );
     }
 
