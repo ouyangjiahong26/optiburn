@@ -14,7 +14,8 @@ env:
 jobs:
   build-linux:
     name: 构建 Linux x86_64
-    runs-on: ubuntu-latest
+    # 22.04 的 glibc 更老，CLI 在老发行版上也能跑（24.04 构建的产物要求 2.38+）。
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -129,7 +130,10 @@ jobs:
         include:
           - arch: x86_64
             target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            # 24.04 构建的 AppImage 捆绑了要求 GLIBC 2.38 的 webkit2gtk/gtk，
+            # AppImageHub 的收录实测（跑在更老的 LTS）与老发行版用户都跑不起来。
+            # x86_64 用 22.04 构建，glibc 要求降到 2.35。
+            os: ubuntu-22.04
           - arch: aarch64
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
