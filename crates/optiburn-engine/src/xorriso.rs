@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob};
@@ -86,9 +86,7 @@ fn grow_args(job: &GrowJob) -> Vec<OsString> {
 pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
     let (stdout, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
     if is_blank_image_fallback(&stderr) {
-        return Err(BurnError::Failed(
-            "no ISO 9660 image at the last session".to_string(),
-        ));
+        return Err(BurnError::NoIsoSession);
     }
     parse_volume_id(&stdout)
         .ok_or_else(|| BurnError::Failed("xorriso did not report a Volume Id".to_string()))
@@ -139,11 +137,27 @@ impl BurnFailure {
             Self::Other
         }
     }
+
+    /// 面向用户的中文说明。`tail` 只在未归类时拼进文案，原始输出由调用方另写日志。
+    ///
+    /// 文案收在引擎里，CLI 与 GUI 共用同一份，避免两端各写一份后口径漂移。
+    pub fn user_text(&self, tail: &str) -> String {
+        match self {
+            Self::DriveLost => "刻录中断：光驱在写入过程中失去了连接，常见原因是线缆松动、供电不稳或被意外拔出。本次区段没有写完，旧内容不受影响。请重新插拔光驱后重试。这张盘如果要继续使用，建议先检查再写。".to_string(),
+            Self::DeviceBusy => "设备被占用：光驱正被其它程序使用，常见是系统挂载了这张光盘。先卸载光盘或关闭占用程序再试。".to_string(),
+            Self::Other => format!("刻录失败：{tail}"),
+        }
+    }
 }
 
 /// 组装读卷标的参数表。
+///
+/// 带 `-drive_access shared`：盘被挂载时独占打开会失败，shared 仍能读到 PVD，
+/// 卷标预填与末区段检查因此在挂载期间也可用。
 fn pvd_info_args(device: &str) -> Vec<OsString> {
     vec![
+        OsString::from("-drive_access"),
+        OsString::from("shared"),
         OsString::from("-indev"),
         OsString::from(device),
         OsString::from("-pvd_info"),
@@ -205,7 +219,13 @@ pub struct DiscEntry {
 /// `-find / -exec lsdl` 一次读取拿到全部条目的路径与大小。`-drive_access shared`
 /// 是只读打开，本机已挂载的盘也有机会直接读到（挂载点之外仍优先用盘上最后一区段）。
 pub fn list_tree(device: &str) -> Result<Vec<DiscEntry>, BurnError> {
-    let (stdout, _stderr) = run_output(XORRISO, &list_args(device))?;
+    let (stdout, stderr) = run_output(XORRISO, &list_args(device))?;
+    // 盘上没有 ISO 9660 时 xorriso 会兜底造一个空镜像并照常成功，stdout 只列根目录。
+    // 这里按 stderr 识破兜底：真空白盘由调用方区分，有内容却读不出 ISO 的盘不能
+    // 被显示成空盘（实测，见 ADR-0010）。
+    if is_blank_image_fallback(&stderr) {
+        return Err(BurnError::NoIsoSession);
+    }
     Ok(parse_lsdl(&stdout))
 }
 
@@ -226,21 +246,23 @@ fn list_args(device: &str) -> Vec<OsString> {
 
 /// 解析 `lsdl` 的一行：`-rw-r--r-- 1 1000 1000 7797 Oct 9 10:25 '/路径'`。
 ///
-/// 路径可能在引号里带空格，所以大小取按空白切分的第 5 个字段，路径取首个引号到
-/// 末个引号之间的内容。根目录 `/` 自身不进列表。
+/// 路径可能在引号里带空格，所以大小取按空白切分的第 5 个字段，路径取第一对引号
+/// 之间的内容。符号链接行形如 `'/link' -> 'sub'`（实测 xorriso 1.5.6），只取链接
+/// 自身的路径，不把箭头与目标收进来。根目录 `/` 自身不进列表。
 fn parse_lsdl(stdout: &str) -> Vec<DiscEntry> {
     let mut entries = Vec::new();
     for line in stdout.lines() {
         if !line.starts_with('d') && !line.starts_with('-') && !line.starts_with('l') {
             continue;
         }
-        let (Some(first), Some(last)) = (line.find('\''), line.rfind('\'')) else {
+        let Some(first) = line.find('\'') else {
             continue;
         };
-        if last <= first {
+        let rest = &line[first + 1..];
+        let Some(end) = rest.find('\'') else {
             continue;
-        }
-        let path = &line[first + 1..last];
+        };
+        let path = &rest[..end];
         if path == "/" {
             continue;
         }
@@ -268,22 +290,47 @@ pub fn extract_paths(
     dest: &Path,
     cancel: &CancelToken,
 ) -> Result<(), BurnError> {
+    // 路径来自盘片本身，逐条校验并落成本地相对路径后再交给 xorriso。
+    let mut targets = Vec::with_capacity(paths.len());
     for path in paths {
-        let target = dest.join(path.trim_start_matches('/'));
+        let target = dest.join(safe_relative_path(path)?);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        targets.push((path.clone(), target));
     }
     run(
         XORRISO,
-        &extract_paths_args(device, paths, dest),
+        &extract_paths_args(device, &targets),
         &mut |_| {},
         cancel,
     )
 }
 
+/// 校验盘内路径并转成本地相对路径：只接受常规段，拒绝 `..`、盘符前缀与 Windows
+/// 的分隔符。
+///
+/// 盘片内容不能当可信输入：Windows 上 `C:/x` 这类带盘符的路径会让 `Path::join`
+/// 直接替换掉暂存目标，把文件抽到暂存目录之外（实测 xorriso 能写出这样的镜像）。
+fn safe_relative_path(path: &str) -> Result<PathBuf, BurnError> {
+    let mut relative = PathBuf::new();
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+        if segment == ".." || segment.contains('\\') || segment.contains(':') {
+            return Err(BurnError::UnsafePath(path.to_string()));
+        }
+        relative.push(segment);
+    }
+    if relative.as_os_str().is_empty() {
+        return Err(BurnError::UnsafePath(path.to_string()));
+    }
+    Ok(relative)
+}
+
 /// 组装多路径抽取的参数表：一次加载盘片，按序执行每条 `-extract`。
-fn extract_paths_args(device: &str, paths: &[String], dest: &Path) -> Vec<OsString> {
+fn extract_paths_args(device: &str, targets: &[(String, PathBuf)]) -> Vec<OsString> {
     let mut args = vec![
         OsString::from("-drive_access"),
         OsString::from("shared"),
@@ -292,10 +339,10 @@ fn extract_paths_args(device: &str, paths: &[String], dest: &Path) -> Vec<OsStri
         OsString::from("-osirrox"),
         OsString::from("on"),
     ];
-    for path in paths {
+    for (path, target) in targets {
         args.push(OsString::from("-extract"));
         args.push(OsString::from(path));
-        args.push(dest.join(path.trim_start_matches('/')).into_os_string());
+        args.push(target.as_os_str().to_os_string());
     }
     args
 }
@@ -729,7 +776,7 @@ mod tests {
     fn pvd_info_args_and_volume_id_parse() {
         assert_eq!(
             pvd_info_args("/dev/sr0"),
-            os(&["-indev", "/dev/sr0", "-pvd_info"])
+            os(&["-drive_access", "shared", "-indev", "/dev/sr0", "-pvd_info"])
         );
         let stdout = "\
 Drive current: -indev '/dev/sr0'
@@ -799,6 +846,35 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
     }
 
     #[test]
+    fn parse_lsdl_takes_only_the_link_path_for_symlinks() {
+        // 实测于 xorriso 1.5.6：符号链接的目标也带引号，路径只能取第一对引号。
+        let stdout = "lrwxrwxrwx    1 1000     1000            0 Oct  9 13:26 '/link' -> 'sub'\n";
+        assert_eq!(
+            parse_lsdl(stdout),
+            vec![DiscEntry {
+                path: "/link".to_string(),
+                size: 0,
+                is_dir: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn safe_relative_path_rejects_escapes() {
+        assert_eq!(
+            safe_relative_path("/子目录/中文文件.txt").unwrap(),
+            PathBuf::from("子目录/中文文件.txt")
+        );
+        // Windows 盘符前缀、`..` 与反斜杠分隔符都拒绝；盘内路径来自盘片，不能信。
+        for bad in ["/C:/escaped", "/../etc/passwd", "/a\\b", "/", ""] {
+            assert!(
+                matches!(safe_relative_path(bad), Err(BurnError::UnsafePath(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn list_and_extract_paths_args_tables() {
         assert_eq!(
             list_args("/dev/sr0"),
@@ -814,9 +890,15 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
                 "--"
             ])
         );
-        let paths = vec!["/子目录/中文文件.txt".to_string(), "/a.bin".to_string()];
+        let targets = vec![
+            (
+                "/子目录/中文文件.txt".to_string(),
+                PathBuf::from("/tmp/out/子目录/中文文件.txt"),
+            ),
+            ("/a.bin".to_string(), PathBuf::from("/tmp/out/a.bin")),
+        ];
         assert_eq!(
-            extract_paths_args("/dev/sr0", &paths, Path::new("/tmp/out")),
+            extract_paths_args("/dev/sr0", &targets),
             os(&[
                 "-drive_access",
                 "shared",
@@ -882,6 +964,8 @@ libburn : SORRY : Drive is already released
             BurnFailure::classify("xorriso : aborting : FAILURE"),
             BurnFailure::Other
         );
+        assert_eq!(BurnFailure::Other.user_text("boom"), "刻录失败：boom");
+        assert!(BurnFailure::DriveLost.user_text("").starts_with("刻录中断"));
     }
 
     #[test]

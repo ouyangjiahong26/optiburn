@@ -261,7 +261,8 @@ pub(crate) fn list_optical_devices() -> Vec<String> {
 }
 
 /// Windows 上恒为 `None`：卷占用由 SPTI 打开设备时的错误表达，没有 Linux 式的
-/// 挂载点可查。等设备枚举落地、有真机可验证时再按打开错误分类补齐（ADR-0005）。
+/// 挂载点可查。枚举已落地但没有真机可验证，有真机时再按打开错误分类补齐
+/// （ADR-0005）。
 pub(super) fn mounted_at(_device: &str) -> Option<std::path::PathBuf> {
     None
 }

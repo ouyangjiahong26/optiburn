@@ -11,7 +11,8 @@ use std::path::Path;
 /// 单向对比两棵目录树，返回中文差异描述，空表示一致。
 ///
 /// `source` 是写入内容的来源（追加的源目录或抽取出的镜像树），`disc` 是盘上树抽到
-/// 本地的目录。符号链接按跳过处理，写盘时它们本来也不会被写入。
+/// 本地的目录。符号链接不参与对比：链接是否落盘、读取端把它还原成链接还是目标
+/// 文件，取决于写入参数与抽取方式，语义不稳定，内容承诺只覆盖普通文件与目录。
 pub fn compare_trees(source: &Path, disc: &Path) -> Vec<String> {
     let mut differences = Vec::new();
     compare_dir(source, disc, Path::new(""), &mut differences);

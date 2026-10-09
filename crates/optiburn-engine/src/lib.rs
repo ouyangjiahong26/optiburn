@@ -60,6 +60,12 @@ pub enum BurnError {
     Failed(String),
     #[error("burn cancelled")]
     Cancelled,
+    /// 盘上最后一区段不是 ISO 9660（例如 UDF 盘），相关读取与续写不可用。
+    #[error("no ISO 9660 image at the last session")]
+    NoIsoSession,
+    /// 盘内路径不安全（盘符前缀、`..` 或 Windows 分隔符），拒绝抽取。
+    #[error("unsafe path in image: {0}")]
+    UnsafePath(String),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
 }

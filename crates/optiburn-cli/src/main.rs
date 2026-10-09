@@ -152,14 +152,13 @@ fn build_image_command(
     Ok(())
 }
 
-/// 写盘失败的中文文案：与 GUI 同源，按已知成因归类，认不出的形态保留原始输出。
+/// 写盘失败的中文文案：归类走引擎里的共用文案，原始输出打到 stderr 备查。
 fn burn_error_text(error: &BurnError) -> String {
+    if let BurnError::Failed(tail) = error {
+        eprintln!("optiburn: 刻录失败原始输出：{tail}");
+    }
     match error {
-        BurnError::Failed(tail) => match BurnFailure::classify(tail) {
-            BurnFailure::DriveLost => "刻录中断：光驱在写入过程中失去了连接，常见原因是线缆松动、供电不稳或被意外拔出。本次区段没有写完，旧内容不受影响。请重新插拔光驱后重试。这张盘如果要继续使用，建议先检查再写。".to_string(),
-            BurnFailure::DeviceBusy => "设备被占用：光驱正被其它程序使用，常见是系统挂载了这张光盘。先卸载光盘或关闭占用程序再试。".to_string(),
-            BurnFailure::Other => format!("刻录失败：{tail}"),
-        },
+        BurnError::Failed(tail) => BurnFailure::classify(tail).user_text(tail),
         other => other.to_string(),
     }
 }
@@ -253,7 +252,7 @@ fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> 
             last_session_is_iso(device).map_err(|e| format!("读取末区段格式失败：{e}"))?;
         if !iso_readable {
             return Err(
-                "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘。"
+                "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
                     .to_string(),
             );
         }
