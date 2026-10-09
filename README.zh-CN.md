@@ -17,7 +17,7 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Linu
 | `optiburn burn` | Linux 可用（Windows 已能构建并枚举光驱，未做真机验证）。默认多区段（盘保持可追加），`--close-disc` 才封盘。 |
 | `optiburn append` | Linux 可用（Windows 未做真机验证）。增长模式追加目录并合并已有区段，旧文件保持可见。 |
 | `optiburn probe` | Linux（`/dev/sr*`）与 Windows（盘符）可用。找不到设备时报“未发现光驱”（退出码 0）。 |
-| `OptiBurn` 图形前端 | 0.1.1 新增（Tauri 2 + React）。四个页面对应四个子命令，刻录类任务可中止。Windows 安装包（NSIS，x64 与 arm64）与 Linux 安装包（AppImage 与 deb，x86_64 与 arm64）从 Release 页下载。 |
+| `OptiBurn` 图形前端 | 0.1.1 新增（Tauri 2 + React）。四个页面对应四个子命令，刻录类任务可中止。设备页可展开盘上文件清单，支持拖动框选与 Ctrl 加选，选中后可一键复制到系统剪贴板供文件管理器粘贴；追加页的待刻录文件可用文件选择框多选，或在文件管理器复制后按 Ctrl+V 粘贴；卷标自动沿用盘上现有值，刻录与追加两页都能回读盘片并与源逐文件对比，盘被系统挂载时写入会被拦下并提示卸载。Windows 安装包（NSIS，x64 与 arm64）与 Linux 安装包（AppImage 与 deb，x86_64 与 arm64）从 Release 页下载。 |
 
 原生 MMC 写入（不借助外部工具）是下一个里程碑，不属于 0.1.2。分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，介质与文件系统矩阵见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。
 

@@ -33,3 +33,4 @@
 | 设备路径（device） | 光驱的寻址字符串：Linux `/dev/sr0`，Windows `E:`（内部规范成 `\\.\E:`）。 | 盘符、设备名 |
 | 倍速（speed） | 写入速度相对基准（CD 150 KB/s、DVD 1.35 MB/s、BD 4.5 MB/s 的整数倍）。缺省时交给驱动器自选。 | 速度、速率 |
 | 卷标（volume id） | 写在卷描述符里的盘名，Windows 资源管理器显示的就是它。对应 `ImageSpec::volume_id`。 | 标签、盘标、volume label |
+| 回读校验（Verify） | 写完盘后把盘上最后一区段的目录树抽回本地，与源（追加的源目录或刻录的镜像）按文件名与内容逐文件对比的动作。对应 `compare_trees`、`JobKind::Verify`、GUI 的“校验盘片”。 | 验证、核对、对拍 |

@@ -15,7 +15,7 @@ Cross-platform optical disc burning toolkit in Rust for Linux and Windows on x86
 | `optiburn burn` | Works on Linux (Windows builds and enumerates drives, not yet drive-verified). Multi-session by default (the disc stays appendable); `--close-disc` finalizes. |
 | `optiburn append` | Works on Linux (Windows not yet drive-verified). Appends a directory as a merged session; files from earlier sessions stay visible. |
 | `optiburn probe` | Works on Linux (`/dev/sr*`) and Windows (drive letters). No drives found reports `未发现光驱` (exit 0). |
-| OptiBurn GUI | New in 0.1.1 (Tauri 2 + React). Four pages mirror the four subcommands; burn tasks can be cancelled mid-write. Windows NSIS installers (x64, arm64) and Linux AppImage/deb packages (x86_64, arm64) ship from the releases page. |
+| OptiBurn GUI | New in 0.1.1 (Tauri 2 + React). Four pages mirror the four subcommands; burn tasks can be cancelled mid-write. The device page browses a disc's file tree with drag and Ctrl/Shift multi-select and copies files straight to the system clipboard, the append page burns a list of files picked in the file dialog or pasted with Ctrl+V, it inherits the disc's current label, both disc pages can read the disc back and compare it with the source, and writes to a mounted disc are blocked with an unmount hint. Windows NSIS installers (x64, arm64) and Linux AppImage/deb packages (x86_64, arm64) ship from the releases page. |
 
 Native MMC writing (no external tools) is the next milestone, not part of 0.1.2. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layered design and [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) for the media/filesystem matrix.
 

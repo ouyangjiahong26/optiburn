@@ -52,6 +52,10 @@ npm ci --prefix frontend
 npm run build --prefix frontend                # tsc --noEmit + vite build
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
+# 本地要一个能直接运行的 release 二进制：
+#   npm --prefix frontend exec -- tauri build --no-bundle
+# 必须经 tauri CLI（或显式 --features tauri/custom-protocol）。裸 cargo build --release
+# 产出的是开发态二进制，窗口会去连 devUrl 报“Connection refused”。
 ```
 
 硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real` 需要
@@ -68,7 +72,7 @@ npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 | `crates/optiburn-cli/` | `src/main.rs` 三个子命令 |
 | `src-tauri/` | GUI 的 Rust 侧：Tauri 命令层，调用核心 crate |
 | `frontend/` | GUI 的 React 页面，Vite + TS |
-| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0008） |
+| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0010） |
 | `CONTEXT.md` | 领域术语表（术语/定义/禁用同义词三列），命名一律照它 |
 | `.github/workflows/` | `ci.yml`（job 名即分支保护的 required checks）、`release.yml` |
 
