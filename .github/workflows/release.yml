@@ -23,7 +23,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
         with:
-          key: x86_64-unknown-linux-gnu
+          # 缓存跨发行版不可复用（22.04 恢复 24.04 存的缓存会让 cargo 找不到依赖产物）。
+          key: x86_64-unknown-linux-gnu-ubuntu-22.04
       - name: Build
         run: cargo build --release -p optiburn-cli --target x86_64-unknown-linux-gnu
       - name: Package
@@ -149,7 +150,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: gui-${{ matrix.target }}
+          key: gui-${{ matrix.target }}-${{ matrix.os }}
           workspaces: src-tauri -> target
       - uses: actions/setup-node@v7
         with:
