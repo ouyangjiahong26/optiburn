@@ -4,6 +4,7 @@
 //! 引擎）只依赖 [`ScsiTransport`]，不感知 Linux `SG_IO` 与 Windows SPTI 的差异。
 //! v0 支持 Linux 与 Windows，其余平台在 [`open`] 返回 [`TransportError::Unsupported`]。
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// 单个 CDB 的最大长度：SPTI 的 `SCSI_PASS_THROUGH_DIRECT.Cdb` 固定 16 字节。
@@ -122,6 +123,32 @@ pub fn list_optical_devices() -> Vec<String> {
 #[cfg(not(any(target_os = "linux", windows)))]
 pub fn list_optical_devices() -> Vec<String> {
     Vec::new()
+}
+
+/// 设备被系统挂载时返回挂载点，未挂载返回 `None`。
+///
+/// 写盘引擎要求独占打开设备，挂载中的光盘会让写入失败（libburn 报设备占用）。
+/// 写前门禁用这个查询把底层的英文报错换成可执行的卸载指引。只读探测不受挂载影响。
+#[cfg(target_os = "linux")]
+pub fn mounted_at(device: &str) -> Option<PathBuf> {
+    linux::mounted_at(device)
+}
+
+/// 设备被系统挂载时返回挂载点，未挂载返回 `None`。
+///
+/// Windows 的“挂载”是盘符卷，占用由 SPTI 打开设备时的错误表达，没有 Linux 式的
+/// 挂载点可查。等设备枚举落地、有真机可验证时再按打开错误分类补齐（ADR-0005）。
+#[cfg(windows)]
+pub fn mounted_at(device: &str) -> Option<PathBuf> {
+    windows::mounted_at(device)
+}
+
+/// 设备被系统挂载时返回挂载点，未挂载返回 `None`。
+///
+/// 除 Linux 与 Windows 外的平台没有挂载检测，一律返回 `None`。
+#[cfg(not(any(target_os = "linux", windows)))]
+pub fn mounted_at(_device: &str) -> Option<PathBuf> {
+    None
 }
 
 #[cfg(test)]

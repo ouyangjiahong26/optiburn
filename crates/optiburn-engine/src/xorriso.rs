@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob};
@@ -76,6 +77,262 @@ fn grow_args(job: &GrowJob) -> Vec<OsString> {
     }
     args.push(OsString::from("-commit"));
     args
+}
+
+/// 读盘上最后一个区段的卷标（PVD 的 `Volume Id`），用于 GUI 追加页预填（ADR-0010）。
+///
+/// `-pvd_info` 的关键行出在 stdout：`Volume Id    : <文本>`（不带引号）。解析依赖
+/// 英文消息，统一加 `LC_ALL=C`，本机实测该 locale 下非 ASCII 卷标原样输出。
+pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
+    let (stdout, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
+    if is_blank_image_fallback(&stderr) {
+        return Err(BurnError::Failed(
+            "no ISO 9660 image at the last session".to_string(),
+        ));
+    }
+    parse_volume_id(&stdout)
+        .ok_or_else(|| BurnError::Failed("xorriso did not report a Volume Id".to_string()))
+}
+
+/// 判断 xorriso 是否因为盘上没有 ISO 9660 而兜底造了一个空镜像。
+///
+/// 这种情况下 `-pvd_info` 报的是空镜像的默认卷标 `ISOIMAGE`，是假数据。实测 UDF
+/// 盘（Windows 写入的多区段 DVD-R）走的就是这条路径，此时必须拒绝，不能把假卷标
+/// 预填进追加页。
+fn is_blank_image_fallback(stderr: &str) -> bool {
+    stderr.contains("Creating blank image") || stderr.contains("No ISO 9660 image")
+}
+
+/// 盘上最后一个区段是否能作为 ISO 9660 读出。
+///
+/// 追加前门禁用它挡住“末区段不是 ISO 9660”的盘，例如 Windows 写入的 UDF 盘。
+/// 这类盘续写 ISO 区段后，按最后一区段挂载的系统（Windows）只会看到新内容，
+/// 原有文件被遮住（实测，见 ADR-0010）。
+pub fn last_session_is_iso(device: &str) -> Result<bool, BurnError> {
+    let (_, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
+    Ok(!is_blank_image_fallback(&stderr))
+}
+
+/// 写盘失败里可归类的成因，供上层组织面向人的文案。
+///
+/// 判定输入是 xorriso 的 stderr 尾部（[`BurnError::Failed`] 里那段）。条目按
+/// 真实遇到的报错逐步补充，认不出的形态归到 [`BurnFailure::Other`]，原始输出
+/// 由上层记日志。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnFailure {
+    /// 写入过程中与驱动器的连接中断，常见于拔线、供电不稳。
+    DriveLost,
+    /// 设备被其它程序占用，常见于系统挂载了光盘。
+    DeviceBusy,
+    /// 未识别出已知形态。
+    Other,
+}
+
+impl BurnFailure {
+    /// 从 stderr 尾部判定成因。
+    pub fn classify(tail: &str) -> Self {
+        if tail.contains("Lost connection to drive") || tail.contains("SG_ERR_DID_ERROR") {
+            Self::DriveLost
+        } else if tail.contains("Cannot open busy device") {
+            Self::DeviceBusy
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// 组装读卷标的参数表。
+fn pvd_info_args(device: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("-indev"),
+        OsString::from(device),
+        OsString::from("-pvd_info"),
+    ]
+}
+
+/// 从 `-pvd_info` 的 stdout 里取卷标，空值或没有该行返回 `None`。
+///
+/// 只认大写 `Volume Id` 一行。stderr 上还有一行带引号的小写 `Volume id : '...'`，
+/// 不参与解析，避免两处口径打架。
+fn parse_volume_id(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let Some(rest) = line.strip_prefix("Volume Id") else {
+            continue;
+        };
+        let value = rest.split_once(':')?.1.trim();
+        if value.is_empty() {
+            return None;
+        }
+        return Some(value.to_string());
+    }
+    None
+}
+
+/// 把镜像或设备的目录树抽取到本地目录，供回读校验使用（ADR-0010）。
+///
+/// `-osirrox on` 打开抽取权限，`-extract / <目标>` 把整树落到目标目录。xorriso 会
+/// 尽力还原时间戳，但抽出的文件 ctime 必然是新值，所以校验只在本地按名字与内容
+/// 对比，不比较属性。
+pub fn extract_tree(source: &Path, dest: &Path, cancel: &CancelToken) -> Result<(), BurnError> {
+    run(XORRISO, &extract_args(source, dest), &mut |_| {}, cancel)
+}
+
+/// 组装抽取参数表。路径按 `OsStr` 原样传递，不做有损转换。
+fn extract_args(source: &Path, dest: &Path) -> Vec<OsString> {
+    vec![
+        OsString::from("-indev"),
+        source.as_os_str().to_os_string(),
+        OsString::from("-osirrox"),
+        OsString::from("on"),
+        OsString::from("-extract"),
+        OsString::from("/"),
+        dest.as_os_str().to_os_string(),
+    ]
+}
+
+/// 盘上最后一区段的一个条目。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscEntry {
+    /// 盘上路径，以 `/` 开头，例如 `/子目录/中文文件.txt`。
+    pub path: String,
+    /// 文件大小，目录为 0。
+    pub size: u64,
+    pub is_dir: bool,
+}
+
+/// 列出盘上最后一区段的目录树，用于 GUI 的盘片浏览。
+///
+/// `-find / -exec lsdl` 一次读取拿到全部条目的路径与大小。`-drive_access shared`
+/// 是只读打开，本机已挂载的盘也有机会直接读到（挂载点之外仍优先用盘上最后一区段）。
+pub fn list_tree(device: &str) -> Result<Vec<DiscEntry>, BurnError> {
+    let (stdout, _stderr) = run_output(XORRISO, &list_args(device))?;
+    Ok(parse_lsdl(&stdout))
+}
+
+/// 组装列清单的参数表。
+fn list_args(device: &str) -> Vec<OsString> {
+    vec![
+        OsString::from("-drive_access"),
+        OsString::from("shared"),
+        OsString::from("-indev"),
+        OsString::from(device),
+        OsString::from("-find"),
+        OsString::from("/"),
+        OsString::from("-exec"),
+        OsString::from("lsdl"),
+        OsString::from("--"),
+    ]
+}
+
+/// 解析 `lsdl` 的一行：`-rw-r--r-- 1 1000 1000 7797 Oct 9 10:25 '/路径'`。
+///
+/// 路径可能在引号里带空格，所以大小取按空白切分的第 5 个字段，路径取首个引号到
+/// 末个引号之间的内容。根目录 `/` 自身不进列表。
+fn parse_lsdl(stdout: &str) -> Vec<DiscEntry> {
+    let mut entries = Vec::new();
+    for line in stdout.lines() {
+        if !line.starts_with('d') && !line.starts_with('-') && !line.starts_with('l') {
+            continue;
+        }
+        let (Some(first), Some(last)) = (line.find('\''), line.rfind('\'')) else {
+            continue;
+        };
+        if last <= first {
+            continue;
+        }
+        let path = &line[first + 1..last];
+        if path == "/" {
+            continue;
+        }
+        let size = line
+            .split_whitespace()
+            .nth(4)
+            .and_then(|field| field.parse::<u64>().ok())
+            .unwrap_or(0);
+        entries.push(DiscEntry {
+            path: path.to_string(),
+            size,
+            is_dir: line.starts_with('d'),
+        });
+    }
+    entries
+}
+
+/// 从盘上按 ISO 路径抽取若干文件或目录到本地目录，一次 xorriso 调用完成。
+///
+/// 每个 ISO 路径落到 `dest` 下同名的相对位置，父目录预先建好。只读打开
+/// （`-drive_access shared`），供 GUI 把盘上文件复制到本地。
+pub fn extract_paths(
+    device: &str,
+    paths: &[String],
+    dest: &Path,
+    cancel: &CancelToken,
+) -> Result<(), BurnError> {
+    for path in paths {
+        let target = dest.join(path.trim_start_matches('/'));
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    run(
+        XORRISO,
+        &extract_paths_args(device, paths, dest),
+        &mut |_| {},
+        cancel,
+    )
+}
+
+/// 组装多路径抽取的参数表：一次加载盘片，按序执行每条 `-extract`。
+fn extract_paths_args(device: &str, paths: &[String], dest: &Path) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("-drive_access"),
+        OsString::from("shared"),
+        OsString::from("-indev"),
+        OsString::from(device),
+        OsString::from("-osirrox"),
+        OsString::from("on"),
+    ];
+    for path in paths {
+        args.push(OsString::from("-extract"));
+        args.push(OsString::from(path));
+        args.push(dest.join(path.trim_start_matches('/')).into_os_string());
+    }
+    args
+}
+
+/// 跑一个只读查询并收集 stdout 与 stderr。
+///
+/// 文案解析依赖英文关键行，固定 `LC_ALL=C`。本机实测该 locale 下中文卷标与路径
+/// 原样输出。失败时取 stderr 尾部做摘要。
+fn run_output(program: &str, args: &[OsString]) -> Result<(String, String), BurnError> {
+    let output = Command::new(program)
+        .args(args)
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                BurnError::MissingTool(format!("{program} (sudo apt install {program})"))
+            }
+            _ => BurnError::Io(e),
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(BurnError::Failed(tail_of(&stderr)));
+    }
+    Ok((
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
+}
+
+/// 取文本最后 [`TAIL_LINES`] 个非空行，作为失败摘要。
+fn tail_of(text: &str) -> String {
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
 }
 
 /// 跑一个写盘子进程，把 stderr 上的百分比转成进度，并在退出码非零时报错。
@@ -466,5 +723,188 @@ mod tests {
         );
         // 取消生效必须把 5 秒的脚本砍在两秒以内，证明子进程确实被停掉了。
         assert!(elapsed < Duration::from_secs(2), "elapsed {elapsed:?}");
+    }
+
+    #[test]
+    fn pvd_info_args_and_volume_id_parse() {
+        assert_eq!(
+            pvd_info_args("/dev/sr0"),
+            os(&["-indev", "/dev/sr0", "-pvd_info"])
+        );
+        let stdout = "\
+Drive current: -indev '/dev/sr0'
+PVD address  : 16s
+Volume Id    : 我的光盘
+Volume Set Id: 
+Preparer Id  : XORRISO
+";
+        assert_eq!(parse_volume_id(stdout), Some("我的光盘".to_string()));
+        assert_eq!(parse_volume_id("Volume Id    :    \n"), None);
+        assert_eq!(parse_volume_id("Volume Set Id: x\n"), None);
+        assert_eq!(parse_volume_id(""), None);
+    }
+
+    #[test]
+    fn extract_args_carry_osirrox_and_root() {
+        assert_eq!(
+            extract_args(Path::new("/tmp/a.iso"), Path::new("/tmp/out")),
+            os(&[
+                "-indev",
+                "/tmp/a.iso",
+                "-osirrox",
+                "on",
+                "-extract",
+                "/",
+                "/tmp/out"
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_lsdl_reads_the_real_output_shape() {
+        // 取自实测的 lsdl 输出，含中文路径、目录与根条目。
+        let stdout = "\
+drwxrwxr-x    1 1000     1000            0 Oct  9 10:39 '/'
+-rw-rw-r--    1 1000     1000         7797 Oct  9 10:25 '/ARCHITECTURE.md'
+drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
+-rw-rw-r--    1 1000     1000           76 Oct  9 10:25 '/子目录/中文文件.txt'
+-rw-rw-r--    1 1000     1000       262144 Oct  9 10:25 '/随机数据.bin'
+";
+        assert_eq!(
+            parse_lsdl(stdout),
+            vec![
+                DiscEntry {
+                    path: "/ARCHITECTURE.md".to_string(),
+                    size: 7797,
+                    is_dir: false,
+                },
+                DiscEntry {
+                    path: "/子目录".to_string(),
+                    size: 0,
+                    is_dir: true,
+                },
+                DiscEntry {
+                    path: "/子目录/中文文件.txt".to_string(),
+                    size: 76,
+                    is_dir: false,
+                },
+                DiscEntry {
+                    path: "/随机数据.bin".to_string(),
+                    size: 262144,
+                    is_dir: false,
+                },
+            ]
+        );
+        assert!(parse_lsdl("xorriso : NOTE : Loading ISO image tree\n").is_empty());
+    }
+
+    #[test]
+    fn list_and_extract_paths_args_tables() {
+        assert_eq!(
+            list_args("/dev/sr0"),
+            os(&[
+                "-drive_access",
+                "shared",
+                "-indev",
+                "/dev/sr0",
+                "-find",
+                "/",
+                "-exec",
+                "lsdl",
+                "--"
+            ])
+        );
+        let paths = vec!["/子目录/中文文件.txt".to_string(), "/a.bin".to_string()];
+        assert_eq!(
+            extract_paths_args("/dev/sr0", &paths, Path::new("/tmp/out")),
+            os(&[
+                "-drive_access",
+                "shared",
+                "-indev",
+                "/dev/sr0",
+                "-osirrox",
+                "on",
+                "-extract",
+                "/子目录/中文文件.txt",
+                "/tmp/out/子目录/中文文件.txt",
+                "-extract",
+                "/a.bin",
+                "/tmp/out/a.bin"
+            ])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_output_collects_both_streams_and_tails_errors() {
+        let (stdout, stderr) = run_output(
+            "sh",
+            &os(&["-c", "printf 'Volume Id    : X\\n'; printf 'note\\n' >&2"]),
+        )
+        .expect("exit 0");
+        assert_eq!(stdout, "Volume Id    : X\n");
+        assert_eq!(stderr, "note\n");
+
+        let err = run_output("sh", &os(&["-c", "printf 'boom\\n' >&2; exit 3"]))
+            .expect_err("script exits 3");
+        assert!(
+            matches!(&err, BurnError::Failed(msg) if msg.contains("boom")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn blank_image_fallback_is_detected() {
+        // 实测（UDF 多区段 DVD-R）：盘上没有 ISO 9660 时 xorriso 兜底造空镜像，
+        // -pvd_info 会报默认卷标 ISOIMAGE。
+        let stderr = "libisoburn: WARNING : No ISO 9660 image at LBA 1388208.\n\
+                      libisoburn: WARNING : Creating blank image.\n";
+        assert!(is_blank_image_fallback(stderr));
+        assert!(!is_blank_image_fallback(
+            "xorriso : NOTE : Loading ISO image tree from LBA 0\n"
+        ));
+    }
+
+    #[test]
+    fn burn_failure_classification_covers_observed_tails() {
+        // 实机样本：写入中拔掉光驱连线后的 libburn 输出。
+        let drive_lost = "\
+libburn : FAILURE : SCSI command 2Ah yielded host problem: 0x7 SG_ERR_DID_ERROR (Internal error detected in the host adapter)
+libburn : FATAL : Lost connection to drive
+libburn : SORRY : Drive is already released
+";
+        assert_eq!(BurnFailure::classify(drive_lost), BurnFailure::DriveLost);
+        // 实机样本：盘被系统挂载时尝试独占打开。
+        let busy =
+            "libburn : SORRY : Cannot open busy device '/dev/sr0' : Device or resource busy\n";
+        assert_eq!(BurnFailure::classify(busy), BurnFailure::DeviceBusy);
+        assert_eq!(
+            BurnFailure::classify("xorriso : aborting : FAILURE"),
+            BurnFailure::Other
+        );
+    }
+
+    #[test]
+    #[ignore = "needs optical drive"]
+    fn read_volume_id_real() {
+        let device = std::env::var("OPTIBURN_DEVICE").expect("set OPTIBURN_DEVICE, e.g. /dev/sr0");
+        let id = read_volume_id(&device).expect("read volume id failed");
+        assert!(!id.is_empty(), "volume id is empty");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "needs optical drive"]
+    fn readback_compare_real() {
+        let device = std::env::var("OPTIBURN_DEVICE").expect("set OPTIBURN_DEVICE, e.g. /dev/sr0");
+        let source =
+            std::env::var("OPTIBURN_COMPARE_DIR").expect("set OPTIBURN_COMPARE_DIR to a dir");
+        let temp = std::env::temp_dir().join(format!("optiburn-readback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("create temp dir");
+        extract_tree(Path::new(&device), &temp, &CancelToken::default()).expect("extract failed");
+        let differences = crate::compare_trees(Path::new(&source), &temp);
+        let _ = std::fs::remove_dir_all(&temp);
+        assert_eq!(differences, Vec::<String>::new(), "{differences:?}");
     }
 }

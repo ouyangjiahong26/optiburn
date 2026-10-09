@@ -3,14 +3,22 @@
 //! v0 只有一种引擎：调用 `xorriso -as cdrecord` 子进程（ADR-0004）。原生 MMC 写入
 //! 引擎（RESERVE TRACK / WRITE(10) / CLOSE TRACK）落地后接在同一个 [`BurnEngine`]
 //! 接缝上，不需要空壳占位。
+//!
+//! 除写盘外还有回读用的小工具：读盘上卷标、把镜像或设备的目录树抽到本地，以及
+//! 本地目录树的内容对比（回读校验，见 ADR-0010）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod verify;
 mod xorriso;
 
-pub use xorriso::{XorrisoEngine, grow};
+pub use verify::compare_trees;
+pub use xorriso::{
+    BurnFailure, DiscEntry, XorrisoEngine, extract_paths, extract_tree, grow, last_session_is_iso,
+    list_tree, read_volume_id,
+};
 
 /// 一次镜像刻录任务的输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
