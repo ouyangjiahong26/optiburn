@@ -95,7 +95,8 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 接口：镜像刻录 `BurnEngine::{name, burn}`（输入 `BurnJob`：镜像、设备、倍速、是否
 多区段），追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘），
 进度都通过 `&mut dyn FnMut(f32)` 回调；另有回读侧的小工具 `read_volume_id`、
-`extract_tree` 与 `compare_trees`（按文件名与内容单向对比，见 ADR-0010）。
+`list_tree`、`extract_tree`、`extract_paths`、`last_session_is_iso` 与
+`compare_trees`（按文件名与内容单向对比，见 ADR-0010）。
 
 隐藏：`xorriso -as cdrecord` 与增长模式（`-dev … -map <目录> / -commit`，见
 ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、stderr 上的百分比
@@ -108,7 +109,7 @@ I/O 错误（`Io`）。
 ### optiburn-cli
 
 接口：四个子命令，其余全是实现细节。`burn` 与 `append` 先跑前置检查
-（`ensure_burnable`：挂载占用直接拒绝并给出卸载指引，等介质就绪，按盘片状态路由
+（`ensure_burnable`：挂载占用与末区段格式直接拒绝，等介质就绪，按盘片状态路由
 放行或拒绝，见 ADR-0006 与 ADR-0010）再进引擎。
 `probe` 在任何情况下都以 0 退出（没光驱不是错误）。真正失败（路径不存在、刻录退出
 码非零）退 1 并把原因写到 stderr。

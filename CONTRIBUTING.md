@@ -32,8 +32,9 @@ CI 就跑这些（`lint` / `test` / `cross-check` / `gui` 四个 job），本地
 - 错误类型：每个 crate 一个 `thiserror` 枚举，`#[error]` 文案用英文。
   面向用户的文案（CLI 输出）用中文。
 - 文件名/类型名：领域词汇一律取 `CONTEXT.md` 术语表，禁用同义词也在那张表里。
-- 平台差异：只允许出现在 `optiburn-transport` 的 `linux.rs` / `windows.rs` 里，
-  一层 trait 收口。新增平台分支前先看 ADR-0001。
+- 平台差异：硬件层差异只允许出现在 `optiburn-transport` 的 `linux.rs` / `windows.rs`
+  里，一层 trait 收口。GUI 侧的平台能力差异（如剪贴板，见 ADR-0012）收在 `src-tauri`
+  的独立平台模块里。新增平台分支前先看 ADR-0001。
 - 不引 GPL 依赖：链接层面必须保持 MIT 可分发（ADR-0001/0002/0004）。子进程调用
   GPL 工具是可以的，链接不行。
 - 不加 GUI 依赖：命令行优先。

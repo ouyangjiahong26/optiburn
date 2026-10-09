@@ -17,7 +17,7 @@
 | TAO（Track At Once） | 逐轨写入，轨间留链接块。适合多区段追加。 | 轨道写入 |
 | DAO（Disc At Once） | 一次性写完整个盘的写入模式，无轨间间隙，CD 音频母盘常用。 | 整盘写入 |
 | Joliet | ISO 9660 的补充卷描述符扩展，提供 Unicode（含中文）长文件名，Windows 原生读取。对应 `JolietLevel`。 | 长文件名扩展 |
-| Rock Ridge | ISO 9660 的 POSIX 属性扩展（权限、符号链接、大小写），Linux/Unix 更愿意读它。v0 关闭。 | RR、RRIP |
+| Rock Ridge | ISO 9660 的 POSIX 属性扩展（权限、符号链接、大小写），Linux/Unix 更愿意读它。镜像构建不启用，增长模式的写入会带上（实测，ADR-0010）。 | RR、RRIP |
 | UDF Bridge | 同一份镜像里同时存在 ISO 9660 与 UDF 两个文件系统、且共享同一份文件数据区的布局。 | 混合镜像、hybrid ISO、双文件系统 |
 | ISO 9660 Level | 主命名空间的名字长度规则：Level 1 是 8.3，Level 2 是 30 字符，Level 3（ISO 9660:1999）允许多区段与更长名字。 | ISO 级别、版本 |
 | El Torito | 让光盘可引导的引导记录扩展。v0 未启用。 | 引导记录、boot catalog |
@@ -33,4 +33,4 @@
 | 设备路径（device） | 光驱的寻址字符串：Linux `/dev/sr0`，Windows `E:`（内部规范成 `\\.\E:`）。 | 盘符、设备名 |
 | 倍速（speed） | 写入速度相对基准（CD 150 KB/s、DVD 1.35 MB/s、BD 4.5 MB/s 的整数倍）。缺省时交给驱动器自选。 | 速度、速率 |
 | 卷标（volume id） | 写在卷描述符里的盘名，Windows 资源管理器显示的就是它。对应 `ImageSpec::volume_id`。 | 标签、盘标、volume label |
-| 回读校验（Verify） | 写完盘后把盘上最后一区段的目录树抽回本地，与源（追加的源目录或刻录的镜像）按文件名与内容逐文件对比的动作。对应 `compare_trees`、`JobKind::Verify`、GUI 的“校验盘片”。 | 验证、核对、对拍 |
+| 回读校验（Verify） | 写完盘后把盘上最后一区段的目录树抽回本地，与源（追加的待刻录文件或刻录的镜像）按文件名与内容逐文件对比的动作。对应 `compare_trees`、`JobKind::Verify`、GUI 的“校验盘片”。 | 验证、核对、对拍 |
