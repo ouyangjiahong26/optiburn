@@ -557,7 +557,7 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
 /// 写前门禁：挂载占用、盘片状态与末区段格式，全部通过才允许动设备。
 ///
 /// 追加在把用户文件拷进暂存之前先跑这里，挂载、封口、UDF 盘这些拒绝都发生在
-/// 白拷之前；刻录由 start_burn 的任务闭包先跑。
+/// 白拷之前。刻录由 start_burn 的任务闭包先跑。
 fn check_write_gates(device: &str, append: bool) -> Result<(), JobError> {
     // 挂载占用必挂：libburn 拿不到独占设备时只回英文报错，这里先换成卸载指引。
     if let Some(point) = optiburn_transport::mounted_at(device) {

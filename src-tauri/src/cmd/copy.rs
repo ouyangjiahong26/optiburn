@@ -33,7 +33,7 @@ pub async fn list_disc(device: String) -> Result<Vec<DiscEntryDto>, String> {
                 is_dir: entry.is_dir,
             })
             .collect()),
-        // 空盘本来就没有内容，返回空清单；盘上有区段却读不出 ISO 9660（例如 UDF
+        // 空盘本来就没有内容，返回空清单。盘上有区段却读不出 ISO 9660（例如 UDF
         // 盘）时按错误上报，不能显示成空盘。
         Err(BurnError::NoIsoSession) if disc_is_empty(&device) => Ok(Vec::new()),
         Err(error) => Err(disc_read_error(&device, error)),
@@ -106,7 +106,7 @@ pub async fn copy_disc_files(
                 ),
             ),
             Err(error) => {
-                // 失败原因随失败事件广播；同时写一份到 stderr 备查（取消不算失败）。
+                // 失败原因随失败事件广播，同时写一份到 stderr 备查（取消不算失败）。
                 if !matches!(error, JobError::Cancelled(_)) {
                     eprintln!("optiburn: 复制盘上文件失败：{}", job_error_text(&error));
                 }

@@ -68,7 +68,7 @@ export function listDisc(device: string): Promise<DiscEntry[]> {
   return invoke("list_disc", { device });
 }
 
-// 把盘上选中的文件复制到系统剪贴板，文件管理器里粘贴即可；完成结果走 job-done 事件。
+// 把盘上选中的文件复制到系统剪贴板，文件管理器里粘贴即可。完成结果走 job-done 事件。
 export function copyDiscFiles(device: string, paths: string[]): Promise<void> {
   return invoke("copy_disc_files", { device, paths });
 }

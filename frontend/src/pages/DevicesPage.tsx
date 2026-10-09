@@ -57,7 +57,8 @@ export function DevicesPage({
   }, [active, refresh]);
 
   useEffect(() => {
-    if (refreshSignal === 0) {
+    // 隐藏时不做重探：页面可见时本就会重探重读，避免在别的页面跑探针与 xorriso。
+    if (refreshSignal === 0 || !active) {
       return;
     }
     void refresh();

@@ -49,9 +49,12 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
     }
   }, [device]);
 
+  // 页面可见时重读卷标：切页返回也能感知换盘（device 没变也要重读）。
   useEffect(() => {
-    void refreshVolumeId();
-  }, [refreshVolumeId]);
+    if (active) {
+      void refreshVolumeId();
+    }
+  }, [active, refreshVolumeId]);
 
   // 添加入口共用：去重后并入列表。同名不同路径的文件由后端在暂存阶段拒绝。
   const addFiles = useCallback((paths: string[]) => {
