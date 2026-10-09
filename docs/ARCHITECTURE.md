@@ -94,7 +94,7 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 
 接口：镜像刻录 `BurnEngine::{name, burn}`（输入 `BurnJob`：镜像、设备、倍速、是否
 多区段），追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘），
-进度都通过 `&mut dyn FnMut(f32)` 回调；另有回读侧的小工具 `read_volume_id`、
+进度都通过 `&mut dyn FnMut(f32)` 回调。另有回读侧的小工具 `read_volume_id`、
 `list_tree`、`extract_tree`、`extract_paths`、`last_session_is_iso` 与
 `compare_trees`（按文件名与内容单向对比，见 ADR-0010）。
 
@@ -133,8 +133,8 @@ I/O 错误（`Io`）。
 |---|---|---|
 | `build-image` | 可用 | 可用 |
 | `burn`（xorriso 引擎） | 可用，需要 `xorriso` 与写设备权限 | 可用，需要 `xorriso`（MSYS2 等） |
-| `append`（xorriso 增长模式） | 可用，前置检查按盘片状态自动路由 | 尚未验证（设备枚举未实现） |
-| `probe` | 可用（`/dev/sr*`） | 尚未实现（枚举不到设备，报“未发现光驱”） |
+| `append`（xorriso 增长模式） | 可用，前置检查按盘片状态自动路由 | 未做真机验证（设备枚举已实现） |
+| `probe` | 可用（`/dev/sr*`） | 可用（枚举盘符，未做真机验证） |
 | 原生 MMC 传输 | 可用（`SG_IO`） | 编译通过，等有硬件时验证 |
 
 `cargo check` 覆盖四个目标三元组。Windows 的 SPTI 代码路径只保证能编译，没有真机验证过
