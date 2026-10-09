@@ -10,6 +10,7 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use super::{JobError, begin_job, fail_job, finish_job, job_error_text, set_join, unique_temp_dir};
+use crate::i18n::{Lang, lang, pick};
 use crate::job::{JobKind, JobState};
 
 /// 盘上条目的 DTO，对应前端 `DiscEntry`。
@@ -89,7 +90,7 @@ pub async fn copy_disc_files(
     paths: Vec<String>,
 ) -> Result<(), String> {
     if paths.is_empty() {
-        return Err("没有选中文件。".to_string());
+        return Err(pick(lang(), "没有选中文件。", "No files are selected.").into());
     }
     let cancel = begin_job(&state)?;
     let worker = app.clone();
@@ -99,16 +100,26 @@ pub async fn copy_disc_files(
                 &worker,
                 JobKind::Copy,
                 "done",
-                format!(
-                    "已复制 {} 个文件（{}）到系统剪贴板，去文件管理器里粘贴即可。",
-                    report.count,
-                    human_bytes(report.bytes)
-                ),
+                match lang() {
+                    Lang::Zh => format!(
+                        "已复制 {} 个文件（{}）到系统剪贴板，去文件管理器里粘贴即可。",
+                        report.count,
+                        human_bytes(report.bytes)
+                    ),
+                    Lang::En => format!(
+                        "Copied {} files ({}) to the clipboard — paste them in your file manager.",
+                        report.count,
+                        human_bytes(report.bytes)
+                    ),
+                },
             ),
             Err(error) => {
                 // 失败原因随失败事件广播，同时写一份到 stderr 备查（取消不算失败）。
-                if !matches!(error, JobError::Cancelled(_)) {
-                    eprintln!("optiburn: 复制盘上文件失败：{}", job_error_text(&error));
+                if !matches!(error, JobError::Cancelled { .. }) {
+                    eprintln!(
+                        "optiburn: 复制盘上文件失败：{}",
+                        job_error_text(lang(), &error)
+                    );
                 }
                 fail_job(&worker, JobKind::Copy, error);
             }
@@ -148,19 +159,27 @@ fn copy_disc_files_blocking(
 ) -> Result<CopyReport, JobError> {
     let root = copy_root().map_err(JobError::Input)?;
     let staging = root.join(COPY_SEQUENCE.fetch_add(1, Ordering::Relaxed).to_string());
-    std::fs::create_dir_all(&staging)
-        .map_err(|e| JobError::Input(format!("创建暂存目录失败：{e}")))?;
+    std::fs::create_dir_all(&staging).map_err(|e| match lang() {
+        Lang::Zh => JobError::Input(format!("创建暂存目录失败：{e}")),
+        Lang::En => JobError::Input(format!("Failed to create the staging directory: {e}")),
+    })?;
     if let Err(error) = extract_paths(device, paths, &staging, cancel) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(match error {
-            BurnError::Cancelled => JobError::Cancelled("复制"),
+            BurnError::Cancelled => JobError::Cancelled {
+                zh: "复制",
+                en: "copy",
+            },
             other => JobError::Input(disc_read_error(device, other)),
         });
     }
     let mut files = Vec::new();
     if let Err(e) = collect_files(&staging, &mut files) {
         let _ = std::fs::remove_dir_all(&staging);
-        return Err(JobError::Input(format!("扫描暂存目录失败：{e}")));
+        return Err(JobError::Input(match lang() {
+            Lang::Zh => format!("扫描暂存目录失败：{e}"),
+            Lang::En => format!("Failed to scan the staging directory: {e}"),
+        }));
     }
     if let Err(e) = crate::clipboard::copy_files(&files) {
         let _ = std::fs::remove_dir_all(&staging);

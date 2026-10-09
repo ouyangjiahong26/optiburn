@@ -2,6 +2,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { startBuildImage } from "../api";
+import { t } from "../i18n";
 import { FormRow } from "../components/FormRow";
 import { PathField } from "../components/PathField";
 import type { DiscProfile, ImageInfoDto, JobControls } from "../types";
@@ -62,33 +63,37 @@ export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { lo
     <div className="page">
       <header className="page-header">
         <div>
-          <h1>制作镜像</h1>
-          <p>把一个目录打包成 ISO 镜像文件。</p>
+          <h1>{t("Create Image", "制作镜像")}</h1>
+          <p>{t("Pack a directory into an ISO image file.", "把一个目录打包成 ISO 镜像文件。")}</p>
         </div>
       </header>
       <form className="form" onSubmit={(event) => void handleSubmit(event)}>
-        <FormRow label="源目录">
+        <FormRow label={t("Source directory", "源目录")}>
           <PathField
             mode="directory"
             value={src}
             onChange={setSrc}
             disabled={locked}
-            placeholder="选择要打包的目录"
+            placeholder={t("Choose a directory to pack", "选择要打包的目录")}
           />
         </FormRow>
         <FormRow
-          label="输出镜像"
-          hint={defaultHint === null ? undefined : `留空时保存为 ${defaultHint}`}
+          label={t("Output image", "输出镜像")}
+          hint={
+            defaultHint === null
+              ? undefined
+              : t(`Defaults to ${defaultHint}`, `留空时保存为 ${defaultHint}`)
+          }
         >
           <PathField
             mode="saveIso"
             value={output}
             onChange={setOutput}
             disabled={locked}
-            placeholder="选择保存位置"
+            placeholder={t("Choose where to save", "选择保存位置")}
           />
         </FormRow>
-        <FormRow label="介质">
+        <FormRow label={t("Media", "介质")}>
           <div className="radio-group">
             {(["cd", "dvd", "bd"] as const).map((value) => (
               <label key={value} className="option">
@@ -104,7 +109,7 @@ export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { lo
             ))}
           </div>
         </FormRow>
-        <FormRow label="卷标" htmlFor="build-volume">
+        <FormRow label={t("Volume label", "卷标")} htmlFor="build-volume">
           <input
             id="build-volume"
             type="text"
@@ -120,25 +125,27 @@ export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { lo
             className="btn btn-primary"
             disabled={locked || src.trim() === ""}
           >
-            开始制作
+            {t("Create", "开始制作")}
           </button>
         </div>
       </form>
       {imageInfo !== null && (
         <section className="result-card">
-          <h2>制作完成</h2>
+          <h2>{t("Image created", "制作完成")}</h2>
           <dl className="result-list">
             <div>
-              <dt>扇区</dt>
+              <dt>{t("Sectors", "扇区")}</dt>
               <dd>{imageInfo.sectors.toLocaleString("zh-CN")}</dd>
             </div>
             <div>
-              <dt>字节</dt>
-              <dd>{imageInfo.bytes.toLocaleString("zh-CN")} 字节</dd>
+              <dt>{t("Bytes", "字节")}</dt>
+              <dd>
+                {imageInfo.bytes.toLocaleString("zh-CN")} {t("bytes", "字节")}
+              </dd>
             </div>
             <div>
-              <dt>文件系统</dt>
-              <dd>{imageInfo.filesystems.join("、")}</dd>
+              <dt>{t("File systems", "文件系统")}</dt>
+              <dd>{imageInfo.filesystems.join(t(", ", "、"))}</dd>
             </div>
           </dl>
         </section>

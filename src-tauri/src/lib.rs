@@ -4,6 +4,7 @@
 
 mod clipboard;
 mod cmd;
+mod i18n;
 mod job;
 
 use tauri::{Emitter, Manager};

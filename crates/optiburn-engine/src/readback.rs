@@ -607,7 +607,7 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
         let _ = std::fs::remove_dir_all(&temp);
         std::fs::create_dir_all(&temp).expect("create temp dir");
         extract_tree(Path::new(&device), &temp, &CancelToken::default()).expect("extract failed");
-        let differences = crate::compare_trees(Path::new(&source), &temp);
+        let differences = crate::compare_trees(Path::new(&source), &temp, "zh");
         let _ = std::fs::remove_dir_all(&temp);
         assert_eq!(differences, Vec::<String>::new(), "{differences:?}");
     }

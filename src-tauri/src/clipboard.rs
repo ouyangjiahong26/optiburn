@@ -10,16 +10,27 @@ pub use platform::{copy_files, read_files};
 
 #[cfg(not(target_os = "linux"))]
 pub fn copy_files(_paths: &[std::path::PathBuf]) -> Result<(), String> {
-    Err("复制到系统剪贴板尚未支持该平台。".to_string())
+    Err(crate::i18n::pick(
+        crate::i18n::lang(),
+        "复制到系统剪贴板尚未支持该平台。",
+        "Copying to the system clipboard is not supported on this platform yet.",
+    )
+    .to_string())
 }
 
 #[cfg(not(target_os = "linux"))]
 pub fn read_files() -> Result<Vec<String>, String> {
-    Err("从系统剪贴板粘贴尚未支持该平台。".to_string())
+    Err(crate::i18n::pick(
+        crate::i18n::lang(),
+        "从系统剪贴板粘贴尚未支持该平台。",
+        "Pasting from the system clipboard is not supported on this platform yet.",
+    )
+    .to_string())
 }
 
 #[cfg(target_os = "linux")]
 mod platform {
+    use crate::i18n::{lang, pick};
     use gtk::gio;
     use gtk::prelude::*;
     use std::path::PathBuf;
@@ -36,9 +47,14 @@ mod platform {
         gtk::glib::MainContext::default().invoke(move || {
             let _ = sender.send(set_clipboard(&uris));
         });
-        receiver
-            .recv()
-            .map_err(|_| "剪贴板主循环已退出。".to_string())?
+        receiver.recv().map_err(|_| {
+            pick(
+                lang(),
+                "剪贴板主循环已退出。",
+                "The clipboard main loop has exited.",
+            )
+            .to_string()
+        })?
     }
 
     /// 在主线程上写剪贴板。返回 GTK 是否接受了写入请求。
@@ -68,7 +84,12 @@ mod platform {
             }
         });
         if !accepted {
-            return Err("写入系统剪贴板失败。".to_string());
+            return Err(pick(
+                lang(),
+                "写入系统剪贴板失败。",
+                "Failed to write to the system clipboard.",
+            )
+            .to_string());
         }
         Ok(())
     }
