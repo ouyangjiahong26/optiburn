@@ -45,7 +45,8 @@ CI 就跑这些（`lint` / `test` / `cross-check` / `gui` 四个 job），本地
 
 本仓库的贡献可能由 AI 生成。约定：
 
-- 标题加 `[AI Generated]` 前缀，例如 `[AI Generated][TASK] 初始导入`。
+- issue 标题加 `[AI Generated][<类型>]` 前缀，例如 `[AI Generated][TASK] 初始导入`。
+  PR 标题不加前缀，用传统提交格式，与 squash 后的提交主题一致。
 - PR 正文照下面的约定写，决策与取舍写进正文或 ADR，不要只在对话里说。
 - AI 不得自行合并 PR（本仓库靠分支保护强制这一点）。
 
@@ -53,9 +54,9 @@ CI 就跑这些（`lint` / `test` / `cross-check` / `gui` 四个 job），本地
 
 - 每个 PR 至少关联一个同仓库 issue（纯文档小修除外）。用 `Fixes #NN` 或
   `Related to #NN`。
-- 标题格式：`[意图标签] 一句话说明`，标签取 `[FEAT]`/`[FIX]`/`[DOC]`/`[TEST]`/
-  `[CLEANUP]`/`[DEP]`/`[TASK]`。
-- 议题标题另有一套词汇：`[BUG]`/`[FEAT]`（议题模板已预填），与 PR 的意图标签不通用。
+- 标题格式：`type(scope): 摘要`，与 commit 的约定一致（`type` 取 `feat`/`fix`/`docs`/
+  `test`/`refactor`/`chore`/`ci`）。squash 合并后 PR 标题就是主分支上的提交主题。
+- 议题标题另有一套词汇：`[BUG]`/`[FEAT]`（议题模板已预填），与 PR 标题的提交格式不通用。
 - 走 PR、不直推 `main`：`main` 有分支保护，要求 `lint`/`test`/`cross-check`/`gui` 四个
   检查通过。
 
