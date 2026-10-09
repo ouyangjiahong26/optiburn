@@ -1,0 +1,53 @@
+---
+id: faq
+title: 常见问题
+sidebar_label: 常见问题
+slug: /faq
+---
+
+# 常见问题
+
+## 报“未发现光驱”怎么办
+
+`optiburn probe` 找不到设备时也会退出 0，这是刻意行为，方便脚本使用。先确认：
+
+- 设备存在：`ls /dev/sr*`（Linux）或“此电脑”里有没有光驱盘符（Windows）。
+- 权限足够：Linux 上把自己加入 `cdrom` 组，或临时用 root 验证一次。
+
+## 提示命令找不到 xorriso
+
+0.1.2 的写盘引擎是 `xorriso` 子进程。Debian/Ubuntu 用 `sudo apt install xorriso`，
+MSYS2 用 `pacman -S xorriso`。图形界面与命令行共用这个依赖。
+
+## 写入被拒绝，提示盘被挂载
+
+系统自动挂载了这张盘时不能写入。先卸载（Linux 上 `umount /dev/sr0`），再从界面或命令行重试。
+界面会在对话框里给出提示。
+
+## 可追加的盘，burn 被拒绝
+
+已经有区段、还能继续写的盘要改用 `append`，命令行会直接提示。`burn` 面向新盘或已擦除的盘。
+
+## 已封口的盘还能写吗
+
+不能。已封口（finalized）的盘拒绝写入，需要换一张盘。写入时不要传 `--close-disc`
+就能保留追加能力。
+
+## Windows 上写的 UDF 盘能继续追加吗
+
+不能。可追加盘的末区段不是 ISO 9660 时，写入会被拒绝，避免原有文件被遮蔽。这是刻意
+行为，细节见[介质与文件系统](./compatibility)。
+
+## DVD-RAM 和 BD-RE 上为什么行为不同
+
+随机可写介质（DVD-RAM、BD-RE）不走多区段模型，xorriso 保持盘可覆写，`append` 的
+多区段逻辑对它们不生效。
+
+## Windows 上能用吗
+
+构建与设备枚举已验证，写盘路径尚未做真机验证。Linux 侧的写盘路径有完整测试与真实介质验证。
+
+## 盘上中文名在 Windows 上乱码
+
+先确认用了 `dvd` 或 `bd` 这类带 Joliet 的 profile（`cd` 也带）。若仍有问题，把镜像文件
+留在本地，用 `xorriso -indev` 核对一遍命名空间，再报告问题。

@@ -1,0 +1,70 @@
+---
+id: compatibility
+title: 介质与文件系统
+sidebar_label: 介质与文件系统
+slug: /compatibility
+---
+
+# 介质与文件系统
+
+目标读者是“用 optiburn 做盘、在 Windows 上打开”的人。这里说明每种介质写哪些文件系统、
+为什么，以及哪些行为是实测过的。完整的实测记录见仓库里的
+[`docs/WINDOWS-COMPAT.md`](https://github.com/ouyangjiahong26/optiburn/blob/main/docs/WINDOWS-COMPAT.md)。
+
+## 介质 × 文件系统
+
+| Profile | ISO 9660 | Joliet | UDF | 依据 |
+|---|---|---|---|---|
+| `cd` | Level 2 + 长文件名（ISO 9660:1999） | Level 3 | 不写 | Windows 从 XP 起原生读 Joliet。CD 容量小，UDF 收益有限 |
+| `dvd`（默认） | Level 2 + 长文件名 | Level 3 | 1.02（UDF Bridge） | DVD-ROM 通用标准。Windows Vista+ 认 UDF 1.02 |
+| `bd` | Level 2 + 长文件名 | Level 3 | 2.50 | 蓝光标准要求。BD 播放与读取设备普遍只认 2.50 及以上 |
+
+三个 profile 都保留 ISO 9660 主命名空间：老系统（DOS、老式机顶盒、部分车载机）只能读
+ISO 9660，丢了它盘就成废盘。Joliet 提供 Windows 的长文件名与中文名，UDF 提供现代读取路径。
+ISO 与 UDF 共享同一份文件数据区（UDF Bridge），不占双倍空间。
+
+## 镜像里实际长什么样（实测）
+
+`build-image --profile dvd` 产出的镜像，用字节偏移直接读出来：
+
+| 扇区 | 内容 |
+|---|---|
+| 0 至 15 | 系统区（本版本全 0，El Torito 与混合启动未启用） |
+| 16 | ISO 9660 主卷描述符（类型 1，`CD001`） |
+| 17 | 补充卷描述符（类型 2，Joliet） |
+| 18 | 补充卷描述符（类型 2，ISO 9660:1999 长文件名） |
+| 19 | 卷描述符序列结束符（类型 255） |
+| 20 至 22 | UDF 卷识别序列：`BEA01` / `NSR02` / `TEA01` |
+| 256 | UDF Anchor Volume Descriptor Pointer |
+| 其余 | 目录结构与文件数据 |
+
+`NSR02` 表示 UDF 1.02，`NSR03` 表示 UDF 2.00 及以上。`--profile bd` 写的是 `NSR03`，
+`--profile cd` 完全没有 UDF 那三个扇区。这些断言在测试里锁住了，防止以后换上游版本时
+布局悄悄变掉。
+
+:::note 上游文档的一处勘误
+
+上游 hadris-cd 的文档注释写“扇区 17 至 19 是 UDF 卷识别序列”，与实测不符：ISO 卷
+描述符序列实际占 16 至 19，UDF 卷识别序列在 20 至 22。以实测为准。
+
+:::
+
+## 怎么验证盘在 Windows 上能读
+
+1. 做镜像：
+
+   ```bash
+   optiburn build-image <目录> -o disc.iso --profile dvd
+   ```
+
+2. 用参考实现回读，确认能列出全部文件（含中文文件名）：
+
+   ```bash
+   xorriso -indev disc.iso -ls /
+   ```
+
+   仓库测试会自动做这件事，并逐字节比对内容。
+
+3. 刻录到盘后，用图形界面的“校验盘片”或回读流程，把盘上内容与源逐文件对比。
+
+4. 有条件的话把盘插到 Windows 机器上，从“文件资源管理器”确认文件名、中文名与目录结构。

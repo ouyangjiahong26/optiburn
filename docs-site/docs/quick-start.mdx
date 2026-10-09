@@ -1,0 +1,83 @@
+---
+id: quick-start
+title: 快速开始
+sidebar_label: 快速开始
+slug: /quick-start
+---
+
+# 快速开始
+
+## 装好依赖
+
+从源码构建：
+
+```bash
+git clone https://github.com/ouyangjiahong26/optiburn
+cd optiburn
+cargo build --release
+# 二进制：target/release/optiburn
+```
+
+- Rust 1.98.1（由 `rust-toolchain.toml` 固定，rustup 会自动装好）。
+- `xorriso` 在 `PATH` 上，只有 `burn` 需要（0.1.2 通过子进程调用）：Debian/Ubuntu 用
+  `sudo apt install xorriso`，MSYS2 用 `pacman -S xorriso`。
+- 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
+
+:::tip 写权限
+
+Linux 上用 `sudo usermod -aG cdrom "$USER"` 把自己加进 `cdrom` 组，注销重新登录后生效。
+不确定当前用户能不能写，先跑 `optiburn probe` 看看设备状态。
+
+:::
+
+图形界面不额外需要依赖，装好发行包或 AppImage 后，刻录仍要求 `xorriso` 在 `PATH` 上，与命令行相同。
+
+## 用图形界面安装（可选）
+
+- Windows：下载 `OptiBurn_0.1.2_x64-setup.exe`（或 arm64 版），双击安装。
+- Linux：下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。
+
+安装包都在 [Releases](https://github.com/ouyangjiahong26/optiburn/releases) 页。
+
+## 第一个镜像
+
+把任意目录做成镜像。以仓库自带的 `docs` 目录为例：
+
+```bash
+$ optiburn build-image docs -o docs.iso --profile dvd --volume-id OPTIBURN
+镜像: docs.iso
+  扇区: 682
+  字节: 1396736
+  文件系统: ISO 9660, Joliet Level 3, UDF 1.02
+```
+
+镜像内嵌构建时刻时间戳，所以字节数跟随目录内容变化。`--profile` 决定写哪些文件系统
+（`cd` 无 UDF，`dvd` 是默认值，`bd` 写 UDF 2.50），细节见[介质与文件系统](./compatibility)。
+
+不给 `-o` 时，镜像写到当前目录，文件名是 `<源目录名>.iso`。
+
+## 刻录
+
+```bash
+optiburn burn docs.iso --device /dev/sr0 --speed 8
+```
+
+Windows 的设备名是盘符：`--device E:`。默认盘保持可追加（多区段），`--close-disc` 才封盘。
+
+刻录前置检查会自动处理介质状态：等盘片就绪（20 秒内每 500 ms 重试一次），已封口的盘拒绝写入，
+可追加盘提示改用 `append`，随机可写介质（DVD-RAM、BD-RE）直接放行。盘被系统挂载时写入会被
+拦下并提示先卸载。
+
+## 验证盘的可读性
+
+1. 刻录前先确认镜像本身能被参考实现读出来：
+
+   ```bash
+   xorriso -indev docs.iso -ls /
+   ```
+
+2. 刻完盘后，用图形界面的“校验盘片”按钮（或命令行回读）把盘上内容与源逐文件对比。
+
+3. 有条件的话，把盘插到目标机器上（Windows 或老设备），确认文件名与中文名都正常显示。
+
+更完整的验证方法见[介质与文件系统](./compatibility)。

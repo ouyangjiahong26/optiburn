@@ -1,0 +1,57 @@
+---
+id: architecture
+title: 架构
+sidebar_label: 架构
+slug: /architecture
+---
+
+# 架构
+
+optiburn 是一个跨平台（Linux 与 Windows，x86_64 与 arm64）的光盘刻录工具链：把目录做成
+Windows 能读的镜像，再把镜像写到盘上。本页说明各 crate 的边界与数据怎么流动。完整版本
+见仓库里的 [`docs/ARCHITECTURE.md`](https://github.com/ouyangjiahong26/optiburn/blob/main/docs/ARCHITECTURE.md)。
+
+## 分层
+
+依赖方向只有一条，自上而下：
+
+```text
+optiburn-cli              命令行：build-image / burn / append / probe
+  optiburn-mastering        目录做成镜像文件（ISO 9660 + Joliet + UDF Bridge）
+    hadris-cd               上游镜像写入器（MIT，纯 Rust）
+  optiburn-engine           镜像写到盘（v0：xorriso 子进程）
+  optiburn-mmc              MMC 命令编解码（v0：读侧三条）
+    optiburn-transport      SCSI 传输（Linux SG_IO / Windows SPTI）
+```
+
+- `optiburn-transport`：全仓库唯一的硬件抽象点，`ScsiTransport` trait 只有一个方法
+  `issue(cdb, dir, data, timeout)`。Linux 走 `SG_IO`，Windows 走 SPTI，光驱枚举也按平台
+  收在这里。
+- `optiburn-mmc`：MMC 命令编解码。v0 只有读侧三条（`inquiry`、`test_unit_ready`、
+  `read_disc_information`），写侧在路线图上。
+- `optiburn-mastering`：`build_image(source_dir, output, spec)`。profile 到文件系统的
+  映射是 Windows 可读性的唯一落点。
+- `optiburn-engine`：`BurnEngine` trait 加 `XorrisoEngine`（`xorriso -as cdrecord`
+  子进程）。原生 MMC 引擎将接在同一个 trait 上。
+- `optiburn-cli`：四个子命令的入口。
+
+图形前端在 `src-tauri/`（Tauri 2）与 `frontend/`（React 加 Vite 加 TypeScript），
+不在根 workspace 内，以路径依赖引用核心 crate。核心五个 crate 不引入 GUI 依赖。
+
+## 数据流
+
+```text
+源目录
+  build_image 生成 .iso（ISO 9660 + Joliet + UDF Bridge）
+  .iso 用于归档与校验，镜像本身与盘上字节一一对应
+  .iso 交给 BurnJob，由 BurnEngine 写进光驱
+    v0 用 xorriso -as cdrecord，v0.5 换原生 MMC 写入
+
+盘
+  probe 读出设备标识与盘片状态（SG_IO / SPTI 加 READ DISC INFORMATION）
+```
+
+## 路线图
+
+原生 MMC 写入（不借助外部工具）是下一个里程碑：在 `optiburn-engine` 的同一个
+`BurnEngine` trait 上实现 `RESERVE TRACK`、`WRITE(10)` 与 `CLOSE TRACK`。
