@@ -4,7 +4,7 @@
 
 [https://ouyangjiahong26.github.io/optiburn/](https://ouyangjiahong26.github.io/optiburn/)
 
-`url` / `baseUrl` 与组织名见 [`docusaurus.config.ts`](docusaurus.config.ts)。推送 `master` 时由 [`.github/workflows/deploy-docs.yml`](../.github/workflows/deploy-docs.yml) 构建并发布。
+`url` / `baseUrl` 与组织名见 [`docusaurus.config.ts`](docusaurus.config.ts)。`main` 上的 CI 成功后由 [`.github/workflows/deploy-docs.yml`](../.github/workflows/deploy-docs.yml) 自动构建并发布，也可在 Actions 里手动 Run workflow。
 
 ## 本地开发
 

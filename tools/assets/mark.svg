@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <!-- 透明底光盘标记：站点导航栏 logo 与界面内联使用，不画底 -->
+  <!-- 透明底光盘标记：站点导航栏 logo 使用，不画底 -->
   <defs>
     <radialGradient id="discg" cx="38%" cy="32%" r="75%">
       <stop offset="0" stop-color="#fafafa"/>

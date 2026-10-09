@@ -23,7 +23,7 @@ cargo build --release
   `sudo apt install xorriso`，MSYS2 用 `pacman -S xorriso`。
 - 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
 
-:::tip 写权限
+:::tip[写权限]
 
 Linux 上用 `sudo usermod -aG cdrom "$USER"` 把自己加进 `cdrom` 组，注销重新登录后生效。
 不确定当前用户能不能写，先跑 `optiburn probe` 看看设备状态。
@@ -76,7 +76,7 @@ Windows 的设备名是盘符：`--device E:`。默认盘保持可追加（多�
    xorriso -indev docs.iso -ls /
    ```
 
-2. 刻完盘后，用图形界面的“校验盘片”按钮（或命令行回读）把盘上内容与源逐文件对比。
+2. 刻完盘后，用图形界面的“校验盘片”按钮把盘上内容与源逐文件对比（命令行暂无回读入口）。
 
 3. 有条件的话，把盘插到目标机器上（Windows 或老设备），确认文件名与中文名都正常显示。
 

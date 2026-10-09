@@ -27,8 +27,8 @@ $ optiburn build-image docs -o docs.iso --profile dvd --volume-id OPTIBURN
 | `--profile` | `cd`、`dvd`（默认）或 `bd`，决定写哪些文件系统 |
 | `--volume-id` | 卷标 |
 
-三个 profile 都保留 ISO 9660 主命名空间，同时写 Joliet（Windows 长文件名与中文名）与
-对应版本的 UDF。文件数据区只有一份，不占双倍空间。
+三个 profile 都保留 ISO 9660 主命名空间并写 Joliet（Windows 长文件名与中文名），
+dvd 与 bd 还写对应版本的 UDF。文件数据区只有一份，不占双倍空间。
 
 ## burn
 
@@ -77,7 +77,7 @@ $ optiburn probe
 `burn` 与 `append` 在真正写入前会做几项检查，失败时给出中文原因与下一步：
 
 - 盘片就绪：等盘片就绪，20 秒内每 500 ms 重试。
-- 介质状态：已封口的盘拒绝写入；可追加盘提示改用 `append`；随机可写介质直接放行。
+- 介质状态：已封口的盘拒绝写入。可追加盘提示改用 `append`。随机可写介质直接放行。
 - 挂载占用：盘被系统挂载时拒绝写入，并提示先卸载。
 - 末区段格式：可追加盘的末区段不是 ISO 9660（例如 Windows 写的 UDF 盘）时拒绝续写，
   避免原有文件被遮蔽。

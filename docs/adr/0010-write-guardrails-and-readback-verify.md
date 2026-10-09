@@ -30,12 +30,13 @@ GUI 追加页的卷标默认值是 OPTIBURN。不改它，新区段就会把盘�
    ISO 区段后 Windows 只看到新内容，原有文件从视野里消失，与 ADR-0006 防的是
    同一类遮蔽事故。
 2. 卷标沿用由 `optiburn-engine::read_volume_id` 实现：走
-   `xorriso -indev <设备> -pvd_info`，解析 stdout 的 `Volume Id    : <文本>` 一行。
+   `xorriso -drive_access shared -indev <设备> -pvd_info`（只读打开，不要求独占设备），
+   解析 stdout 的 `Volume Id    : <文本>` 一行。
    GUI 追加页在选中设备后与点“刷新”时用它预填卷标，读不到就保持默认值。解析固定
-   `LC_ALL=C` 让消息语言稳定，本机实测该 locale 下中文卷标原样输出。已知限制：盘
-   被挂载时 xorriso 独占打开失败，预填失效，先卸载即可恢复。盘上没有可读的
-   ISO 9660 结构时（实测 UDF 盘）xorriso 会兜底造空镜像并报默认卷标 `ISOIMAGE`，
-   实现按 stderr 的 `Creating blank image` 拒绝，不把假卷标预填进界面。
+   `LC_ALL=C` 让消息语言稳定，本机实测该 locale 下中文卷标原样输出。已知限制：盘上没有
+   可读的 ISO 9660 结构时（实测 UDF 盘）xorriso 会兜底造空镜像，空白介质也会报合成的
+   默认卷标 `ISOIMAGE`，实现按 stderr 的 `Creating blank image`、`No ISO 9660 image`
+   或 `Media status : is blank` 拒绝，不把假卷标预填进界面。
 3. 回读校验（GUI 的“校验盘片”）先把盘上最后一区段的目录树抽到临时目录
    （`optiburn-engine::extract_tree`，`xorriso -indev <源> -osirrox on -extract / <目标>`），
    再与源对比：追加模式把待刻录文件重新暂存成目录，刻录模式先把镜像树也抽出来对比。对比器

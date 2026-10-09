@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
+import useBaseUrl from '@docusaurus/useBaseUrl';
 import Translate, {translate} from '@docusaurus/Translate';
 import {
   Monitor,
@@ -73,10 +74,10 @@ export default function Home(): React.JSX.Element {
   ];
 
   const screenshots = [
-    {src: '/optiburn/img/screenshot-burn.png', alt: translate({id: 'home.screenshot.burn', message: '刻录页'})},
-    {src: '/optiburn/img/screenshot-burn-progress.png', alt: translate({id: 'home.screenshot.progress', message: '刻录进行中'})},
-    {src: '/optiburn/img/screenshot-devices.png', alt: translate({id: 'home.screenshot.devices', message: '设备页查看盘上文件'})},
-    {src: '/optiburn/img/screenshot-append.png', alt: translate({id: 'home.screenshot.append', message: '追加页'})},
+    {src: useBaseUrl('/img/screenshot-burn.png'), alt: translate({id: 'home.screenshot.burn', message: '刻录页'})},
+    {src: useBaseUrl('/img/screenshot-burn-progress.png'), alt: translate({id: 'home.screenshot.progress', message: '刻录进行中'})},
+    {src: useBaseUrl('/img/screenshot-devices.png'), alt: translate({id: 'home.screenshot.devices', message: '设备页查看盘上文件'})},
+    {src: useBaseUrl('/img/screenshot-append.png'), alt: translate({id: 'home.screenshot.append', message: '追加页'})},
   ];
 
   React.useEffect(() => {
@@ -199,7 +200,7 @@ export default function Home(): React.JSX.Element {
                 <h3><Translate id="home.steps.install.title">装好工具</Translate></h3>
                 <p>
                   <Translate id="home.steps.install.description">
-                    cargo build 或下载安装包；刻录需要 PATH 上有 xorriso，写权限来自 cdrom 组。
+                    cargo build 或下载安装包。刻录需要 PATH 上有 xorriso，写权限来自 cdrom 组。
                   </Translate>
                 </p>
               </div>
@@ -209,7 +210,7 @@ export default function Home(): React.JSX.Element {
                 <h3><Translate id="home.steps.build.title">做镜像</Translate></h3>
                 <p>
                   <Translate id="home.steps.build.description">
-                    一条命令或图形界面；镜像覆盖 ISO 9660、Joliet 与 UDF Bridge，老设备与 Windows 都能读。
+                    一条命令或图形界面。镜像覆盖 ISO 9660、Joliet 与 UDF Bridge，老设备与 Windows 都能读。
                   </Translate>
                 </p>
               </div>
@@ -219,7 +220,7 @@ export default function Home(): React.JSX.Element {
                 <h3><Translate id="home.steps.burn.title">刻录与校验</Translate></h3>
                 <p>
                   <Translate id="home.steps.burn.description">
-                    写前检查盘片状态，进度实时可见；写完回读校验，追加时旧文件保持可见。
+                    写前检查盘片状态，进度实时可见。写完回读校验，追加时旧文件保持可见。
                   </Translate>
                 </p>
               </div>

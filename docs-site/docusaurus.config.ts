@@ -46,7 +46,7 @@ const config: Config = {
       {
         name: 'description',
         content:
-          'optiburn：Rust 写的跨平台光盘刻录工具。同时支持 Windows 与 Linux、x86_64 与 arm64；面向 Ubuntu、银河麒麟等 Linux 桌面解决刻录难与不稳定：写前检查、实时进度、任务可中止、失败原因中文归类、写后回读校验。',
+          'optiburn：Rust 写的跨平台光盘刻录工具。同时支持 Windows 与 Linux、x86_64 与 arm64。面向 Ubuntu、银河麒麟等 Linux 桌面解决刻录难与不稳定：写前检查、实时进度、任务可中止、失败原因中文归类、写后回读校验。',
       },
     ],
     image: 'img/screenshot-burn.png',
