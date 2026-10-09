@@ -48,9 +48,10 @@ mod platform {
             gtk::TargetEntry::new("text/uri-list", gtk::TargetFlags::empty(), 0),
             gtk::TargetEntry::new("x-special/gnome-copied-files", gtk::TargetFlags::empty(), 1),
         ];
-        // text/uri-list 规范用 CRLF 分隔。GNOME 的复制文件目标首行是操作名。
-        let uri_list = uris.join("\r\n");
-        let gnome_list = format!("copy\n{}", uris.join("\n"));
+        // text/uri-list 规范用 CRLF 分隔、每行以换行结尾，GNOME 的复制文件目标
+        // 首行是操作名、每行以 LF 结尾。载荷都补齐行尾换行，不依赖消费端容错。
+        let uri_list = format!("{}\r\n", uris.join("\r\n"));
+        let gnome_list = format!("copy\n{}\n", uris.join("\n"));
         let accepted = clipboard.set_with_data(&targets, move |_, selection, info| {
             if info == 1 {
                 selection.set(

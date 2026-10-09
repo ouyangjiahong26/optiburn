@@ -28,6 +28,9 @@ function jobStatusText(job: ActiveJob): string {
   if (job.kind === "verify") {
     return "正在校验盘上内容……";
   }
+  if (job.kind === "copy") {
+    return "正在复制盘上文件……";
+  }
   const action = job.kind === "burn" ? "刻录" : "追加";
   return job.fraction === null
     ? `正在${action}……`
@@ -119,7 +122,9 @@ export function App() {
             <ProgressBar fraction={job.fraction} />
             <div className="job-status-row">
               <span className="job-status">{jobStatusText(job)}</span>
-              {(job.kind === "burn" || job.kind === "append") && (
+              {(job.kind === "burn" ||
+                job.kind === "append" ||
+                job.kind === "copy") && (
                 <button
                   type="button"
                   className="btn btn-danger"
@@ -141,7 +146,13 @@ export function App() {
         {/* 四个页面全部保持挂载，切换只切可见性：读盘得到的清单、选择状态与正在
             进行的复制都不会因为切页而丢失。 */}
         <div className={page === "devices" ? undefined : "page-hidden"}>
-          <DevicesPage locked={locked} refreshSignal={refreshSignal} />
+          <DevicesPage
+            locked={locked}
+            refreshSignal={refreshSignal}
+            active={page === "devices"}
+            onJobStart={startJob}
+            onJobAbort={abortJob}
+          />
         </div>
         <div className={page === "build" ? undefined : "page-hidden"}>
           <BuildPage locked={locked} onJobStart={startJob} onJobAbort={abortJob} />
@@ -150,6 +161,7 @@ export function App() {
           <BurnPage
             locked={locked}
             result={result}
+            active={page === "burn"}
             onJobStart={startJob}
             onJobAbort={abortJob}
           />
@@ -158,6 +170,7 @@ export function App() {
           <AppendPage
             locked={locked}
             result={result}
+            active={page === "append"}
             onJobStart={startJob}
             onJobAbort={abortJob}
           />

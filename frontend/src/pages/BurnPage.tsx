@@ -8,9 +8,10 @@ import { DISC_STATUS_LABEL } from "../discStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormRow } from "../components/FormRow";
 import { PathField } from "../components/PathField";
+import { VerifyCard } from "../components/VerifyCard";
 import type { DiscPageProps, VerifyReport } from "../types";
 
-export function BurnPage({ locked, result, onJobStart, onJobAbort }: DiscPageProps) {
+export function BurnPage({ locked, result, active, onJobStart, onJobAbort }: DiscPageProps) {
   const [image, setImage] = useState("");
   const [device, setDevice] = useState("");
   const [speed, setSpeed] = useState("");
@@ -19,9 +20,12 @@ export function BurnPage({ locked, result, onJobStart, onJobAbort }: DiscPagePro
   const { devices, probing, refresh } = useDeviceProbe();
   const { notice: gateNotice, dismiss: dismissGate } = useGateNotice("burn", result);
 
+  // 页面常驻挂载，探测只在页面可见时刷新：切回来时按当前盘片重读状态。
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (active) {
+      void refresh();
+    }
+  }, [active, refresh]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -141,18 +145,7 @@ export function BurnPage({ locked, result, onJobStart, onJobAbort }: DiscPagePro
         </div>
       </form>
       {verify !== null && (
-        <section className="result-card">
-          <h2>{verify.differences.length === 0 ? "校验通过" : "校验未通过"}</h2>
-          {verify.differences.length === 0 ? (
-            <p className="result-note">盘上内容与镜像逐项一致。</p>
-          ) : (
-            <ul className="diff-list">
-              {verify.differences.map((line, index) => (
-                <li key={index}>{line}</li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <VerifyCard report={verify} passNote="盘上内容与镜像逐项一致。" />
       )}
       <ConfirmDialog
         open={gateNotice !== null}

@@ -18,12 +18,6 @@ export type DiscEntry = {
   isDir: boolean;
 };
 
-// 把盘上文件复制到剪贴板的结果。
-export type CopyReport = {
-  count: number;
-  bytes: number;
-};
-
 export type ImageInfoDto = {
   sectors: number;
   bytes: number;
@@ -37,7 +31,7 @@ export type VerifyReport = {
 
 export type DiscProfile = "cd" | "dvd" | "bd";
 
-export type JobKind = "build" | "burn" | "append" | "verify";
+export type JobKind = "build" | "burn" | "append" | "verify" | "copy";
 
 export type JobOutcome = "done" | "cancelled" | "failed";
 
@@ -62,4 +56,6 @@ export type JobControls = {
 export type DiscPageProps = JobControls & {
   locked: boolean;
   result: JobResult | null;
+  // 页面是否可见：设备探测只在可见时刷新（页面常驻挂载，不等于一直活跃）。
+  active: boolean;
 };

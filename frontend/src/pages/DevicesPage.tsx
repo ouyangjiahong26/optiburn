@@ -1,11 +1,11 @@
-// 默认落地页：挂载时探测一次，job-done 后留在本页时由 App 发信号自动重探。
+// 默认落地页：探测在页面可见时刷新，job-done 后由 App 发信号重读。
 // 点击设备卡片展开盘上文件清单，支持拖动框选与 Ctrl/Shift 多选，可复制到系统剪贴板。
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Copy, FileText, Folder, RefreshCw } from "lucide-react";
 import { copyDiscFiles, listDisc } from "../api";
 import { useDeviceProbe } from "../hooks";
-import type { DiscEntry } from "../types";
+import type { DiscEntry, JobControls } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
 
 type ListingState =
@@ -30,32 +30,39 @@ function formatBytes(bytes: number): string {
 export function DevicesPage({
   locked,
   refreshSignal,
-}: {
+  active,
+  onJobStart,
+  onJobAbort,
+}: JobControls & {
   locked: boolean;
   refreshSignal: number;
+  active: boolean;
 }) {
   const { devices, probing, error, refresh } = useDeviceProbe();
   const [openDevice, setOpenDevice] = useState<string | null>(null);
   const [listing, setListing] = useState<ListingState | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
-  const [copying, setCopying] = useState(false);
-  const [copyResult, setCopyResult] = useState<{ ok: boolean; message: string } | null>(null);
   const anchorRef = useRef<string | null>(null);
   const draggingRef = useRef(false);
+  // 清单加载的请求序号：迟到的响应按序号丢弃（见 loadListing）。
+  const listingSeqRef = useRef(0);
 
+  // 页面常驻挂载，探测只在页面可见时刷新：切回来时按当前盘片重读状态。
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (active) {
+      void refresh();
+    }
+  }, [active, refresh]);
 
   useEffect(() => {
     if (refreshSignal === 0) {
       return;
     }
     void refresh();
-    // 任务结束后盘上内容可能已变：展开中的清单重读，选择与复制结果清零。
+    // 任务结束后盘上内容可能已变：展开中的清单重读，选择与锚点清零。
     if (openDevice !== null) {
+      anchorRef.current = null;
       setSelected([]);
-      setCopyResult(null);
       void loadListing(openDevice);
     }
   }, [refreshSignal, refresh]);
@@ -75,11 +82,18 @@ export function DevicesPage({
     .reduce((sum, entry) => sum + entry.size, 0);
 
   async function loadListing(path: string) {
+    // 序号守卫：切换设备或收起清单后，迟到的响应不许覆盖当前状态。
+    const seq = ++listingSeqRef.current;
     setListing({ kind: "loading" });
     try {
-      setListing({ kind: "ready", entries: await listDisc(path) });
+      const entries = await listDisc(path);
+      if (listingSeqRef.current === seq) {
+        setListing({ kind: "ready", entries });
+      }
     } catch (cause) {
-      setListing({ kind: "error", message: String(cause) });
+      if (listingSeqRef.current === seq) {
+        setListing({ kind: "error", message: String(cause) });
+      }
     }
   }
 
@@ -87,16 +101,17 @@ export function DevicesPage({
     if (locked) {
       return;
     }
+    // 锚点与进行中的加载都属于上一份清单，切换时一并作废。
+    anchorRef.current = null;
+    listingSeqRef.current += 1;
     if (openDevice === path) {
       setOpenDevice(null);
       setListing(null);
       setSelected([]);
-      setCopyResult(null);
       return;
     }
     setOpenDevice(path);
     setSelected([]);
-    setCopyResult(null);
     void loadListing(path);
   }
 
@@ -111,7 +126,7 @@ export function DevicesPage({
   }
 
   function handleRowDown(event: ReactPointerEvent, entry: DiscEntry) {
-    if (entry.isDir || copying) {
+    if (entry.isDir || locked) {
       return;
     }
     if (event.shiftKey && anchorRef.current !== null) {
@@ -140,21 +155,15 @@ export function DevicesPage({
   }
 
   async function handleCopy() {
-    if (openDevice === null || selected.length === 0 || copying) {
+    if (openDevice === null || selected.length === 0 || locked) {
       return;
     }
-    setCopying(true);
-    setCopyResult(null);
+    // 复制在任务槽里跑，进度与完成消息走全局任务事件，与写盘同一套展示。
+    onJobStart("copy");
     try {
-      const report = await copyDiscFiles(openDevice, selected);
-      setCopyResult({
-        ok: true,
-        message: `已复制 ${report.count} 个文件（${formatBytes(report.bytes)}）到系统剪贴板，去文件管理器里粘贴即可。`,
-      });
+      await copyDiscFiles(openDevice, selected);
     } catch (cause) {
-      setCopyResult({ ok: false, message: String(cause) });
-    } finally {
-      setCopying(false);
+      onJobAbort("copy", String(cause));
     }
   }
 
@@ -235,11 +244,11 @@ export function DevicesPage({
                         <button
                           type="button"
                           className="btn"
-                          disabled={locked || copying || selected.length === 0}
+                          disabled={locked || selected.length === 0}
                           onClick={() => void handleCopy()}
                         >
                           <Copy size={11} />
-                          {copying ? "复制中……" : "复制选中文件"}
+                          复制选中文件
                         </button>
                       </div>
                       {listing.entries.length === 0 ? (
@@ -275,11 +284,6 @@ export function DevicesPage({
                       <p className="disc-hint">
                         单击选中，按住指针拖动可框选，Ctrl 或 Shift 加选。复制会先把文件从光盘读出来（需要一点时间），完成后到系统文件管理器里粘贴即可。粘贴前请不要关闭本应用。
                       </p>
-                      {copyResult !== null && (
-                        <p className={copyResult.ok ? "disc-note" : "device-error"}>
-                          {copyResult.message}
-                        </p>
-                      )}
                     </>
                   )}
                 </div>

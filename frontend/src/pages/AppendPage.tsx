@@ -7,9 +7,10 @@ import { useDeviceProbe, useGateNotice } from "../hooks";
 import { DISC_STATUS_LABEL } from "../discStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormRow } from "../components/FormRow";
+import { VerifyCard } from "../components/VerifyCard";
 import type { DiscPageProps, VerifyReport } from "../types";
 
-export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageProps) {
+export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: DiscPageProps) {
   const [files, setFiles] = useState<string[]>([]);
   const [device, setDevice] = useState("");
   const [volumeId, setVolumeId] = useState("OPTIBURN");
@@ -20,9 +21,12 @@ export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageP
   const { devices, probing, refresh } = useDeviceProbe();
   const { notice: gateNotice, dismiss: dismissGate } = useGateNotice("append", result);
 
+  // 页面常驻挂载，探测只在页面可见时刷新：切回来时按当前盘片重读状态。
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (active) {
+      void refresh();
+    }
+  }, [active, refresh]);
 
   // 选中设备后读盘上现有卷标预填，避免以默认值静默改掉盘标。读不到（空盘、盘被
   // 挂载占用等）就保持现值，等用户主动刷新设备时再试。
@@ -71,7 +75,12 @@ export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageP
     }
   }, [addFiles]);
 
+  // 监听只在追加页可见且没有任务时生效：页面常驻挂载，全局监听会让其它页面按
+  // Ctrl+V 也往这里加文件（ADR-0011 的粘贴语义是页面内）。
   useEffect(() => {
+    if (!active || locked) {
+      return;
+    }
     function handleKeyDown(event: KeyboardEvent) {
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "v") {
         return;
@@ -90,7 +99,7 @@ export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageP
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [handlePasteFromClipboard]);
+  }, [active, locked, handlePasteFromClipboard]);
 
   const ready = files.length > 0 && device !== "";
 
@@ -274,18 +283,7 @@ export function AppendPage({ locked, result, onJobStart, onJobAbort }: DiscPageP
         </div>
       </form>
       {verify !== null && (
-        <section className="result-card">
-          <h2>{verify.differences.length === 0 ? "校验通过" : "校验未通过"}</h2>
-          {verify.differences.length === 0 ? (
-            <p className="result-note">盘上内容与所选文件逐项一致。</p>
-          ) : (
-            <ul className="diff-list">
-              {verify.differences.map((line, index) => (
-                <li key={index}>{line}</li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <VerifyCard report={verify} passNote="盘上内容与所选文件逐项一致。" />
       )}
       <ConfirmDialog
         open={gateNotice !== null}
