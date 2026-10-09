@@ -9,7 +9,7 @@
 
 Cross-platform optical disc burning toolkit in Rust for Windows and Linux on x86_64 and arm64. Software covering all four combinations is rare, and burning on Linux desktops (Ubuntu, Kylin, and other distributions) is especially rough: cryptic command-line tools, no progress, English-only errors, and disc states you have to sort out by hand. optiburn turns that into a reliable workflow: pre-flight disc checks, live progress, cancellable jobs, error causes classified into readable Chinese, and read-back verification. Images cover ISO 9660, Joliet and UDF Bridge, so older systems and Windows can read them directly.
 
-## What it does today (0.1.2)
+## What it does today (0.1.3)
 
 | Command | State |
 |---|---|
@@ -19,7 +19,7 @@ Cross-platform optical disc burning toolkit in Rust for Windows and Linux on x86
 | `optiburn probe` | Works on Linux (`/dev/sr*`) and Windows (drive letters). No drives found reports `未发现光驱` (exit 0). |
 | OptiBurn GUI | New in 0.1.1 (Tauri 2 + React). Four pages mirror the four subcommands; burn tasks can be cancelled mid-write. The device page browses a disc's file tree with drag and Ctrl/Shift multi-select and copies files straight to the system clipboard, the append page burns a list of files picked in the file dialog or pasted with Ctrl+V, it inherits the disc's current label, both disc pages can read the disc back and compare it with the source, and writes to a mounted disc are blocked with an unmount hint. Clipboard copy and the mount guard are Linux-only for now and the GUI has not been drive-verified on Windows. Windows NSIS installers (x64, arm64) and Linux AppImage/deb packages (x86_64, arm64) ship from the releases page. |
 
-Native MMC writing (no external tools) is the next milestone, not part of 0.1.2. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layered design and [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) for the media/filesystem matrix.
+Native MMC writing (no external tools) is the next milestone, not part of 0.1.3. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layered design and [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) for the media/filesystem matrix.
 
 ## Install
 
@@ -31,9 +31,9 @@ cargo build --release
 ```
 
 - Rust 1.98.1 (pinned by `rust-toolchain.toml`).
-- `xorriso` on `PATH`, only for `burn`, and only because 0.1.2 shells out to it: `sudo apt install xorriso` on Debian/Ubuntu, `pacman -S xorriso` on MSYS2.
+- `xorriso` on `PATH`, only for `burn`, and only because 0.1.3 shells out to it: `sudo apt install xorriso` on Debian/Ubuntu, `pacman -S xorriso` on MSYS2.
 - Write access to the drive: usually membership in the `cdrom` group, or root.
-- GUI: on Windows grab `OptiBurn_0.1.2_x64-setup.exe` (or the arm64 build). On Linux grab the AppImage (make it executable and run) or the `.deb`. Burning still needs `xorriso` on `PATH`, same as the CLI.
+- GUI: on Windows grab `OptiBurn_0.1.3_x64-setup.exe` (or the arm64 build). On Linux grab the AppImage (make it executable and run) or the `.deb`. Burning still needs `xorriso` on `PATH`, same as the CLI.
 
 ## Usage
 
@@ -91,7 +91,7 @@ done
 ## Acknowledgements
 
 - [hadris](https://github.com/hxyulin/hadris): the MIT-licensed Rust image writer (`hadris-cd`) that produces the UDF Bridge images.
-- [xorriso / libburnia](https://www.gnu.org/software/xorriso/): the reference implementation this project tests against, and the 0.1.2 burn backend (invoked as a subprocess; no GPL code is linked).
+- [xorriso / libburnia](https://www.gnu.org/software/xorriso/): the reference implementation this project tests against, and the 0.1.3 burn backend (invoked as a subprocess; no GPL code is linked).
 - [alight](https://github.com/vicr123/alight): reference for how a Linux `SG_IO` transport is structured; no code copied (that repository carries no license).
 
 ## License
