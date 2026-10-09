@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- 站点图标母版：深底圆角方块 + 银色光盘，位图由 build-assets.mjs 光栅化 -->
+  <defs>
+    <radialGradient id="discg" cx="38%" cy="32%" r="75%">
+      <stop offset="0" stop-color="#fafafa"/>
+      <stop offset="0.55" stop-color="#d9d9d9"/>
+      <stop offset="1" stop-color="#a6a6a6"/>
+    </radialGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="#1c1c22"/>
+  <circle cx="16" cy="16" r="10.5" fill="url(#discg)" stroke="#8f8f8f" stroke-width="0.4"/>
+  <circle cx="16" cy="16" r="3.4" fill="#151515"/>
+  <circle cx="16" cy="16" r="1.5" fill="#e8e8e8"/>
+</svg>
