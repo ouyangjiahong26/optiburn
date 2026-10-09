@@ -30,8 +30,9 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
 
   // 选中设备后读盘上现有卷标预填，避免以默认值静默改掉盘上的卷标。读不到（空盘、
   // 盘被挂载占用等）就回到默认卷标，不把上一张盘的值带进新盘。序号守卫防迟到的
-  // 响应覆盖后选的设备。
+  // 响应覆盖后选的设备，手改过的值不再被自动写回覆盖。
   const volumeSeqRef = useRef(0);
+  const volumeDirtyRef = useRef(false);
   const refreshVolumeId = useCallback(async () => {
     if (device === "") {
       return;
@@ -39,11 +40,11 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
     const seq = ++volumeSeqRef.current;
     try {
       const id = await discVolumeId(device);
-      if (volumeSeqRef.current === seq) {
+      if (volumeSeqRef.current === seq && !volumeDirtyRef.current) {
         setVolumeId(id);
       }
     } catch {
-      if (volumeSeqRef.current === seq) {
+      if (volumeSeqRef.current === seq && !volumeDirtyRef.current) {
         setVolumeId("OPTIBURN");
       }
     }
@@ -216,7 +217,11 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
             <select
               value={device}
               disabled={locked || probing}
-              onChange={(event) => setDevice(event.target.value)}
+              onChange={(event) => {
+                // 换设备视为换盘：清掉手改标记，让新盘的卷标能重新预填。
+                volumeDirtyRef.current = false;
+                setDevice(event.target.value);
+              }}
             >
               <option value="">
                 {devices === null
@@ -253,7 +258,11 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
             className="text-input"
             value={volumeId}
             disabled={locked}
-            onChange={(event) => setVolumeId(event.target.value)}
+            onChange={(event) => {
+              // 手改之后不再自动写回，避免切页返回时覆盖用户输入。
+              volumeDirtyRef.current = true;
+              setVolumeId(event.target.value);
+            }}
           />
         </FormRow>
         <FormRow label="倍速" htmlFor="append-speed">

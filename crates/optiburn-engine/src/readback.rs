@@ -90,7 +90,7 @@ fn parse_volume_id(stdout: &str) -> Option<String> {
 /// 尽力还原时间戳，但抽出的文件 ctime 必然是新值，所以校验只在本地按名字与内容
 /// 对比，不比较属性。
 pub fn extract_tree(source: &Path, dest: &Path, cancel: &CancelToken) -> Result<(), BurnError> {
-    run(XORRISO, &extract_args(source, dest), &mut |_| {}, cancel)
+    run(XORRISO, &extract_args(source, dest), &mut |_| {}, cancel).map_err(read_side_error)
 }
 
 /// 组装抽取参数表。路径按 `OsStr` 原样传递，不做有损转换。
@@ -232,29 +232,38 @@ pub fn extract_paths(
         &mut |_| {},
         cancel,
     )
+    .map_err(read_side_error)
 }
 
-/// 校验盘内路径并转成本地相对路径：只接受常规段，拒绝 `..`、首段的盘符前缀与
-/// Windows 的分隔符。
+/// 读侧提取失败：写盘语义的 [`BurnError::Failed`] 归一成 [`BurnError::ReadFailed`]，
+/// 文案不再带 burn failed 前缀。取消与工具缺失原样保留。
+fn read_side_error(error: BurnError) -> BurnError {
+    match error {
+        BurnError::Failed(tail) => BurnError::ReadFailed(tail),
+        other => other,
+    }
+}
+
+/// 校验盘内路径并转成本地相对路径：只接受常规段，拒绝 `..`、盘符形态段与 Windows
+/// 的分隔符。
 ///
-/// 盘片内容不能当可信输入：Windows 上 `C:/x` 这类带盘符的路径会让 `Path::join`
-/// 直接替换掉暂存目标，把文件抽到暂存目录之外（实测 xorriso 能写出这样的镜像）。
-/// 盘符前缀只在首段构成逃逸，其余段里的冒号按普通字符放行（Linux 上是合法名字）。
+/// 盘片内容不能当可信输入：Windows 上 `C:` 这类带盘符前缀的段会让 `Path` 的拼接
+/// 替换掉已累积的路径，把文件抽到暂存目录之外（实测 xorriso 能写出这样的镜像）。
+/// 每段都要查，冒号本身不拒绝，只有「单个 ASCII 字母加冒号」这种盘符形态段不放行，
+/// `12:30.txt` 这类普通名字照常通过。
 fn safe_relative_path(path: &str) -> Result<PathBuf, BurnError> {
     let mut relative = PathBuf::new();
-    let mut first = true;
     for segment in path.split('/') {
         if segment.is_empty() || segment == "." {
             continue;
         }
-        if first && is_drive_prefix(segment) {
+        if is_drive_prefix(segment) {
             return Err(BurnError::UnsafePath(path.to_string()));
         }
         if segment == ".." || segment.contains('\\') {
             return Err(BurnError::UnsafePath(path.to_string()));
         }
         relative.push(segment);
-        first = false;
     }
     if relative.as_os_str().is_empty() {
         return Err(BurnError::UnsafePath(path.to_string()));
@@ -456,8 +465,16 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
             safe_relative_path("/子目录/中文文件.txt").unwrap(),
             PathBuf::from("子目录/中文文件.txt")
         );
-        // 首段的盘符前缀、`..` 与反斜杠分隔符都拒绝。盘内路径来自盘片，不能信。
-        for bad in ["/C:/escaped", "/../etc/passwd", "/a\\b", "/", ""] {
+        // 盘符形态段、`..` 与反斜杠分隔符都拒绝。每段都查，Windows 上 push 带前缀
+        // 的段会替换已累积路径。盘内路径来自盘片，不能信。
+        for bad in [
+            "/C:/escaped",
+            "/报告/C:/x",
+            "/../etc/passwd",
+            "/a\\b",
+            "/",
+            "",
+        ] {
             assert!(
                 matches!(safe_relative_path(bad), Err(BurnError::UnsafePath(_))),
                 "{bad}"
@@ -533,6 +550,18 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
             matches!(&err, BurnError::ReadFailed(msg) if msg.contains("boom")),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn read_side_errors_drop_the_burn_wording() {
+        assert!(matches!(
+            read_side_error(BurnError::Failed("x".to_string())),
+            BurnError::ReadFailed(tail) if tail == "x"
+        ));
+        assert!(matches!(
+            read_side_error(BurnError::Cancelled),
+            BurnError::Cancelled
+        ));
     }
 
     #[test]
