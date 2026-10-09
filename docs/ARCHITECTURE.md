@@ -54,8 +54,9 @@ optiburn-cli        命令行：build-image / burn / probe
 ### optiburn-transport
 
 接口：`ScsiTransport::issue(cdb, dir, data, timeout)` 一条同步命令，加上
-`Direction`／`Completion`／`TransportError`，按平台分发的 `open(device)`，以及
-`list_optical_devices()`（枚举本机光驱设备路径，非 Linux 返回空列表）。
+`Direction`／`Completion`／`TransportError`，按平台分发的 `open(device)`，
+`list_optical_devices()`（枚举本机光驱设备路径，非 Linux 返回空列表），以及
+`mounted_at(device)`（设备被系统挂载时返回挂载点，写前门禁据此拦截，见 ADR-0010）。
 
 隐藏：`SG_IO` 的 `sg_io_hdr` 组装、SPTI 的 `SCSI_PASS_THROUGH_DIRECT` 组装、
 两套方向枚举语义相反这件事（Linux `SG_DXFER_TO_DEV = -2`，Windows
@@ -93,7 +94,9 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 
 接口：镜像刻录 `BurnEngine::{name, burn}`（输入 `BurnJob`：镜像、设备、倍速、是否
 多区段），追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘），
-进度都通过 `&mut dyn FnMut(f32)` 回调。
+进度都通过 `&mut dyn FnMut(f32)` 回调。另有回读侧的小工具 `read_volume_id`、
+`list_tree`、`extract_tree`、`extract_paths`、`last_session_is_iso` 与
+`compare_trees`（按文件名与内容单向对比，见 ADR-0010）。
 
 隐藏：`xorriso -as cdrecord` 与增长模式（`-dev … -map <目录> / -commit`，见
 ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、stderr 上的百分比
@@ -106,7 +109,8 @@ I/O 错误（`Io`）。
 ### optiburn-cli
 
 接口：四个子命令，其余全是实现细节。`burn` 与 `append` 先跑前置检查
-（`ensure_burnable`：等介质就绪，按盘片状态路由放行或拒绝，见 ADR-0006）再进引擎。
+（`ensure_burnable`：挂载占用与末区段格式直接拒绝，等介质就绪，按盘片状态路由
+放行或拒绝，见 ADR-0006 与 ADR-0010）再进引擎。
 `probe` 在任何情况下都以 0 退出（没光驱不是错误）。真正失败（路径不存在、刻录退出
 码非零）退 1 并把原因写到 stderr。
 
@@ -129,8 +133,8 @@ I/O 错误（`Io`）。
 |---|---|---|
 | `build-image` | 可用 | 可用 |
 | `burn`（xorriso 引擎） | 可用，需要 `xorriso` 与写设备权限 | 可用，需要 `xorriso`（MSYS2 等） |
-| `append`（xorriso 增长模式） | 可用，前置检查按盘片状态自动路由 | 尚未验证（设备枚举未实现） |
-| `probe` | 可用（`/dev/sr*`） | 尚未实现（枚举不到设备，报“未发现光驱”） |
+| `append`（xorriso 增长模式） | 可用，前置检查按盘片状态自动路由 | 未做真机验证（设备枚举已实现） |
+| `probe` | 可用（`/dev/sr*`） | 可用（枚举盘符，未做真机验证） |
 | 原生 MMC 传输 | 可用（`SG_IO`） | 编译通过，等有硬件时验证 |
 
 `cargo check` 覆盖四个目标三元组。Windows 的 SPTI 代码路径只保证能编译，没有真机验证过

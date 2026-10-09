@@ -260,6 +260,7 @@ body {
 .form-actions {
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-2);
   margin-top: var(--space-2);
 }
 
@@ -308,6 +309,53 @@ select:disabled,
   min-width: 0;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+}
+
+/* 追加页的待刻录文件列表 */
+.file-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.file-empty {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.btn-sm {
+  flex: none;
+  height: var(--control-height-sm);
+  padding: 0 var(--space-1-5);
 }
 
 .inline-controls {
@@ -380,6 +428,100 @@ select:disabled,
   margin: 0;
   color: var(--color-red);
   font-size: var(--text-xs);
+}
+
+/* ── 盘上文件清单 ─────────────────────────── */
+.device-main-clickable {
+  cursor: pointer;
+  border-radius: var(--radius-md);
+}
+
+.device-main-clickable:hover {
+  background: var(--color-surface-2);
+}
+
+.device-toggle {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.device-card.expanded {
+  border-color: var(--color-border);
+}
+
+.disc-listing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.disc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.disc-count {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
+.disc-entries {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  user-select: none;
+}
+
+.disc-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+}
+
+.disc-entry.dir {
+  color: var(--color-text-secondary);
+}
+
+.disc-entry:not(.dir):hover {
+  background: var(--color-surface-2);
+}
+
+.disc-entry.selected {
+  background: var(--color-accent-tint-bg);
+  color: var(--color-accent);
+}
+
+.disc-entry-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.disc-entry-size {
+  flex: none;
+  color: var(--color-text-muted);
+  font-size: var(--text-2xs);
+}
+
+.disc-hint {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: var(--text-2xs);
 }
 
 .empty-state {
@@ -495,6 +637,25 @@ select:disabled,
   font-size: var(--text-sm);
 }
 
+/* 校验结果：一致说明与差异清单 */
+.result-note {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+}
+
 /* ── 对话框 ───────────────────────────────── */
 .dialog-overlay {
   position: fixed;
@@ -544,4 +705,9 @@ select:disabled,
   to {
     transform: rotate(360deg);
   }
+}
+
+/* 常驻挂载的页面：非当前页整体隐藏，状态留在原组件里 */
+.page-hidden {
+  display: none;
 }

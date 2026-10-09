@@ -52,6 +52,10 @@ npm ci --prefix frontend
 npm run build --prefix frontend                # tsc --noEmit + vite build
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
+# 本地要一个能直接运行的 release 二进制：
+#   npm --prefix frontend exec -- tauri build --no-bundle
+# 必须经 tauri CLI（或显式 --features tauri/custom-protocol）。裸 cargo build --release
+# 产出的是开发态二进制，窗口会去连 devUrl 报“Connection refused”。
 ```
 
 硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real` 需要
@@ -65,10 +69,10 @@ npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 | `crates/optiburn-mmc/` | CDB 编解码与响应解析，含黄金 CDB 断言与固定缓冲区解析测试 |
 | `crates/optiburn-mastering/` | `build_image` + profile 映射。`tests/roundtrip.rs` 是 xorriso 对拍 |
 | `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`）、`xorriso.rs`（参数与进度解析） |
-| `crates/optiburn-cli/` | `src/main.rs` 三个子命令 |
+| `crates/optiburn-cli/` | `src/main.rs` 四个子命令 |
 | `src-tauri/` | GUI 的 Rust 侧：Tauri 命令层，调用核心 crate |
 | `frontend/` | GUI 的 React 页面，Vite + TS |
-| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0008） |
+| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0013） |
 | `CONTEXT.md` | 领域术语表（术语/定义/禁用同义词三列），命名一律照它 |
 | `.github/workflows/` | `ci.yml`（job 名即分支保护的 required checks）、`release.yml` |
 
@@ -82,7 +86,8 @@ npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 - 核心五个 crate 不加 GUI 依赖。GUI 依赖（Tauri、React）只允许出现在 src-tauri 与
   frontend（ADR-0008）。不引 GPL 依赖（链接层面必须保持 MIT 可分发，子进程调 GPL
   工具可以）。
-- 平台分支只能出现在 `optiburn-transport`。别处出现 `#[cfg(target_os)]` 前先想清楚。
+- 平台分支默认收在 `optiburn-transport`。别处出现 `#[cfg(target_os)]` 前先想清楚，
+  独立成平台模块并把取舍写进 ADR（例：`src-tauri/src/clipboard.rs`，ADR-0012）。
 - 上游怪癖要写进代码注释与 ADR（例：hadris 需要读写句柄，它的文档注释里 UDF VRS 的
   扇区号是错的，实测在 20–22）。这类事实写下来，避免下一个人重踩。
 - 不写空洞的兼容层：改接口就迁移全部调用方。废弃代码直接删。

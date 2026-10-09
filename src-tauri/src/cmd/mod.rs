@@ -2,7 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use optiburn_engine::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow};
+use optiburn_engine::{
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow,
+    last_session_is_iso, read_volume_id,
+};
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
     DiscInformation, DiscStatus, MmcDevice, MmcError, WriteBlock, approve_write, wait_until_ready,
@@ -11,6 +14,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::job::{JobKind, JobState, RunningJob};
+
+pub(crate) mod copy;
+pub(crate) mod verify;
 
 /// 一台光驱及其盘片状态，字段与前端 `types.ts` 的 `DeviceInfo` 一一对应。
 #[derive(Serialize)]
@@ -58,6 +64,17 @@ enum JobError {
         device: String,
         source: optiburn_transport::TransportError,
     },
+    /// 光盘被系统挂载，写盘或抽取都拿不到独占访问。
+    Mounted {
+        device: String,
+        point: PathBuf,
+    },
+    /// 追加路径上末区段不是 ISO 9660（例如 UDF 盘），续写会遮住原有内容。
+    NoIsoSession,
+    /// 待刻录列表或暂存阶段的输入问题，文案已由下层给出。
+    Input(String),
+    /// 用户中止了可取消的只读任务（复制、校验）。
+    Cancelled(&'static str),
     /// 等待介质就绪或读取盘片信息失败。
     Disc(MmcError),
     /// 写前门禁拒绝。
@@ -105,6 +122,12 @@ fn default_output(src: &Path) -> PathBuf {
 fn job_error_text(error: &JobError) -> String {
     match error {
         JobError::Open { device, source } => format!("打开 {device} 失败：{source}"),
+        JobError::Mounted { device, point } => format!(
+            "光盘已被系统挂载在 {}：在文件管理器里卸载该光盘，或运行 udisksctl unmount -b {device} 后再试。",
+            point.display()
+        ),
+        JobError::NoIsoSession => "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。".into(),
+        JobError::Input(message) => message.clone(),
         JobError::Disc(MmcError::NotReady) => "盘未就绪：请确认已放入可写盘片且仓门已关闭。".into(),
         JobError::Disc(other) => format!("读取盘片信息失败：{other}"),
         JobError::Gate(WriteBlock::NeedGrowMode) => {
@@ -115,7 +138,8 @@ fn job_error_text(error: &JobError) -> String {
             "缺少刻录工具 xorriso，请先安装后再刻录。".into()
         }
         JobError::Burn(BurnError::Cancelled) => "已中止：盘片内容不完整。".into(),
-        JobError::Burn(BurnError::Failed(tail)) => format!("刻录失败：{tail}"),
+        JobError::Cancelled(action) => format!("已中止：{action}没有完成。"),
+        JobError::Burn(BurnError::Failed(tail)) => BurnFailure::classify(tail).user_text(tail),
         JobError::Burn(other) => format!("刻录失败：{other}"),
         JobError::Mastering(MasteringError::SourceNotFound(path)) => {
             format!("源目录不存在：{}", path.display())
@@ -178,7 +202,7 @@ fn probe_one(path: String) -> DeviceInfo {
     info
 }
 
-/// 占住任务槽：已有任务时拒绝，避免两个任务同时写同一台光驱。
+/// 占住任务槽：已有任务时拒绝，避免两个任务同时操作同一台光驱（写盘与复制都经过这里）。
 fn begin_job(state: &State<'_, JobState>) -> Result<CancelToken, String> {
     let mut slot = state.0.lock().expect("job state mutex");
     if slot.is_some() {
@@ -218,7 +242,14 @@ fn finish_job(app: &AppHandle, kind: JobKind, outcome: &str, message: String) {
 
 /// 失败收尾：广播 job-done，并把同一份文案返回给调用方（invoke 拒绝分支复用）。
 fn fail_job(app: &AppHandle, kind: JobKind, error: JobError) -> String {
-    let outcome = if matches!(error, JobError::Burn(BurnError::Cancelled)) {
+    // 面向用户的文案经过归类，原始细节写进应用日志备查。
+    if let JobError::Burn(BurnError::Failed(tail)) = &error {
+        eprintln!("optiburn: 刻录失败原始输出：{tail}");
+    }
+    let outcome = if matches!(
+        error,
+        JobError::Burn(BurnError::Cancelled) | JobError::Cancelled(_)
+    ) {
         "cancelled"
     } else {
         "failed"
@@ -291,17 +322,19 @@ pub async fn start_burn(
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
         let image = PathBuf::from(image);
-        let result = run_disc_task(DiscTask {
-            app: &worker,
-            kind: JobKind::Burn,
-            append: false,
-            path: &image,
-            device: &device,
-            // 卷标只在追加时有意义。
-            volume_id: "",
-            speed,
-            close_disc,
-            cancel: &cancel,
+        let result = check_write_gates(&device, false).and_then(|()| {
+            run_disc_task(DiscTask {
+                app: &worker,
+                kind: JobKind::Burn,
+                append: false,
+                path: &image,
+                device: &device,
+                // 卷标只在追加时有意义。
+                volume_id: "",
+                speed,
+                close_disc,
+                cancel: &cancel,
+            })
         });
         match result {
             Ok(message) => finish_job(&worker, JobKind::Burn, "done", message),
@@ -314,32 +347,26 @@ pub async fn start_burn(
     Ok(())
 }
 
-/// 把目录追加到盘上（增长模式），交互与刻录一致。
+/// 把待刻录文件追加到盘上（增长模式）：文件先收进暂存目录，再按盘根写入。
 #[tauri::command]
 pub async fn start_append(
     app: AppHandle,
     state: State<'_, JobState>,
-    src: String,
+    files: Vec<String>,
     device: String,
     volume_id: String,
     speed: Option<u32>,
     close_disc: bool,
 ) -> Result<(), String> {
+    if files.is_empty() {
+        return Err("待刻录列表是空的。".into());
+    }
     let cancel = begin_job(&state)?;
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
-        let src = PathBuf::from(src);
-        let result = run_disc_task(DiscTask {
-            app: &worker,
-            kind: JobKind::Append,
-            append: true,
-            path: &src,
-            device: &device,
-            volume_id: &volume_id,
-            speed,
-            close_disc,
-            cancel: &cancel,
-        });
+        let result = run_append_task(
+            &worker, &cancel, files, &device, &volume_id, speed, close_disc,
+        );
         match result {
             Ok(message) => finish_job(&worker, JobKind::Append, "done", message),
             Err(e) => {
@@ -349,6 +376,109 @@ pub async fn start_append(
     });
     set_join(&state, join);
     Ok(())
+}
+
+/// 追加任务主体：先过写前门禁，再把待刻录文件收进暂存目录，写入完成或失败后都清掉暂存。
+fn run_append_task(
+    app: &AppHandle,
+    cancel: &CancelToken,
+    files: Vec<String>,
+    device: &str,
+    volume_id: &str,
+    speed: Option<u32>,
+    close_disc: bool,
+) -> Result<String, JobError> {
+    // 门禁先跑：挂载、封口、末区段格式这些拒绝都发生在把文件拷进暂存之前。
+    check_write_gates(device, true)?;
+    let stage = unique_temp_dir("optiburn-stage").map_err(JobError::Input)?;
+    if let Err(message) = stage_files(&files, &stage) {
+        // 暂存阶段的失败同样要清目录，不留用户文件的副本。
+        let _ = std::fs::remove_dir_all(&stage);
+        return Err(JobError::Input(message));
+    }
+    let result = run_disc_task(DiscTask {
+        app,
+        kind: JobKind::Append,
+        append: true,
+        path: &stage,
+        device,
+        volume_id,
+        speed,
+        close_disc,
+        cancel,
+    });
+    let _ = std::fs::remove_dir_all(&stage);
+    result
+}
+
+/// 把待刻录文件收进暂存目录，盘根就是这些文件的文件名。
+///
+/// 同名文件直接报错而不覆盖（文件来自不同目录时可能出现），目录与复制失败同样报错。
+fn stage_files(files: &[String], stage_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(stage_dir).map_err(|e| format!("创建暂存目录失败：{e}"))?;
+    for file in files {
+        let source = Path::new(file);
+        let name = source
+            .file_name()
+            .ok_or_else(|| format!("路径没有文件名：{file}"))?;
+        // 粘贴入口可能混进目录或特殊文件（FIFO 等），提前给出中文解释，不让
+        // fs::copy 抛英文错误，也不让打开 FIFO 这类操作把任务卡死。
+        let metadata = std::fs::metadata(source)
+            .map_err(|e| format!("读取 {} 的信息失败：{e}", source.display()))?;
+        if metadata.is_dir() {
+            return Err(format!(
+                "待刻录列表里有目录 {}，本版本只接受文件。请展开目录后逐个选择文件。",
+                name.to_string_lossy()
+            ));
+        }
+        if !metadata.is_file() {
+            return Err(format!(
+                "待刻录列表里有非常规文件 {}，本版本只接受普通文件。",
+                name.to_string_lossy()
+            ));
+        }
+        let target = stage_dir.join(name);
+        if target.exists() {
+            return Err(format!(
+                "待刻录列表里有同名文件 {}，请改名或分批写入。",
+                name.to_string_lossy()
+            ));
+        }
+        std::fs::copy(source, &target)
+            .map_err(|e| format!("复制 {} 失败：{e}", source.display()))?;
+    }
+    Ok(())
+}
+
+/// 在系统临时目录建一个本次调用独占的目录。
+///
+/// 名字带进程号与纳秒时间戳，且用 `create_dir`（已存在即失败）而不是
+/// `create_dir_all`：多用户机器上他人可以预置同名符号链接把拷贝引到别处，换名字
+/// 比跟随符号链接稳妥。代价是崩溃残留会留在临时目录等系统回收。
+fn unique_temp_dir(prefix: &str) -> Result<PathBuf, String> {
+    for _ in 0..16 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("创建暂存目录失败：{error}")),
+        }
+    }
+    Err("创建暂存目录失败：名称连续冲突。".to_string())
+}
+
+/// 读盘上最后一个区段的卷标，供追加页预填。读不到时前端保持默认值。
+#[tauri::command]
+pub async fn disc_volume_id(device: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_volume_id(&device).map_err(|e| format!("读取卷标失败：{e}"))
+    })
+    .await
+    .expect("volume id worker did not panic")
 }
 
 /// 取消当前任务：置位令牌，引擎在下一个进度行停掉子进程。
@@ -395,12 +525,11 @@ struct DiscTask<'a> {
     cancel: &'a CancelToken,
 }
 
-/// 刻录/追加的阻塞主体：门禁、引擎、完成后读一次区段数放进完成消息。
+/// 刻录/追加的阻塞主体：跑引擎，完成后读一次区段数放进完成消息。
+///
+/// 写前门禁不在这里：追加要在暂存用户文件之前拿到拒绝结论，由调用方先跑
+/// [`check_write_gates`]。
 fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
-    let info = open_gate(task.device)?;
-    // 镜像路径不接受可追加盘（单区段镜像会遮住已有区段的文件），增长模式放行。
-    approve_write(&info, task.append).map_err(JobError::Gate)?;
-
     let mut progress = progress_emitter(task.app, task.kind);
     let result = if task.append {
         let job = GrowJob {
@@ -423,6 +552,32 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
     };
     result.map_err(JobError::Burn)?;
     Ok(sessions_message(task.device))
+}
+
+/// 写前门禁：挂载占用、盘片状态与末区段格式，全部通过才允许动设备。
+///
+/// 追加在把用户文件拷进暂存之前先跑这里，挂载、封口、UDF 盘这些拒绝都发生在
+/// 白拷之前。刻录由 start_burn 的任务闭包先跑。
+fn check_write_gates(device: &str, append: bool) -> Result<(), JobError> {
+    // 挂载占用必挂：libburn 拿不到独占设备时只回英文报错，这里先换成卸载指引。
+    if let Some(point) = optiburn_transport::mounted_at(device) {
+        return Err(JobError::Mounted {
+            device: device.to_string(),
+            point,
+        });
+    }
+    let info = open_gate(device)?;
+    // 镜像路径不接受可追加盘（单区段镜像会遮住已有区段的文件），增长模式放行。
+    approve_write(&info, append).map_err(JobError::Gate)?;
+    // 追加路径再过一道：末区段不是 ISO 9660 的盘（例如 UDF 盘）拒绝，见 ADR-0010。
+    if append && info.status == DiscStatus::Appendable {
+        let iso_readable = last_session_is_iso(device)
+            .map_err(|e| JobError::Input(format!("读取末区段格式失败：{e}")))?;
+        if !iso_readable {
+            return Err(JobError::NoIsoSession);
+        }
+    }
+    Ok(())
 }
 
 /// 打开设备并完成刻录前查询：等就绪、读盘片信息。查询完立刻释放句柄，
@@ -499,6 +654,10 @@ mod tests {
             "已中止：盘片内容不完整。"
         );
         assert_eq!(
+            job_error_text(&JobError::Cancelled("复制")),
+            "已中止：复制没有完成。"
+        );
+        assert_eq!(
             job_error_text(&JobError::Burn(BurnError::Failed("fifo busy".into()))),
             "刻录失败：fifo busy"
         );
@@ -526,6 +685,87 @@ mod tests {
             ))),
             "源路径不是目录：/x"
         );
+        assert_eq!(
+            job_error_text(&JobError::NoIsoSession),
+            "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
+        );
+        assert_eq!(
+            job_error_text(&JobError::Input("复制 /x 失败：no such file".to_string())),
+            "复制 /x 失败：no such file"
+        );
+    }
+
+    #[test]
+    fn mount_and_classified_failure_texts_are_pinned() {
+        assert_eq!(
+            job_error_text(&JobError::Mounted {
+                device: "/dev/sr0".to_string(),
+                point: PathBuf::from("/run/media/u/我的光盘"),
+            }),
+            "光盘已被系统挂载在 /run/media/u/我的光盘：在文件管理器里卸载该光盘，或运行 udisksctl unmount -b /dev/sr0 后再试。"
+        );
+        assert_eq!(
+            job_error_text(&JobError::Burn(BurnError::Failed(
+                "libburn : FATAL : Lost connection to drive\n".to_string()
+            ))),
+            "刻录中断：光驱在写入过程中失去了连接，常见原因是线缆松动、供电不稳或被意外拔出。本次区段没有写完，旧内容不受影响。请重新插拔光驱后重试。这张盘如果要继续使用，建议先检查再写。"
+        );
+        assert_eq!(
+            job_error_text(&JobError::Burn(BurnError::Failed(
+                "libburn : SORRY : Cannot open busy device '/dev/sr0'\n".to_string()
+            ))),
+            "设备被占用：光驱正被其它程序使用，常见是系统挂载了这张光盘。先卸载光盘或关闭占用程序再试。"
+        );
+    }
+
+    #[test]
+    fn stage_files_copies_and_rejects_duplicates() {
+        let base = std::env::temp_dir().join(format!("optiburn-stage-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("src");
+        std::fs::create_dir_all(src.join("a")).unwrap();
+        std::fs::create_dir_all(src.join("b")).unwrap();
+        std::fs::write(src.join("a/x.txt"), b"one").unwrap();
+        std::fs::write(src.join("b/y.txt"), b"two").unwrap();
+
+        let files = vec![
+            src.join("a/x.txt").display().to_string(),
+            src.join("b/y.txt").display().to_string(),
+        ];
+        let stage = base.join("stage");
+        stage_files(&files, &stage).expect("stage two files");
+        assert_eq!(std::fs::read(stage.join("x.txt")).unwrap(), b"one");
+        assert_eq!(std::fs::read(stage.join("y.txt")).unwrap(), b"two");
+
+        // 同名文件必须报错，不能悄悄覆盖先到的那个。
+        let clashing = vec![
+            src.join("a/x.txt").display().to_string(),
+            src.join("a/x.txt").display().to_string(),
+        ];
+        let err = stage_files(&clashing, &base.join("stage-clash")).expect_err("must fail");
+        assert!(err.contains("同名文件"), "{err}");
+
+        // 不存在的源文件同样报错。
+        let missing = vec![src.join("a/none.txt").display().to_string()];
+        let err = stage_files(&missing, &base.join("stage-missing")).expect_err("must fail");
+        assert!(err.contains("none.txt"), "{err}");
+
+        // 列表里混进目录时给出中文解释，而不是让 fs::copy 抛英文 EISDIR。
+        let directory = vec![src.join("a").display().to_string()];
+        let err = stage_files(&directory, &base.join("stage-dir")).expect_err("must fail");
+        assert!(err.contains("目录"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn unique_temp_dir_creates_fresh_dirs() {
+        let first = unique_temp_dir("optiburn-test-stage").expect("create first");
+        let second = unique_temp_dir("optiburn-test-stage").expect("create second");
+        assert_ne!(first, second);
+        assert!(first.is_dir() && second.is_dir());
+        let _ = std::fs::remove_dir_all(first);
+        let _ = std::fs::remove_dir_all(second);
     }
 
     #[test]

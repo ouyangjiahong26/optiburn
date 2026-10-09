@@ -2,6 +2,7 @@
 //!
 //! 平台差异不在这里出现：设备枚举与打开都走 `optiburn-transport`。
 
+mod clipboard;
 mod cmd;
 mod job;
 
@@ -22,6 +23,11 @@ pub fn run() {
             cmd::start_build_image,
             cmd::start_burn,
             cmd::start_append,
+            cmd::disc_volume_id,
+            cmd::copy::list_disc,
+            cmd::copy::copy_disc_files,
+            cmd::copy::paste_files,
+            cmd::verify::start_verify,
             cmd::cancel_job,
             cmd::confirm_close,
         ])

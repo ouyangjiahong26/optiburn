@@ -3,3 +3,9 @@
 /frontend/dist/
 /src-tauri/target/
 /src-tauri/gen/schemas/
+
+# 文档站与品牌资产工具
+/docs-site/node_modules/
+/docs-site/build/
+/docs-site/.docusaurus/
+/tools/assets/node_modules/

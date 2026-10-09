@@ -1,0 +1,11 @@
+{
+  "name": "optiburn-assets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build-assets.mjs"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}

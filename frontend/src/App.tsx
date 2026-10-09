@@ -15,15 +15,21 @@ type PageId = "devices" | "build" | "burn" | "append";
 
 const NAV_ITEMS: { id: PageId; label: string; icon: typeof Disc3 }[] = [
   { id: "devices", label: "设备", icon: Disc3 },
-  { id: "build", label: "制作镜像", icon: FileArchive },
-  { id: "burn", label: "刻录", icon: Flame },
   { id: "append", label: "追加", icon: FolderPlus },
+  { id: "burn", label: "刻录", icon: Flame },
+  { id: "build", label: "制作镜像", icon: FileArchive },
 ];
 
 // 制作镜像没有进度回调，只显示动作本身；其余两种有百分比就带上。
 function jobStatusText(job: ActiveJob): string {
   if (job.kind === "build") {
     return "正在制作镜像……";
+  }
+  if (job.kind === "verify") {
+    return "正在校验盘上内容……";
+  }
+  if (job.kind === "copy") {
+    return "正在复制盘上文件……";
   }
   const action = job.kind === "burn" ? "刻录" : "追加";
   return job.fraction === null
@@ -39,8 +45,6 @@ export function App() {
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const seqRef = useRef(0);
-  const pageRef = useRef(page);
-  pageRef.current = page;
 
   // 提交即锁定：等第一个进度或完成事件接管，避免窗口期里再次提交或切页。
   const startJob = useCallback((kind: JobKind) => {
@@ -72,9 +76,8 @@ export function App() {
         setJob(null);
         seqRef.current += 1;
         setResult({ ...done, seq: seqRef.current });
-        if (pageRef.current === "devices") {
-          setRefreshSignal((signal) => signal + 1);
-        }
+        // 页面常驻挂载，设备页自己决定展开中的清单要不要重读。
+        setRefreshSignal((signal) => signal + 1);
       }),
       onCloseBlocked(() => {
         setCloseDialogOpen(true);
@@ -93,6 +96,8 @@ export function App() {
   }, []);
 
   const locked = job !== null;
+  // 写盘类任务停止会留下不完整的盘，只读任务（复制、校验）不会，文案要分开。
+  const discWriting = job !== null && (job.kind === "burn" || job.kind === "append");
 
   return (
     <div className="app">
@@ -119,7 +124,9 @@ export function App() {
             <ProgressBar fraction={job.fraction} />
             <div className="job-status-row">
               <span className="job-status">{jobStatusText(job)}</span>
-              {(job.kind === "burn" || job.kind === "append") && (
+              {(job.kind === "burn" ||
+                job.kind === "append" ||
+                job.kind === "copy") && (
                 <button
                   type="button"
                   className="btn btn-danger"
@@ -138,33 +145,47 @@ export function App() {
             {result.message}
           </div>
         )}
-        {page === "devices" && (
-          <DevicesPage locked={locked} refreshSignal={refreshSignal} />
-        )}
-        {page === "build" && (
+        {/* 四个页面全部保持挂载，切换只切可见性：读盘得到的清单、选择状态与正在
+            进行的复制都不会因为切页而丢失。 */}
+        <div className={page === "devices" ? undefined : "page-hidden"}>
+          <DevicesPage
+            locked={locked}
+            refreshSignal={refreshSignal}
+            active={page === "devices"}
+            onJobStart={startJob}
+            onJobAbort={abortJob}
+          />
+        </div>
+        <div className={page === "build" ? undefined : "page-hidden"}>
           <BuildPage locked={locked} onJobStart={startJob} onJobAbort={abortJob} />
-        )}
-        {page === "burn" && (
+        </div>
+        <div className={page === "burn" ? undefined : "page-hidden"}>
           <BurnPage
             locked={locked}
             result={result}
+            active={page === "burn"}
             onJobStart={startJob}
             onJobAbort={abortJob}
           />
-        )}
-        {page === "append" && (
+        </div>
+        <div className={page === "append" ? undefined : "page-hidden"}>
           <AppendPage
             locked={locked}
             result={result}
+            active={page === "append"}
             onJobStart={startJob}
             onJobAbort={abortJob}
           />
-        )}
+        </div>
       </main>
       <ConfirmDialog
         open={cancelDialogOpen}
         title="停止任务"
-        message="停止后盘片内容不完整，确认停止？"
+        message={
+          discWriting
+            ? "停止后盘片内容不完整，确认停止？"
+            : "停止后本次任务不会完成，盘上内容不受影响。确认停止？"
+        }
         confirmText="停止"
         cancelText="继续"
         tone="danger"
@@ -178,7 +199,11 @@ export function App() {
       <ConfirmDialog
         open={closeDialogOpen}
         title="退出 OptiBurn"
-        message="有任务正在进行。停止后盘片内容不完整，确认停止并退出？"
+        message={
+          discWriting
+            ? "有任务正在进行。停止后盘片内容不完整，确认停止并退出？"
+            : "有任务正在进行。停止后本次任务不会完成，盘上内容不受影响。确认停止并退出？"
+        }
         confirmText="停止并退出"
         cancelText="继续运行"
         tone="danger"

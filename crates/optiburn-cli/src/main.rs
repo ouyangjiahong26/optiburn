@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use optiburn_engine::{BurnEngine, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow};
+use optiburn_engine::{
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow,
+    last_session_is_iso,
+};
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 use optiburn_mmc::{DiscStatus, MmcDevice, MmcError, WriteBlock};
 
@@ -149,6 +152,17 @@ fn build_image_command(
     Ok(())
 }
 
+/// 写盘失败的中文文案：归类走引擎里的共用文案，原始输出打到 stderr 备查。
+fn burn_error_text(error: &BurnError) -> String {
+    if let BurnError::Failed(tail) = error {
+        eprintln!("optiburn: 刻录失败原始输出：{tail}");
+    }
+    match error {
+        BurnError::Failed(tail) => BurnFailure::classify(tail).user_text(tail),
+        other => other.to_string(),
+    }
+}
+
 fn burn_command(
     image: &Path,
     device: &str,
@@ -172,7 +186,7 @@ fn burn_command(
     // CLI 不提供取消入口，传一个永不置位的默认令牌。
     let result = XorrisoEngine.burn(&job, &mut progress, &CancelToken::default());
     eprintln!();
-    result.map_err(|e| e.to_string())
+    result.map_err(|e| burn_error_text(&e))
 }
 
 fn append_command(
@@ -195,14 +209,21 @@ fn append_command(
     let mut progress = |fraction: f32| eprint!("\r{:>5.1}%", fraction * 100.0);
     let result = grow(&job, &mut progress, &CancelToken::default());
     eprintln!();
-    result.map_err(|e| e.to_string())
+    result.map_err(|e| burn_error_text(&e))
 }
 
-/// 刻录前把盘片状态查清楚：等就绪、按状态放行或拒绝。
+/// 刻录前把盘片状态查清楚：挂载占用与盘片状态都在这里拦，等就绪、按状态放行或拒绝。
 ///
 /// 镜像路径（`accept_appendable = false`）不接受可追加盘：单区段镜像不带前面
 /// 区段的目录树，写下去会把旧文件遮住。追加必须走 `append` 的增长模式。
 fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> {
+    // 挂载中的盘写不进去（引擎要独占打开设备），先拦下来并给出卸载指引。
+    if let Some(point) = optiburn_transport::mounted_at(device) {
+        return Err(format!(
+            "光盘已被系统挂载在 {}：先卸载（例如 udisksctl unmount -b {device}）再写入。",
+            point.display()
+        ));
+    }
     let transport =
         optiburn_transport::open(device).map_err(|e| format!("打开 {device} 失败：{e}"))?;
     let mut mmc = MmcDevice::new(transport);
@@ -224,6 +245,18 @@ fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> 
         }
         WriteBlock::Finalized => "盘已封口，无法再写入，请更换盘片。".to_string(),
     })?;
+    // 追加路径再过一道：末区段不是 ISO 9660 的盘（例如 Windows 的 UDF 盘）不能续写，
+    // 追加 ISO 区段会改变盘在按最后一区段挂载的系统里的可见内容（ADR-0010）。
+    if accept_appendable && info.status == DiscStatus::Appendable {
+        let iso_readable =
+            last_session_is_iso(device).map_err(|e| format!("读取末区段格式失败：{e}"))?;
+        if !iso_readable {
+            return Err(
+                "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
+                    .to_string(),
+            );
+        }
+    }
     // 门禁放行后，可追加盘只剩追加路径，把区段数报给用户留个底。
     if info.status == DiscStatus::Appendable {
         println!("盘上已有 {} 个区段，将追加新区段。", info.sessions);

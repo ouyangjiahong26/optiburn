@@ -3,14 +3,28 @@
 //! v0 只有一种引擎：调用 `xorriso -as cdrecord` 子进程（ADR-0004）。原生 MMC 写入
 //! 引擎（RESERVE TRACK / WRITE(10) / CLOSE TRACK）落地后接在同一个 [`BurnEngine`]
 //! 接缝上，不需要空壳占位。
+//!
+//! 除写盘外还有回读用的小工具：读盘上卷标、把镜像或设备的目录树抽到本地，以及
+//! 本地目录树的内容对比（回读校验，见 ADR-0010）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod readback;
+mod verify;
 mod xorriso;
 
-pub use xorriso::{XorrisoEngine, grow};
+pub use readback::{
+    DiscEntry, extract_paths, extract_tree, last_session_is_iso, list_tree, read_volume_id,
+};
+pub use verify::compare_trees;
+pub use xorriso::{BurnFailure, XorrisoEngine, grow};
+
+/// 依赖的可执行文件名。
+pub(crate) const XORRISO: &str = "xorriso";
+/// 子进程失败时保留多少行 stderr 作为摘要。
+pub(crate) const TAIL_LINES: usize = 10;
 
 /// 一次镜像刻录任务的输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +66,15 @@ pub enum BurnError {
     Failed(String),
     #[error("burn cancelled")]
     Cancelled,
+    /// 盘上最后一区段不是 ISO 9660（例如 UDF 盘），相关读取与续写不可用。
+    #[error("no ISO 9660 image at the last session")]
+    NoIsoSession,
+    /// 读侧子进程失败（列目录、读卷标等），与刻录失败区分开，动作语境由调用方给出。
+    #[error("{0}")]
+    ReadFailed(String),
+    /// 盘内路径不安全（盘符前缀、`..` 或 Windows 分隔符），拒绝抽取。
+    #[error("unsafe path in image: {0}")]
+    UnsafePath(String),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
 }

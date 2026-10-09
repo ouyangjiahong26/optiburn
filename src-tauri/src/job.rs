@@ -12,6 +12,9 @@ pub enum JobKind {
     Build,
     Burn,
     Append,
+    Verify,
+    /// 把盘上文件复制到系统剪贴板：与写盘同占任务槽，二者互斥。
+    Copy,
 }
 
 /// 一次阻塞任务的运行时信息。

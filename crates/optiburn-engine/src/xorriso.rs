@@ -2,19 +2,15 @@
 //!
 //! 走 `xorriso -as cdrecord` 兼容层。参数组合的依据在 ADR-0004：本机
 //! `xorriso -as cdrecord -help` 实查过 `dev=`、`speed=`、`-data`、`-multi` 均受支持。
-//! GPL 边界止于进程边界：本仓库不链接 libburn/libisofs。
+//! GPL 边界止于进程边界：本仓库不链接 libburn/libisofs。读侧工具在
+//! [`crate::readback`]（ADR-0010）。
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
-use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob};
-
-/// 依赖的可执行文件名。
-const XORRISO: &str = "xorriso";
-/// 子进程失败时保留多少行 stderr 作为摘要。
-const TAIL_LINES: usize = 10;
+use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, TAIL_LINES, XORRISO};
 
 /// 用 `xorriso -as cdrecord` 写盘。
 #[derive(Debug, Default, Clone, Copy)]
@@ -78,6 +74,45 @@ fn grow_args(job: &GrowJob) -> Vec<OsString> {
     args
 }
 
+/// 写盘失败里可归类的成因，供上层组织面向人的文案。
+///
+/// 判定输入是 xorriso 的 stderr 尾部（[`BurnError::Failed`] 里那段）。条目按
+/// 真实遇到的报错逐步补充，认不出的形态归到 [`BurnFailure::Other`]，原始输出
+/// 由上层记日志。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnFailure {
+    /// 写入过程中与驱动器的连接中断，常见于拔线、供电不稳。
+    DriveLost,
+    /// 设备被其它程序占用，常见于系统挂载了光盘。
+    DeviceBusy,
+    /// 未识别出已知形态。
+    Other,
+}
+
+impl BurnFailure {
+    /// 从 stderr 尾部判定成因。
+    pub fn classify(tail: &str) -> Self {
+        if tail.contains("Lost connection to drive") || tail.contains("SG_ERR_DID_ERROR") {
+            Self::DriveLost
+        } else if tail.contains("Cannot open busy device") {
+            Self::DeviceBusy
+        } else {
+            Self::Other
+        }
+    }
+
+    /// 面向用户的中文说明。`tail` 只在未归类时拼进文案，原始输出由调用方另写日志。
+    ///
+    /// 文案收在引擎里，CLI 与 GUI 共用同一份，避免两端各写一份后口径漂移。
+    pub fn user_text(&self, tail: &str) -> String {
+        match self {
+            Self::DriveLost => "刻录中断：光驱在写入过程中失去了连接，常见原因是线缆松动、供电不稳或被意外拔出。本次区段没有写完，旧内容不受影响。请重新插拔光驱后重试。这张盘如果要继续使用，建议先检查再写。".to_string(),
+            Self::DeviceBusy => "设备被占用：光驱正被其它程序使用，常见是系统挂载了这张光盘。先卸载光盘或关闭占用程序再试。".to_string(),
+            Self::Other => format!("刻录失败：{tail}"),
+        }
+    }
+}
+
 /// 跑一个写盘子进程，把 stderr 上的百分比转成进度，并在退出码非零时报错。
 ///
 /// 取消是协作式的：令牌只能在读到一行 stderr 的间隙里被检查，置位就杀掉子进程
@@ -85,8 +120,8 @@ fn grow_args(job: &GrowJob) -> Vec<OsString> {
 /// 作用——盘已写完，仍按成功返回。
 ///
 /// 单独抽出来是为了能用本地 shell 脚本当替身测试：`xorriso` 的参数由调用方给，
-/// 这里只管进程、进度、取消与失败摘要。
-fn run(
+/// 这里只管进程、进度、取消与失败摘要。读侧的抽取也复用它。
+pub(crate) fn run(
     program: &str,
     args: &[OsString],
     progress: &mut dyn FnMut(f32),
@@ -466,5 +501,26 @@ mod tests {
         );
         // 取消生效必须把 5 秒的脚本砍在两秒以内，证明子进程确实被停掉了。
         assert!(elapsed < Duration::from_secs(2), "elapsed {elapsed:?}");
+    }
+
+    #[test]
+    fn burn_failure_classification_covers_observed_tails() {
+        // 实机样本：写入中拔掉光驱连线后的 libburn 输出。
+        let drive_lost = "\
+libburn : FAILURE : SCSI command 2Ah yielded host problem: 0x7 SG_ERR_DID_ERROR (Internal error detected in the host adapter)
+libburn : FATAL : Lost connection to drive
+libburn : SORRY : Drive is already released
+";
+        assert_eq!(BurnFailure::classify(drive_lost), BurnFailure::DriveLost);
+        // 实机样本：盘被系统挂载时尝试独占打开。
+        let busy =
+            "libburn : SORRY : Cannot open busy device '/dev/sr0' : Device or resource busy\n";
+        assert_eq!(BurnFailure::classify(busy), BurnFailure::DeviceBusy);
+        assert_eq!(
+            BurnFailure::classify("xorriso : aborting : FAILURE"),
+            BurnFailure::Other
+        );
+        assert_eq!(BurnFailure::Other.user_text("boom"), "刻录失败：boom");
+        assert!(BurnFailure::DriveLost.user_text("").starts_with("刻录中断"));
     }
 }

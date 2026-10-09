@@ -1,5 +1,7 @@
 # optiburn
 
+![OptiBurn](assets/banner.png)
+
 [![CI](https://github.com/ouyangjiahong26/optiburn/actions/workflows/ci.yml/badge.svg)](https://github.com/ouyangjiahong26/optiburn/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/ouyangjiahong26/optiburn)](https://github.com/ouyangjiahong26/optiburn/blob/main/LICENSE)
 
@@ -7,7 +9,9 @@
 
 ## 简介
 
-optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Linux 与 Windows 的 x86_64/arm64。它解决的核心问题是：在 Linux 上刻的盘，Windows 要能直接读。它先把目录做成 Windows 能读的镜像（ISO 9660 + Joliet + UDF Bridge），再把镜像写到光驱。
+optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Windows 与 Linux 的 x86_64 与 arm64。
+
+同时支持 Windows 与 Linux、x86_64 与 arm64 四个组合的刻录软件很少，而 Linux 桌面（Ubuntu、银河麒麟等发行版）上的刻录体验尤其粗糙：命令行参数难记、没有进度、失败只有英文报错，盘片状态不对时要自己慢慢排查。optiburn 把这条流水线做成可靠的工具：写前检查盘片状态，刻录有实时进度且可中止，失败成因归类成中文说明，写后可回读校验。生成的镜像覆盖 ISO 9660、Joliet 与 UDF Bridge，老设备与 Windows 都能直接读。
 
 ## 当前能力（0.1.2）
 
@@ -17,7 +21,7 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Linu
 | `optiburn burn` | Linux 可用（Windows 已能构建并枚举光驱，未做真机验证）。默认多区段（盘保持可追加），`--close-disc` 才封盘。 |
 | `optiburn append` | Linux 可用（Windows 未做真机验证）。增长模式追加目录并合并已有区段，旧文件保持可见。 |
 | `optiburn probe` | Linux（`/dev/sr*`）与 Windows（盘符）可用。找不到设备时报“未发现光驱”（退出码 0）。 |
-| `OptiBurn` 图形前端 | 0.1.1 新增（Tauri 2 + React）。四个页面对应四个子命令，刻录类任务可中止。Windows 安装包（NSIS，x64 与 arm64）与 Linux 安装包（AppImage 与 deb，x86_64 与 arm64）从 Release 页下载。 |
+| `OptiBurn` 图形前端 | 0.1.1 新增（Tauri 2 + React）。四个页面对应四个子命令，刻录类任务可中止。设备页可展开盘上文件清单，支持拖动框选与 Ctrl、Shift 多选，选中后可一键复制到系统剪贴板供文件管理器粘贴（复制与挂载门禁目前只在 Linux 生效，Windows 未做真机验证）。追加页的待刻录文件可用文件选择框多选，或在文件管理器复制后按 Ctrl+V 粘贴。卷标自动沿用盘上现有值，刻录与追加两页都能回读盘片并与源逐文件对比，盘被系统挂载时写入会被拦下并提示卸载。Windows 安装包（NSIS，x64 与 arm64）与 Linux 安装包（AppImage 与 deb，x86_64 与 arm64）从 Release 页下载。 |
 
 原生 MMC 写入（不借助外部工具）是下一个里程碑，不属于 0.1.2。分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，介质与文件系统矩阵见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。
 

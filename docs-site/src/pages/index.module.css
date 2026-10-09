@@ -1,0 +1,512 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ─── 首屏 ─── */
+.heroBanner {
+  position: relative;
+  padding: 7rem 0 2rem;
+  overflow: hidden;
+  background: #121212;
+  text-align: center;
+}
+
+.heroGlow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 70% 50% at 50% 0%, rgba(123, 130, 244, 0.15) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 35% at 80% 90%, rgba(123, 130, 244, 0.06) 0%, transparent 60%);
+}
+
+.heroGrid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(123, 130, 244, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(123, 130, 244, 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 70% 55% at 50% 0%, black 0%, transparent 75%);
+}
+
+.heroInner {
+  position: relative;
+  z-index: 1;
+  max-width: 900px;
+}
+
+.heroBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.9rem;
+  border-radius: 999px;
+  background: rgba(123, 130, 244, 0.08);
+  border: 1px solid rgba(123, 130, 244, 0.18);
+  color: #9a9ff6;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-bottom: 1.5rem;
+  animation: fadeUp 0.6s ease both;
+}
+
+.heroBadgeDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #7b82f4;
+  box-shadow: 0 0 8px rgba(123, 130, 244, 0.6);
+  animation: pulse 2s infinite;
+}
+
+.heroTitle {
+  font-size: clamp(2.4rem, 6vw, 4rem);
+  font-weight: 800;
+  color: #f2f2f2;
+  margin: 0 0 1.25rem;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  animation: fadeUp 0.6s 0.1s ease both;
+}
+
+.heroTitleAccent {
+  background: linear-gradient(135deg, #7b82f4 0%, #a6abf8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.heroTagline {
+  font-size: clamp(1rem, 2.2vw, 1.25rem);
+  color: #9a9a9a;
+  margin: 0 auto 2.5rem;
+  font-weight: 400;
+  line-height: 1.7;
+  max-width: 640px;
+  animation: fadeUp 0.6s 0.2s ease both;
+}
+
+/* ─── 按钮 ─── */
+.buttons {
+  display: flex;
+  gap: 0.875rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  animation: fadeUp 0.6s 0.3s ease both;
+}
+
+.btnPrimary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #7b82f4 0%, #6b72e8 100%);
+  color: #fff !important;
+  font-weight: 600;
+  font-size: 1rem;
+  border: none;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  text-decoration: none;
+}
+
+.btnPrimary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(123, 130, 244, 0.35);
+  text-decoration: none;
+}
+
+.btnSecondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  border-radius: 10px;
+  background: #1c1c1c;
+  color: #e0e0e0 !important;
+  font-weight: 600;
+  font-size: 1rem;
+  border: 1px solid #303030;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+  text-decoration: none;
+}
+
+.btnSecondary:hover {
+  transform: translateY(-2px);
+  border-color: #484848;
+  text-decoration: none;
+}
+
+.btnGhost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  border-radius: 10px;
+  background: transparent;
+  color: #9a9a9a !important;
+  font-weight: 600;
+  font-size: 1rem;
+  border: 1px solid transparent;
+  transition: color 0.2s ease, border-color 0.2s ease;
+  text-decoration: none;
+}
+
+.btnGhost:hover {
+  color: #e0e0e0 !important;
+  border-color: #303030;
+  text-decoration: none;
+}
+
+/* ─── 截图展示 ─── */
+.showcase {
+  margin-top: 4rem;
+  position: relative;
+  animation: fadeUp 0.8s 0.4s ease both;
+}
+
+.showcaseFrame {
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid #242424;
+  background: #121212;
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(123, 130, 244, 0.08);
+  aspect-ratio: 16 / 10;
+  max-width: 840px;
+  margin: 0 auto;
+}
+
+.showcaseImg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+
+.showcaseImgActive {
+  opacity: 1;
+}
+
+.showcaseOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent 60%, rgba(0, 0, 0, 0.18) 100%);
+}
+
+.showcaseDots {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.showcaseDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  background: #303030;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.showcaseDotActive {
+  background: #7b82f4;
+  transform: scale(1.25);
+}
+
+/* ─── 通用小节 ─── */
+.howItWorks,
+.features {
+  padding: 5rem 0;
+}
+
+.howItWorks {
+  background: #141414;
+}
+
+.features {
+  background: #121212;
+}
+
+.sectionKicker {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #7b82f4;
+  text-align: center;
+}
+
+.sectionTitle {
+  margin: 0 0 3rem;
+  font-size: clamp(1.6rem, 3.5vw, 2.2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #ececec;
+  text-align: center;
+}
+
+/* ─── 三步上手 ─── */
+.steps {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.step {
+  flex: 1 1 240px;
+  max-width: 300px;
+  padding: 1.75rem;
+  background: #1c1c1c;
+  border: 1px solid #242424;
+  border-radius: 16px;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.step:hover {
+  border-color: rgba(123, 130, 244, 0.3);
+  transform: translateY(-3px);
+}
+
+.stepNum {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(123, 130, 244, 0.1);
+  color: #9a9ff6;
+  font-weight: 700;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+.step h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #ececec;
+}
+
+.step p {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.65;
+  color: #9a9a9a;
+}
+
+.stepArrow {
+  color: #3a3a3a;
+  margin-top: 3.5rem;
+  flex: none;
+}
+
+/* ─── 功能卡 ─── */
+.featureGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.25rem;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.featureCard {
+  padding: 1.75rem;
+  background: #1c1c1c;
+  border: 1px solid #242424;
+  border-radius: 16px;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.featureCard:hover {
+  border-color: rgba(123, 130, 244, 0.3);
+  transform: translateY(-3px);
+}
+
+.featureIcon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(123, 130, 244, 0.1);
+  color: #9a9ff6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1rem;
+}
+
+.featureCard h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #ececec;
+}
+
+.featureCard p {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.65;
+  color: #9a9a9a;
+}
+
+/* ─── 收尾号召 ─── */
+.cta {
+  padding: 5rem 0 6rem;
+  background: #141414;
+}
+
+.ctaBox {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 3rem 2rem;
+  text-align: center;
+  background:
+    radial-gradient(ellipse 80% 100% at 50% 0%, rgba(123, 130, 244, 0.12) 0%, transparent 70%),
+    #1c1c1c;
+  border: 1px solid #242424;
+  border-radius: 20px;
+}
+
+.ctaTitle {
+  margin: 0 0 0.5rem;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #ececec;
+}
+
+.ctaSubtitle {
+  margin: 0 0 2rem;
+  font-size: 1rem;
+  color: #9a9a9a;
+}
+
+/* 浅色主题下的落地页 */
+[data-theme='light'] .heroBanner,
+[data-theme='light'] .features {
+  background: #ffffff;
+}
+
+[data-theme='light'] .howItWorks,
+[data-theme='light'] .cta {
+  background: #fbfbfa;
+}
+
+[data-theme='light'] .heroTitle {
+  color: #161616;
+}
+
+[data-theme='light'] .heroTagline,
+[data-theme='light'] .step p,
+[data-theme='light'] .featureCard p,
+[data-theme='light'] .ctaSubtitle {
+  color: #6e6e6e;
+}
+
+[data-theme='light'] .sectionTitle,
+[data-theme='light'] .step h3,
+[data-theme='light'] .featureCard h3,
+[data-theme='light'] .ctaTitle {
+  color: #161616;
+}
+
+[data-theme='light'] .step,
+[data-theme='light'] .featureCard,
+[data-theme='light'] .ctaBox {
+  background: #ffffff;
+  border-color: #e8e8e6;
+}
+
+[data-theme='light'] .btnSecondary {
+  background: #ffffff;
+  color: #2a2a2a !important;
+  border-color: #e0e0de;
+}
+
+[data-theme='light'] .btnGhost {
+  color: #6e6e6e !important;
+}
+
+[data-theme='light'] .btnGhost:hover {
+  color: #161616 !important;
+  border-color: #e0e0de;
+}
+
+[data-theme='light'] .showcaseFrame {
+  border-color: #e8e8e6;
+  background: #ffffff;
+}
+
+[data-theme='light'] .showcaseDot {
+  background: #e0e0de;
+}
+
+[data-theme='light'] .btnPrimary {
+  color: #fff !important;
+}
+
+/* ─── 动效 ─── */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .heroBadge,
+  .heroTitle,
+  .heroTagline,
+  .buttons,
+  .showcase {
+    animation: none;
+  }
+
+  .heroBadgeDot {
+    animation: none;
+  }
+}
+
+/* ─── 响应式 ─── */
+@media screen and (max-width: 768px) {
+  .heroBanner {
+    padding: 4rem 0 2rem;
+  }
+
+  .howItWorks,
+  .features,
+  .cta {
+    padding: 3.5rem 0;
+  }
+
+  .stepArrow {
+    display: none;
+  }
+}

@@ -23,8 +23,8 @@ export function useDeviceProbe() {
   return { devices, probing, error, refresh };
 }
 
-// 门禁类失败按契约靠文案识别（含“追加”或“封口”），用对话框引导换盘或改用追加页；
-// seq 保证每条结果只提示一次，关掉后不会因重新渲染再弹。
+// 门禁类失败按契约靠文案识别（含“追加”“封口”或“挂载”），用对话框引导换盘、
+// 改用追加页或先卸载光盘。seq 保证每条结果只提示一次，关掉后不会因重新渲染再弹。
 export function useGateNotice(
   kind: JobKind,
   result: JobResult | null,
@@ -41,7 +41,7 @@ export function useGateNotice(
     ) {
       return;
     }
-    if (!/追加|封口/.test(result.message)) {
+    if (!/追加|封口|挂载/.test(result.message)) {
       return;
     }
     handledSeq.current = result.seq;

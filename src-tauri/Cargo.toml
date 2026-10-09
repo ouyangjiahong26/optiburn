@@ -17,6 +17,9 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# 生产二进制必须让 tauri 打开 custom-protocol（tauri CLI 构建时自动加）。裸
+# `cargo build --release` 不带它时 tauri::is_dev() 为真，窗口会去连 build.devUrl，
+# 界面上只会看到连接被拒。
 tauri = { version = "=2.12.1", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
@@ -26,3 +29,8 @@ optiburn-engine = { path = "../crates/optiburn-engine" }
 optiburn-mastering = { path = "../crates/optiburn-mastering" }
 optiburn-mmc = { path = "../crates/optiburn-mmc" }
 optiburn-transport = { path = "../crates/optiburn-transport" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# 复制盘上文件到系统剪贴板要用 GTK3 的剪贴板（提供 GNOME 的复制文件目标）。
+# 版本与 tauri 依赖的 gtk 对齐（0.18）。
+gtk = "0.18"

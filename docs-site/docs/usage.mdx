@@ -1,0 +1,85 @@
+---
+id: usage
+title: 命令行用法
+sidebar_label: 命令行用法
+slug: /usage
+---
+
+# 命令行用法
+
+二进制名是 `optiburn`。四个子命令各管一段流水线。
+
+## build-image
+
+把目录做成镜像。
+
+```bash
+$ optiburn build-image docs -o docs.iso --profile dvd --volume-id OPTIBURN
+镜像: docs.iso
+  扇区: 682
+  字节: 1396736
+  文件系统: ISO 9660, Joliet Level 3, UDF 1.02
+```
+
+| 参数 | 说明 |
+|---|---|
+| `-o, --output` | 输出路径。缺省时写到当前目录，文件名是 `<源目录名>.iso` |
+| `--profile` | `cd`、`dvd`（默认）或 `bd`，决定写哪些文件系统 |
+| `--volume-id` | 卷标 |
+
+三个 profile 都保留 ISO 9660 主命名空间并写 Joliet（Windows 长文件名与中文名），
+dvd 与 bd 还写对应版本的 UDF。文件数据区只有一份，不占双倍空间。
+
+## burn
+
+把镜像写到盘。
+
+```bash
+optiburn burn docs.iso --device /dev/sr0 --speed 8
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--device` | Linux 是 `/dev/sr*`，Windows 是盘符（`E:`） |
+| `--speed` | 倍速，留空交给驱动自选 |
+| `--close-disc` | 写完后封盘。不传时盘保持可追加 |
+| `--engine` | 目前只有 `xorriso`（默认值），其它值报“未实现” |
+
+默认多区段：盘写完后还能继续追加，省着用一张盘。需要归档一次性写死的场景就传 `--close-disc`。
+
+## append
+
+把目录内容追加为新区段。旧文件保持可见，Windows 挂载最后一个区段就能看到全部文件。
+
+```bash
+optiburn append photos --device /dev/sr0 --volume-id PHOTOS
+```
+
+- 空盘上这等价于首刻。
+- `--close-disc` 在提交后封盘。
+- 对随机可写介质（DVD-RAM、BD-RE）不生效，xorriso 保持盘可覆写。
+
+## probe
+
+查看光驱。
+
+```bash
+$ optiburn probe
+未发现光驱                      # 没有光驱（退出码 0）
+# 有光驱时每个设备一行：
+# /dev/sr0 | ASUS BW-16D1HT 3.10 | 空盘，1 个区段
+```
+
+没有光驱时也退出 0，可以放心放进脚本或 CI。
+
+## 写盘前置检查
+
+`burn` 与 `append` 在真正写入前会做几项检查，失败时给出中文原因与下一步：
+
+- 盘片就绪：等盘片就绪，20 秒内每 500 ms 重试。
+- 介质状态：已封口的盘拒绝写入。可追加盘提示改用 `append`。随机可写介质直接放行。
+- 挂载占用：盘被系统挂载时拒绝写入，并提示先卸载。
+- 末区段格式：可追加盘的末区段不是 ISO 9660（例如 Windows 写的 UDF 盘）时拒绝续写，
+  避免原有文件被遮蔽。
+
+检查全部通过后才会调用写盘引擎。

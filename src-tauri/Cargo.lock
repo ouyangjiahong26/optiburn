@@ -2540,6 +2540,7 @@ dependencies = [
 name = "optiburn-gui"
 version = "0.1.2"
 dependencies = [
+ "gtk",
  "optiburn-engine",
  "optiburn-mastering",
  "optiburn-mmc",

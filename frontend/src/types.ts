@@ -11,15 +11,27 @@ export type DeviceInfo = {
   error: string | null;
 };
 
+// 盘上条目：path 以 / 开头，目录 size 为 0。
+export type DiscEntry = {
+  path: string;
+  size: number;
+  isDir: boolean;
+};
+
 export type ImageInfoDto = {
   sectors: number;
   bytes: number;
   filesystems: string[];
 };
 
+// 回读校验结果：差异为空表示盘上内容与源一致，条目是中文描述，直接展示。
+export type VerifyReport = {
+  differences: string[];
+};
+
 export type DiscProfile = "cd" | "dvd" | "bd";
 
-export type JobKind = "build" | "burn" | "append";
+export type JobKind = "build" | "burn" | "append" | "verify" | "copy";
 
 export type JobOutcome = "done" | "cancelled" | "failed";
 
@@ -44,4 +56,6 @@ export type JobControls = {
 export type DiscPageProps = JobControls & {
   locked: boolean;
   result: JobResult | null;
+  // 页面是否可见：设备探测只在可见时刷新（页面常驻挂载，不等于一直活跃）。
+  active: boolean;
 };

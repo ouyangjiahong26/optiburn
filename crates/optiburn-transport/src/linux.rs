@@ -5,6 +5,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::{Completion, Direction, MAX_CDB_LEN, MAX_SENSE_LEN, ScsiTransport, TransportError};
@@ -197,6 +198,72 @@ pub(super) fn optical_devices() -> Vec<String> {
     devices
 }
 
+/// 设备被系统挂载时返回挂载点。
+///
+/// 从 `/proc/self/mountinfo` 按设备的 major:minor 匹配，不依赖挂载来源怎么写
+/// （`/dev/sr0`、`/dev/cdrom`、udev 符号链接都可能出现）。挂载点里的空格等字符
+/// 在 mountinfo 里是八进制转义（如 `\040`），解析时还原。
+pub(super) fn mounted_at(device: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    let target = std::fs::metadata(device).ok()?.rdev();
+    let major = libc::major(target) as u32;
+    let minor = libc::minor(target) as u32;
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    find_mount_point(&mountinfo, major, minor)
+}
+
+/// 在 mountinfo 文本里查 major:minor 对应的挂载点。抽成纯函数，测试可以喂固定文本。
+///
+/// 每行前五列是：id、parent、major:minor、根、挂载点。其后是可选字段与“-”分隔符，
+/// 这里只看前五列。
+fn find_mount_point(mountinfo: &str, major: u32, minor: u32) -> Option<PathBuf> {
+    for line in mountinfo.lines() {
+        let mut fields = line.split(' ');
+        let (Some(_id), Some(_parent), Some(majmin), Some(_root), Some(point)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            continue;
+        };
+        let key = majmin
+            .split_once(':')
+            .and_then(|(maj, min)| Some((maj.parse::<u32>().ok()?, min.parse::<u32>().ok()?)));
+        if key == Some((major, minor)) {
+            return Some(PathBuf::from(unescape_mountinfo(point)));
+        }
+    }
+    None
+}
+
+/// 还原 mountinfo 字段里的八进制转义（`\040` 空格、`\011` 制表、`\012` 换行、`\134` 反斜杠）。
+fn unescape_mountinfo(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        // 一个合法转义占 4 字节：反斜杠加三位八进制数字。
+        let is_escape = bytes[index] == b'\\' && index + 3 < bytes.len();
+        if is_escape {
+            let digits = &bytes[index + 1..index + 4];
+            if digits.iter().all(|b| (b'0'..=b'7').contains(b)) {
+                let value = u16::from(digits[0] - b'0') * 64
+                    + u16::from(digits[1] - b'0') * 8
+                    + u16::from(digits[2] - b'0');
+                out.push(value as u8);
+                index += 4;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,5 +273,32 @@ mod tests {
         // 布局一旦漂移，ioctl 会静默读到错误字段而不是报错。
         assert_eq!(std::mem::size_of::<SgIoHdr>(), 88);
         assert_eq!(std::mem::align_of::<SgIoHdr>(), 8);
+    }
+
+    #[test]
+    fn mountinfo_finds_mount_point_by_major_minor() {
+        let text = "\
+29 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw
+1129 30 11:0 / /run/media/u/我的光盘 ro,relatime - iso9660 /dev/sr0 ro
+";
+        assert_eq!(
+            find_mount_point(text, 11, 0),
+            Some(PathBuf::from("/run/media/u/我的光盘"))
+        );
+        assert_eq!(find_mount_point(text, 8, 1), Some(PathBuf::from("/")));
+        assert_eq!(find_mount_point(text, 11, 1), None);
+        // 残缺行不该让匹配提前收场。
+        assert_eq!(find_mount_point("junk\n", 11, 0), None);
+    }
+
+    #[test]
+    fn mountinfo_escape_is_restored() {
+        let text = "1129 30 11:0 / /run/media/u/my\\040disc ro - iso9660 /dev/sr0 ro\n";
+        assert_eq!(
+            find_mount_point(text, 11, 0),
+            Some(PathBuf::from("/run/media/u/my disc"))
+        );
+        assert_eq!(unescape_mountinfo("a\\134b"), "a\\b");
+        assert_eq!(unescape_mountinfo("tail\\04"), "tail\\04");
     }
 }
