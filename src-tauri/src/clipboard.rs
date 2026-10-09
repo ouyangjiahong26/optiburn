@@ -106,9 +106,14 @@ mod platform {
                 .collect();
             let _ = sender.send(paths);
         });
-        receiver
-            .recv()
-            .map_err(|_| "剪贴板主循环已退出。".to_string())
+        receiver.recv().map_err(|_| {
+            pick(
+                lang(),
+                "剪贴板主循环已退出。",
+                "The clipboard main loop has exited.",
+            )
+            .to_string()
+        })
     }
 
     /// 取剪贴板里的文件 URI。优先标准目标 text/uri-list，兜底解析 GNOME 的

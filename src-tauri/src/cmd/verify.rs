@@ -62,6 +62,7 @@ pub async fn start_verify(
                     &worker,
                     JobKind::Verify,
                     outcome,
+                    None,
                     verify_message(lang(), mode, &differences),
                 );
                 Ok(VerifyReportDto { differences })
@@ -125,7 +126,7 @@ fn extract_and_compare(
         )),
     })?;
     extract_tree(Path::new(device), &disc_tree, cancel)
-        .map_err(|e| read_error(lang(), "读取盘上内容", "reading the disc", e))?;
+        .map_err(|e| read_error(lang(), "读取盘上内容", "Reading the disc", e))?;
     let reference = match mode {
         VerifyMode::Append => {
             if files.is_empty() {
@@ -151,7 +152,7 @@ fn extract_and_compare(
                 )),
             })?;
             extract_tree(source, &image_tree, cancel)
-                .map_err(|e| read_error(lang(), "读取镜像", "reading the image", e))?;
+                .map_err(|e| read_error(lang(), "读取镜像", "Reading the image", e))?;
             image_tree
         }
     };

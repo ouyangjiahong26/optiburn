@@ -12,14 +12,15 @@ WinGet 与 Scoop 的国际用户装完即面对看不懂的界面，AppImageHub 
 ## 决策
 
 1. 界面语言跟随系统：locale 以 zh 开头用中文，其余一律英文。前端用
-   `navigator.language` 判定，`t(en, zh)` 成对书写文案；后端用 `sys-locale` 在
+   `navigator.language` 判定，`t(en, zh)` 成对书写文案。后端用 `sys-locale` 在
    启动时判定一次，错误与任务消息按同一语言输出。
 2. 英文是回退语言：未覆盖的语言一律英文，不为每种语言做兜底翻译。
 3. CLI 保持中文文案不变：CLI 面向的用户群与 GUI 不同，本决策只覆盖 GUI 进程
-   （src-tauri 与 frontend）；引擎层需要区分的只有回读校验的差异描述，由调用方
+   （src-tauri 与 frontend）。引擎层需要区分的只有回读校验的差异描述，由调用方
    传入语言。
-4. NSIS 安装器与 WinGet 清单同样双语：安装器语言列表为简体中文加英文（安装器
-   自动按系统语言选择），WinGet 清单以 en-US 为 defaultLocale 并附 zh-CN 翻译。
+4. NSIS 安装器与 WinGet 清单同样双语：安装器语言列表为英文加简体中文（系统语言
+   命中哪个用哪个，未命中回退英文），WinGet 清单以 en-US 为 defaultLocale 并附
+   zh-CN 翻译。
 
 ## 后果
 

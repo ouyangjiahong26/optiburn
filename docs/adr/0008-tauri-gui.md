@@ -27,4 +27,4 @@ Windows 只发 NSIS 安装包）。GUI 的能力与 CLI 等同：四个子命令
 ## 后果
 
 - CI 增加 webkit2gtk 构建依赖与 node 22 工具链；根 workspace 的四目标检查不变。
-- Windows 刻录仍需用户自装 xorriso（与 CLI 相同的已知限制），GUI 会给出中文提示。
+- Windows 刻录仍需用户自装 xorriso（与 CLI 相同的已知限制），GUI 会给出提示。

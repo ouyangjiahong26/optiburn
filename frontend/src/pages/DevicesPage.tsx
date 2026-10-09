@@ -240,7 +240,12 @@ export function DevicesPage({
                 <span>{device.identity ?? t("Unknown model", "未知型号")}</span>
                 {device.sessions !== null && (
                   <span>
-                    {t(`${device.sessions} sessions`, `${device.sessions} 个区段`)}
+                    {t(
+                      device.sessions === 1
+                        ? "1 session"
+                        : `${device.sessions} sessions`,
+                      `${device.sessions} 个区段`,
+                    )}
                   </span>
                 )}
               </div>
@@ -262,8 +267,16 @@ export function DevicesPage({
                       <div className="disc-toolbar">
                         <span className="disc-count">
                           {t(
-                            `${files.length} files, ${selected.length} selected`,
-                            `共 ${files.length} 个文件，已选 ${selected.length} 个`,
+                            files.length === 1
+                              ? "1 file"
+                              : `${files.length} files`,
+                            `共 ${files.length} 个文件`,
+                          )}
+                          {t(
+                            selected.length === 1
+                              ? ", 1 selected"
+                              : `, ${selected.length} selected`,
+                            `，已选 ${selected.length} 个`,
                           )}
                           {selected.length > 0
                             ? t(

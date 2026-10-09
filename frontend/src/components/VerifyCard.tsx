@@ -1,7 +1,7 @@
 import type { VerifyReport } from "../types";
 import { t } from "../i18n";
 
-// 校验结果卡片：通过给一句说明，未通过列出中文差异。两个盘片页面共用。
+// 校验结果卡片：通过给一句说明，未通过列出差异明细（随界面语言）。两个盘片页面共用。
 export function VerifyCard({
   report,
   passNote,

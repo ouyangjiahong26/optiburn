@@ -7,7 +7,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Cross-platform optical disc burning toolkit in Rust for Windows and Linux on x86_64 and arm64. Software covering all four combinations is rare, and burning on Linux desktops (Ubuntu, Kylin, and other distributions) is especially rough: cryptic command-line tools, no progress, English-only errors, and disc states you have to sort out by hand. optiburn turns that into a reliable workflow: pre-flight disc checks, live progress, cancellable jobs, error causes classified into readable Chinese, and read-back verification. Images cover ISO 9660, Joliet and UDF Bridge, so older systems and Windows can read them directly.
+Cross-platform optical disc burning toolkit in Rust for Windows and Linux on x86_64 and arm64. Software covering all four combinations is rare, and burning on Linux desktops (Ubuntu, Kylin, and other distributions) is especially rough: cryptic command-line tools, no progress, English-only errors, and disc states you have to sort out by hand. optiburn turns that into a reliable workflow: pre-flight disc checks, live progress, cancellable jobs, error causes classified into readable messages, and read-back verification. Images cover ISO 9660, Joliet and UDF Bridge, so older systems and Windows can read them directly.
 
 ## What it does today (0.1.3)
 

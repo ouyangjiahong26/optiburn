@@ -32,13 +32,18 @@ function jobStatusText(job: ActiveJob): string {
   if (job.kind === "copy") {
     return t("Copying files from disc…", "正在复制盘上文件……");
   }
-  const en = job.kind === "burn" ? "Burning" : "Appending";
-  const action = job.kind === "burn" ? "刻录" : "追加";
   return job.fraction === null
-    ? t(`${en}…`, `正在${action}……`)
+    ? t(
+        job.kind === "burn" ? "Burning…" : "Appending…",
+        job.kind === "burn" ? "正在刻录……" : "正在追加……",
+      )
     : t(
-        `${en}… ${Math.round(job.fraction * 100)}% written`,
-        `正在${action}，已写入 ${Math.round(job.fraction * 100)}%`,
+        job.kind === "burn"
+          ? `Burning… ${Math.round(job.fraction * 100)}% written`
+          : `Appending… ${Math.round(job.fraction * 100)}% written`,
+        job.kind === "burn"
+          ? `正在刻录，已写入 ${Math.round(job.fraction * 100)}%`
+          : `正在追加，已写入 ${Math.round(job.fraction * 100)}%`,
       );
 }
 

@@ -51,12 +51,15 @@ struct JobProgress {
 }
 
 /// 完成事件载荷（事件名 `job-done`），outcome 取 "done" | "cancelled" | "failed"。
+/// gate 仅在门禁类失败时给出，供前端弹对应的引导对话框。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct JobDone {
     kind: JobKind,
     outcome: String,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate: Option<&'static str>,
 }
 
 /// 刻录/追加前门禁与刻录本体可能失败的来源，文案映射集中在 [`job_error_text`]。
@@ -98,12 +101,15 @@ fn status_fields(status: DiscStatus) -> (String, Option<u8>) {
 }
 
 /// 前端介质字符串到 [`DiscProfile`] 的映射。
-fn profile_from_str(profile: &str) -> Result<DiscProfile, String> {
+fn profile_from_str(lang: Lang, profile: &str) -> Result<DiscProfile, String> {
     match profile {
         "cd" => Ok(DiscProfile::Cd),
         "dvd" => Ok(DiscProfile::Dvd),
         "bd" => Ok(DiscProfile::Bd),
-        other => Err(format!("未知的介质类型：{other}")),
+        other => Err(match lang {
+            Lang::Zh => format!("未知的介质类型：{other}"),
+            Lang::En => format!("Unknown media profile: {other}"),
+        }),
     }
 }
 
@@ -300,7 +306,13 @@ fn set_join(state: &State<'_, JobState>, join: tauri::async_runtime::JoinHandle<
 }
 
 /// 清空任务槽并广播完成事件。
-fn finish_job(app: &AppHandle, kind: JobKind, outcome: &str, message: String) {
+fn finish_job(
+    app: &AppHandle,
+    kind: JobKind,
+    outcome: &str,
+    gate: Option<&'static str>,
+    message: String,
+) {
     app.state::<JobState>()
         .0
         .lock()
@@ -312,8 +324,20 @@ fn finish_job(app: &AppHandle, kind: JobKind, outcome: &str, message: String) {
             kind,
             outcome: outcome.to_string(),
             message,
+            gate,
         },
     );
+}
+
+/// 门禁类失败的 gate 标记：前端据其弹对应的引导对话框。
+fn gate_of(error: &JobError) -> Option<&'static str> {
+    match error {
+        JobError::Gate(WriteBlock::NeedGrowMode) => Some("append"),
+        JobError::Gate(WriteBlock::Finalized) => Some("finalized"),
+        JobError::Mounted { .. } => Some("mounted"),
+        JobError::NoIsoSession => Some("noIsoSession"),
+        _ => None,
+    }
 }
 
 /// 失败收尾：广播 job-done，并把同一份文案返回给调用方（invoke 拒绝分支复用）。
@@ -330,8 +354,9 @@ fn fail_job(app: &AppHandle, kind: JobKind, error: JobError) -> String {
     } else {
         "failed"
     };
+    let gate = gate_of(&error);
     let text = job_error_text(lang(), &error);
-    finish_job(app, kind, outcome, text.clone());
+    finish_job(app, kind, outcome, gate, text.clone());
     text
 }
 
@@ -345,7 +370,7 @@ pub async fn start_build_image(
     profile: String,
     volume_id: String,
 ) -> Result<ImageInfoDto, String> {
-    let profile = profile_from_str(&profile)?;
+    let profile = profile_from_str(lang(), &profile)?;
     let output = match output.as_deref().filter(|o| !o.is_empty()) {
         Some(path) => PathBuf::from(path),
         None => default_output(Path::new(&src)),
@@ -366,6 +391,7 @@ pub async fn start_build_image(
                     &app,
                     JobKind::Build,
                     "done",
+                    None,
                     match lang() {
                         Lang::Zh => format!("镜像已生成：{}", output.display()),
                         Lang::En => format!("Image created: {}", output.display()),
@@ -416,7 +442,7 @@ pub async fn start_burn(
             })
         });
         match result {
-            Ok(message) => finish_job(&worker, JobKind::Burn, "done", message),
+            Ok(message) => finish_job(&worker, JobKind::Burn, "done", None, message),
             Err(e) => {
                 fail_job(&worker, JobKind::Burn, e);
             }
@@ -447,7 +473,7 @@ pub async fn start_append(
             &worker, &cancel, files, &device, &volume_id, speed, close_disc,
         );
         match result {
-            Ok(message) => finish_job(&worker, JobKind::Append, "done", message),
+            Ok(message) => finish_job(&worker, JobKind::Append, "done", None, message),
             Err(e) => {
                 fail_job(&worker, JobKind::Append, e);
             }
@@ -742,10 +768,10 @@ mod tests {
 
     #[test]
     fn profile_mapping_covers_three_media() {
-        assert_eq!(profile_from_str("cd"), Ok(DiscProfile::Cd));
-        assert_eq!(profile_from_str("dvd"), Ok(DiscProfile::Dvd));
-        assert_eq!(profile_from_str("bd"), Ok(DiscProfile::Bd));
-        assert!(profile_from_str("hddvd").is_err());
+        assert_eq!(profile_from_str(Lang::Zh, "cd"), Ok(DiscProfile::Cd));
+        assert_eq!(profile_from_str(Lang::Zh, "dvd"), Ok(DiscProfile::Dvd));
+        assert_eq!(profile_from_str(Lang::Zh, "bd"), Ok(DiscProfile::Bd));
+        assert!(profile_from_str(Lang::Zh, "hddvd").is_err());
     }
 
     #[test]
