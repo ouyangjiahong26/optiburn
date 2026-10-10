@@ -16,7 +16,7 @@
    WebView2（安装器检测到即跳过），保持小体积（安装包本体约 7 MB）。
 2. 追加 x64 离线安装包 `OptiBurn_<版本>_x64-setup-offline.exe`：用
    `--config src-tauri/tauri.offline.conf.json` 覆盖 `webviewInstallMode` 为
-   `offlineInstaller` 二次打包，内嵌 WebView2 Standalone（约 127 MB），安装全程
+   `offlineInstaller` 二次打包，内嵌 WebView2 Standalone（安装器约 210 MB），安装全程
    不需要网络。tauri-bundler 打包时从微软官方地址下载 Standalone 嵌入。
 3. Windows 7 的版本上限由微软的安装器自己处理：WebView2 已于 2023-01-10 结束
    对 Win7 的支持，最后的兼容版本是 109；Evergreen Standalone 安装器有版本感知，
@@ -31,7 +31,7 @@
 
 ## 后果
 
-- Release 每个 x64 版本多一个约 135 MB 的资产，CI 的 Windows GUI job 多一次
+- Release 每个 x64 版本多一个约 210 MB 的资产，CI 的 Windows GUI job 多一次
   NSIS 打包（Rust 编译有增量缓存，多出的主要是打包与下载 Standalone 的时间）。
 - 常规安装包构建后必须先收进 bundles：离线构建在 bundle/nsis/ 产出同名文件，
   顺序错了常规包会被覆盖成离线包。

@@ -13,13 +13,13 @@
 
 ### FEAT
 
-- **Windows 离线安装包**：Release 追加 `OptiBurn_<版本>_x64-setup-offline.exe`，内嵌 WebView2 Standalone（约 127 MB），无网机器安装全程不需要下载任何东西。常规安装包维持在线引导器不变。Windows 7 上微软的安装器会自动装最后兼容的 WebView2 109。决策见 ADR-0016。
+- **Windows 离线安装包**：Release 追加 `OptiBurn_<版本>_x64-setup-offline.exe`，内嵌 WebView2 Standalone（安装器约 210 MB），无网机器安装全程不需要下载任何东西。常规安装包维持在线引导器不变。Windows 7 上微软的安装器会自动装最后兼容的 WebView2 109。决策见 ADR-0016。
 
 **English**
 
 ### FEAT
 
-- **Windows offline installer**: the release now ships `OptiBurn_<version>_x64-setup-offline.exe` with the WebView2 Standalone runtime embedded (about 127 MB), so machines without internet install with zero downloads. The regular installer keeps its online bootstrapper. On Windows 7, Microsoft's installer automatically delivers the last compatible WebView2 109. See ADR-0016.
+- **Windows offline installer**: the release now ships `OptiBurn_<version>_x64-setup-offline.exe` with the WebView2 Standalone runtime embedded (installer about 210 MB), so machines without internet install with zero downloads. The regular installer keeps its online bootstrapper. On Windows 7, Microsoft's installer automatically delivers the last compatible WebView2 109. See ADR-0016.
 
 **Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.4...v0.1.5
 

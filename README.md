@@ -33,7 +33,7 @@ cargo build --release
 - Rust 1.98.1 (pinned by `rust-toolchain.toml`).
 - `xorriso` on `PATH`, only for `burn`, and only because 0.1.5 shells out to it: `sudo apt install xorriso` on Debian/Ubuntu, `pacman -S xorriso` on MSYS2.
 - Write access to the drive: usually membership in the `cdrom` group, or root.
-- GUI: on Windows grab `OptiBurn_0.1.5_x64-setup.exe` (or the arm64 build). On Linux grab the AppImage (make it executable and run) or the `.deb`. Burning still needs `xorriso` on `PATH`, same as the CLI. Offline Windows machines: grab the `-offline` build of the x64 installer instead; it embeds the WebView2 runtime (about 127 MB) and installs with zero downloads, including on Windows 7.
+- GUI: on Windows grab `OptiBurn_0.1.5_x64-setup.exe` (or the arm64 build). On Linux grab the AppImage (make it executable and run) or the `.deb`. Burning still needs `xorriso` on `PATH`, same as the CLI. Offline Windows machines: grab the `-offline` build of the x64 installer instead; it embeds the WebView2 runtime (installer about 210 MB) and installs with zero downloads, including on Windows 7.
 
 ## Usage
 

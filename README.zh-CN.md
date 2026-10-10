@@ -36,7 +36,7 @@ cargo build --release
 
 - Rust 1.98.1（由 `rust-toolchain.toml` 固定）。
 - `xorriso` 在 `PATH` 上，只有 `burn` 需要（0.1.5 通过子进程调用）：Debian/Ubuntu 用 `sudo apt install xorriso`，MSYS2 用 `pacman -S xorriso`。
-- 图形前端：Windows 下载 `OptiBurn_0.1.5_x64-setup.exe`（或 arm64 版），Linux 下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。刻录仍要求 `xorriso` 在 `PATH` 上，与 CLI 相同。无网的 Windows 机器改用 x64 安装包的 `-offline` 版本：内嵌 WebView2 运行时（约 127 MB），安装全程不需要联网，Windows 7 同样适用。
+- 图形前端：Windows 下载 `OptiBurn_0.1.5_x64-setup.exe`（或 arm64 版），Linux 下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。刻录仍要求 `xorriso` 在 `PATH` 上，与 CLI 相同。无网的 Windows 机器改用 x64 安装包的 `-offline` 版本：内嵌 WebView2 运行时（安装器约 210 MB），安装全程不需要联网，Windows 7 同样适用。
 - 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
 
 ## 用法
