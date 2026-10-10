@@ -23,10 +23,14 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
 - `optiburn-engine`：`BurnEngine` trait 加两个引擎：`NativeEngine`（原生 MMC 写引擎，
   ADR-0017）与 `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。读侧接在 `ReadBackend`
   接缝上：`XorrisoRead`（子进程）与 `NativeRead`（MMC 读块加 hadris-iso 的 ISO 9660
-  解析，两种区段地址约定自动探测，ADR-0018），Windows 走原生、Linux 维持 xorriso。
+  解析与 hadris-udf 的 UDF 解析，区段地址三种约定自动探测，`disc_read/`，ADR-0018 与
+  ADR-0021），Windows 走原生、Linux 维持 xorriso。增长模式按平台分派：Windows 用原生
+  嫁接式会话生成器（`grow.rs` 与 `grow/old_session.rs`，生成绝对地址的 ISO 9660 加
+  Joliet 区段，旧文件数据块原地引用，ADR-0020），Linux 维持 xorriso。`grow_size` 是
+  增长模式的尺寸预演。
 - `optiburn-cli`：`optiburn build-image | burn | append | probe`。二进制名是 `optiburn`
   （`[[bin]] name`），不是 `optiburn-cli`。`burn` 默认多区段不封盘，追加刻录走
-  `append`（xorriso 增长模式，ADR-0006）。
+  `append`（Windows 原生增长模式，Linux xorriso 增长模式，ADR-0006 与 ADR-0020）。
 
 图形前端在 `src-tauri/`（Tauri 2，包 `optiburn-gui`）与 `frontend/`（React + Vite + TS），
 不在根 workspace 内，以路径依赖引用核心 crate（ADR-0008）。
@@ -67,7 +71,8 @@ npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 ```
 
 硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real`（xorriso 引擎）与
-`native_burn_and_read_back_real`（原生引擎）需要 `OPTIBURN_DEVICE` 与 `OPTIBURN_IMAGE`。
+`native_burn_and_read_back_real`（原生引擎）、`native_grow_and_read_back_real`（原生
+增长模式）需要 `OPTIBURN_DEVICE` 与 `OPTIBURN_IMAGE`。
 CI 没有光驱，默认不跑。本机的 Windows 侧接了 USB 光驱，可用它做真机验证。
 
 ## Key Directories
@@ -77,11 +82,11 @@ CI 没有光驱，默认不跑。本机的 Windows 侧接了 USB 光驱，可用
 | `crates/optiburn-transport/` | `lib.rs`（trait + 平台分发）、`linux.rs`（SG_IO）、`windows.rs`（SPTI） |
 | `crates/optiburn-mmc/` | CDB 编解码与响应解析（`write.rs` 是写侧），含黄金 CDB 断言与固定缓冲区解析测试 |
 | `crates/optiburn-mastering/` | `build_image` + profile 映射。`tests/roundtrip.rs` 是 xorriso 对拍 |
-| `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`/`NativeGap`）、`native.rs`（原生 MMC 写引擎）、`xorriso.rs`（参数与进度解析） |
+| `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`/`NativeGap`）、`native.rs`（原生 MMC 写引擎，含增长写序列）、`xorriso.rs`（参数与进度解析）、`grow.rs` 与 `grow/`（原生增长的会话生成与旧区段读取）、`disc_read/`（原生读盘：ISO 9660 与 `udf.rs`） |
 | `crates/optiburn-cli/` | `src/main.rs` 四个子命令 |
 | `src-tauri/` | GUI 的 Rust 侧：Tauri 命令层，调用核心 crate |
 | `frontend/` | GUI 的 React 页面，Vite + TS |
-| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0017） |
+| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0021） |
 | `CONTEXT.md` | 领域术语表（术语/定义/禁用同义词三列），命名一律照它 |
 | `.github/workflows/` | `ci.yml`（job 名即分支保护的 required checks）、`release.yml` |
 

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use optiburn_engine::{
     BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, NativeEngine, NativeGap,
-    XorrisoEngine, grow, grow_print_size, last_session_is_iso, read_volume_id,
+    XorrisoEngine, grow, grow_size, last_session_is_iso, read_volume_id,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
@@ -95,6 +95,12 @@ enum JobError {
     Disc(MmcError),
     /// 写前门禁拒绝。
     Gate(WriteBlock),
+    /// 盘上旧区段的形状不支持原生增长（无 Joliet、启动记录、多 extent 文件等）。
+    GrowUnsupported(String),
+    /// 追加内容与盘上已有内容冲突（同名文件对目录、命名空间内重名）。
+    GrowConflict(String),
+    /// 盘上最后一区段是 UDF，但用了本工具读不了的结构（VAT、元数据分区等）。
+    UnsupportedUdf(String),
     Burn(BurnError),
     Mastering(MasteringError),
 }
@@ -158,6 +164,13 @@ pub(crate) fn engine_error_text(
 ) -> String {
     match error {
         BurnError::MissingTool(tool) => missing_tool_text(lang, tool),
+        // 盘上的 UDF 结构读不了：这不是“某个动作失败”，文案已自足。
+        BurnError::UnsupportedUdf(detail) => match lang {
+            Lang::Zh => format!("这张盘的 UDF 结构本工具暂不支持读取：{detail}"),
+            Lang::En => {
+                format!("This disc uses a UDF structure that this tool cannot read yet: {detail}")
+            }
+        },
         other => match lang {
             Lang::Zh => format!("{action_zh}失败：{other}"),
             Lang::En => format!("{action_en} failed: {other}"),
@@ -182,8 +195,8 @@ fn native_gap_text(lang: Lang, gap: NativeGap) -> String {
     match gap {
         NativeGap::WriteSpeed => pick(
             lang,
-            "原生引擎暂不支持指定倍速：把倍速留空（自动）再试，Linux 上也可以改用 xorriso 引擎。",
-            "The native engine cannot set the write speed yet. Leave the speed empty (auto), or use the xorriso engine on Linux.",
+            "原生引擎暂不支持指定倍速：去掉 --speed 再试。",
+            "The native engine does not support setting the write speed yet: drop --speed and try again.",
         )
         .to_string(),
         NativeGap::EmptyImage => pick(
@@ -216,6 +229,18 @@ fn native_gap_text(lang: Lang, gap: NativeGap) -> String {
             lang,
             "盘已封口，无法再写入，请更换盘片。",
             "The disc is finalized and cannot be written again. Use another disc.",
+        )
+        .to_string(),
+        NativeGap::GrowthOnRewritable => pick(
+            lang,
+            "可覆写介质（DVD-RAM、BD-RE 这类）上的追加暂不支持原生引擎：这类盘可以直接用「刻录」整体重写，或换可追加的盘片。",
+            "Growing a rewritable disc (DVD-RAM, BD-RE) is not supported by the native engine yet. Burn the whole disc again instead, or use an appendable disc.",
+        )
+        .to_string(),
+        NativeGap::EmptyGrowSource => pick(
+            lang,
+            "追加的目录是空的，没有可写入的内容。",
+            "The directory to append is empty, so there is nothing to write.",
         )
         .to_string(),
     }
@@ -279,6 +304,26 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
             "The disc is finalized and cannot be written again. Use another disc.",
         )
         .into(),
+        JobError::GrowUnsupported(detail) => match lang {
+            Lang::Zh => {
+                format!("这张盘暂时没法用原生引擎追加：{detail}。Linux 上可以改用 xorriso 引擎。")
+            }
+            Lang::En => format!(
+                "This disc cannot be grown by the native engine: {detail}. On Linux the xorriso engine can be used instead."
+            ),
+        },
+        JobError::GrowConflict(detail) => match lang {
+            Lang::Zh => format!("追加内容与盘上内容有冲突：{detail}"),
+            Lang::En => {
+                format!("The appended content conflicts with what is on the disc: {detail}")
+            }
+        },
+        JobError::UnsupportedUdf(detail) => match lang {
+            Lang::Zh => format!("这张盘的 UDF 结构本工具暂不支持读取：{detail}"),
+            Lang::En => format!(
+                "This disc uses a UDF structure that this tool cannot read yet: {detail}"
+            ),
+        },
         JobError::Burn(BurnError::MissingTool(tool)) => missing_tool_text(lang, tool),
         JobError::Burn(BurnError::NativeGap(gap)) => native_gap_text(lang, *gap),
         JobError::Burn(BurnError::Mmc(MmcError::NotReady)) => pick(
@@ -448,7 +493,8 @@ fn finish_job(
     );
 }
 
-/// 门禁类失败的 gate 标记：前端据其弹对应的引导对话框。
+/// 门禁类失败的 gate 标记：前端据其弹对应的引导对话框。增长模式的三类错误
+/// （GrowUnsupported、GrowConflict、UnsupportedUdf）文案已自足，不需要引导弹窗。
 fn gate_of(error: &JobError) -> Option<&'static str> {
     match error {
         JobError::Gate(WriteBlock::NeedGrowMode) => Some("append"),
@@ -792,6 +838,9 @@ struct DiscTask<'a> {
 /// 写前门禁不在这里：追加要在暂存用户文件之前拿到拒绝结论，由调用方先跑
 /// [`check_write_gates`]。容量门禁例外：追加的待写入量要等暂存目录就绪才能
 /// 预演，镜像刻录的待写入量就是镜像本身，两者都收在跑引擎之前。
+///
+/// 原生增长会在引擎内再做一次容量门禁（镜像尺寸要等会话生成计划算完才算得准），
+/// 那道拒绝转成与写前门禁同一个 [`JobError::Capacity`]，用户看到的引导弹窗一致。
 fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
     let mut progress = progress_emitter(task.app, task.kind);
     let result = if task.append {
@@ -802,7 +851,7 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             volume_id: task.volume_id.to_string(),
             close_disc: task.close_disc,
         };
-        let needed = grow_print_size(&job).map_err(|e| match lang() {
+        let needed = grow_size(&job).map_err(|e| match lang() {
             Lang::Zh => JobError::Input(format!("计算追加数据量失败：{e}")),
             Lang::En => JobError::Input(format!("Failed to compute the append size: {e}")),
         })?;
@@ -830,7 +879,15 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
         ensure_fits(task.device, needed)?;
         burn_engine().burn(&job, &mut progress, task.cancel)
     };
-    result.map_err(JobError::Burn)?;
+    result.map_err(|e| match e {
+        // 引擎内的容量门禁（原生增长）与写前门禁走同一个引导弹窗。
+        BurnError::NotEnoughSpace { needed, free } => JobError::Capacity { needed, free },
+        // 增长模式的三类拒绝各有自足的文案（见 job_error_text）。
+        BurnError::GrowUnsupported(detail) => JobError::GrowUnsupported(detail),
+        BurnError::GrowConflict(detail) => JobError::GrowConflict(detail),
+        BurnError::UnsupportedUdf(detail) => JobError::UnsupportedUdf(detail),
+        other => JobError::Burn(other),
+    })?;
     Ok(sessions_message(task.device))
 }
 
@@ -889,13 +946,15 @@ fn check_write_gates(device: &str, append: bool) -> Result<(), JobError> {
     approve_write(&info, append).map_err(JobError::Gate)?;
     // 追加路径再过一道：末区段不是 ISO 9660 的盘（例如 UDF 盘）拒绝，见 ADR-0010。
     if append && info.status == DiscStatus::Appendable {
-        let iso_readable = last_session_is_iso(device).map_err(|e| {
-            JobError::Input(engine_error_text(
+        let iso_readable = last_session_is_iso(device).map_err(|e| match e {
+            // 盘上 UDF 结构读不了：与“末区段格式”不是一回事，文案由 job_error_text 给。
+            BurnError::UnsupportedUdf(detail) => JobError::UnsupportedUdf(detail),
+            other => JobError::Input(engine_error_text(
                 lang(),
                 "读取末区段格式",
                 "Reading the last session format",
-                &e,
-            ))
+                &other,
+            )),
         })?;
         if !iso_readable {
             return Err(JobError::NoIsoSession);
@@ -1126,6 +1185,90 @@ mod tests {
                 &JobError::Input("复制 /x 失败：no such file".to_string())
             ),
             "复制 /x 失败：no such file"
+        );
+    }
+
+    /// 增长模式的三类错误与两个新缺口：中英文本钉住，且都要与 CLI 的中文同义。
+    #[test]
+    fn growth_error_texts_are_pinned() {
+        let detail = "no Joliet directory tree".to_string();
+        assert_eq!(
+            job_error_text(Lang::Zh, &JobError::GrowUnsupported(detail.clone())),
+            "这张盘暂时没法用原生引擎追加：no Joliet directory tree。Linux 上可以改用 xorriso 引擎。"
+        );
+        assert_eq!(
+            job_error_text(Lang::En, &JobError::GrowUnsupported(detail)),
+            "This disc cannot be grown by the native engine: no Joliet directory tree. On Linux the xorriso engine can be used instead."
+        );
+        assert_eq!(
+            job_error_text(
+                Lang::Zh,
+                &JobError::GrowConflict("/a.txt: a new file replaces an existing directory".into())
+            ),
+            "追加内容与盘上内容有冲突：/a.txt: a new file replaces an existing directory"
+        );
+        assert_eq!(
+            job_error_text(
+                Lang::En,
+                &JobError::GrowConflict("/a.txt: a new file replaces an existing directory".into())
+            ),
+            "The appended content conflicts with what is on the disc: /a.txt: a new file replaces an existing directory"
+        );
+        assert_eq!(
+            job_error_text(Lang::Zh, &JobError::UnsupportedUdf("VAT".into())),
+            "这张盘的 UDF 结构本工具暂不支持读取：VAT"
+        );
+        assert_eq!(
+            job_error_text(Lang::En, &JobError::UnsupportedUdf("VAT".into())),
+            "This disc uses a UDF structure that this tool cannot read yet: VAT"
+        );
+        // 读盘路径上也要有 UDF 文案，不能落到“动作失败：English”里。
+        assert_eq!(
+            engine_error_text(
+                Lang::Zh,
+                "读取卷标",
+                "Reading the volume label",
+                &BurnError::UnsupportedUdf("VAT".into())
+            ),
+            "这张盘的 UDF 结构本工具暂不支持读取：VAT"
+        );
+        // 三类增长错误不需要引导弹窗。
+        for error in [
+            JobError::GrowUnsupported("x".into()),
+            JobError::GrowConflict("x".into()),
+            JobError::UnsupportedUdf("x".into()),
+        ] {
+            assert!(gate_of(&error).is_none(), "unexpected gate");
+        }
+        // 原生缺口的两条新文案。
+        assert_eq!(
+            job_error_text(
+                Lang::Zh,
+                &JobError::Burn(BurnError::NativeGap(NativeGap::GrowthOnRewritable))
+            ),
+            "可覆写介质（DVD-RAM、BD-RE 这类）上的追加暂不支持原生引擎：这类盘可以直接用「刻录」整体重写，或换可追加的盘片。"
+        );
+        assert_eq!(
+            job_error_text(
+                Lang::En,
+                &JobError::Burn(BurnError::NativeGap(NativeGap::EmptyGrowSource))
+            ),
+            "The directory to append is empty, so there is nothing to write."
+        );
+        assert_eq!(
+            job_error_text(
+                Lang::Zh,
+                &JobError::Burn(BurnError::NativeGap(NativeGap::WriteSpeed))
+            ),
+            "原生引擎暂不支持指定倍速：去掉 --speed 再试。"
+        );
+        // 引擎内的容量拒绝与写前门禁走同一个弹窗。
+        assert_eq!(
+            gate_of(&JobError::Capacity {
+                needed: 100,
+                free: 50
+            }),
+            Some("capacity")
         );
     }
 
