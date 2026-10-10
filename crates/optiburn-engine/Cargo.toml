@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Burning engines for optiburn — xorriso subprocess engine (v0)"
+description = "Burning engines for optiburn — native MMC engine and xorriso subprocess engine"
 
 [dependencies]
+optiburn-mmc = { path = "../optiburn-mmc" }
+optiburn-transport = { path = "../optiburn-transport" }
 thiserror.workspace = true

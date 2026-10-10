@@ -100,8 +100,8 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 
 隐藏：`xorriso -as cdrecord` 与增长模式（`-dev … -map <目录> / -commit`，见
 ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、stderr 上的百分比
-解析、失败时从 stderr 尾部取摘要、区分工具缺失（`MissingTool`，附安装提示）与其它
-I/O 错误（`Io`）。
+解析、失败时从 stderr 尾部取摘要、区分工具缺失（`MissingTool`，载荷只有工具名，
+安装指引由 CLI 与 GUI 按系统给出，见 ADR-0004 补记）与其它 I/O 错误（`Io`）。
 
 已知不足：v0 的进度只是粗粒度提示，cdrecord 风格输出里缓冲区/fifo 的百分比与写入
 百分比同格式，且成功时统一补发 1.0。精确进度要等原生 MMC 引擎自己数 LBA。
@@ -117,13 +117,14 @@ I/O 错误（`Io`）。
 ## 路线图
 
 - v0（当前）：镜像层 + xorriso 子进程刻录 + 只读探测。
-- v0.5 原生 MMC 写入：接在 `BurnEngine` 同一个接缝上，把 xorriso 换成自己发的
-  MMC 命令依次是 `RESERVE TRACK`、`SEND OPC INFORMATION`（可选，选定倍速与写入参数）、
-  `WRITE(10)` 分块写数据（每块 32–64 扇区，按盘片类型调整）、`SYNCHRONIZE CACHE`、
-  `CLOSE TRACK/SESSION`，全程用 `TEST UNIT READY` 加 `REQUEST SENSE` 处理驱动器繁忙。
-  这一层只多学 `optiburn-mmc` 的写侧命令，不需要新 crate。
+- v0.5 原生 MMC 写入（已落地，ADR-0017）：接在 `BurnEngine` 同一个接缝上，自己发
+  MMC 命令（`MODE SELECT` 写参数页、`WRITE(10)` 分块写、`SYNCHRONIZE CACHE`、
+  `CLOSE TRACK/SESSION`，起点取 NWA），写后可用 `READ(10)` 读回对拍。Windows 上
+  没有可用的外部引擎（见下节），这条同时是 Windows 刻录的唯一路径。剩余：增长模式
+  合并既有区段、倍速参数、DAO/SAO 路径，以及 DVD/BD 各族的真机验证（CD-R 已过）。
 - v0.6：`probe` 增加介质容量（`READ CAPACITY` / `GET CONFIGURATION`），
-  `build-image` 据此在写盘前就拒绝放不下的镜像。
+  `build-image` 据此在写盘前就拒绝放不下的镜像；原生读盘（ISO 9660 解析）接在
+  同一个 MMC 读侧上，替代 Windows 上不可用的 xorriso 读盘。
 - 后续：BD-R 伪覆盖、Windows 上的 IMAPI2 校验（仅校验，不接管写入，
   见 ADR-0005）。多区段追加已由 `append`（xorriso 增长模式）覆盖，见 ADR-0006。
 
@@ -132,10 +133,11 @@ I/O 错误（`Io`）。
 | 能力 | Linux x86_64/arm64 | Windows x86_64/arm64 |
 |---|---|---|
 | `build-image` | 可用 | 可用 |
-| `burn`（xorriso 引擎） | 可用，需要 `xorriso` 与写设备权限 | 可用，需要 `xorriso`（MSYS2 等） |
-| `append`（xorriso 增长模式） | 可用，前置检查按盘片状态自动路由 | 未做真机验证（设备枚举已实现） |
-| `probe` | 可用（`/dev/sr*`） | 可用（枚举盘符，未做真机验证） |
-| 原生 MMC 传输 | 可用（`SG_IO`） | 编译通过，等有硬件时验证 |
+| `burn`（`--engine xorriso` 或 `native`） | 可用（xorriso 需要写设备权限；native 未在 Linux 真机验证） | 可用（`native`，GUI 默认；2026-10-10 在 CD-R 上真机验证，DVD/BD 各族待介质） |
+| `append`（xorriso 增长模式） | 可用，前置检查按盘片状态自动路由 | 不可用：唯一能取得的 xorriso 不含光驱访问（ADR-0008 补记），原生引擎还没有增长模式（ADR-0017） |
+| `probe` | 可用（`/dev/sr*`） | 可用（枚举盘符，2026-10-10 在 USB 光驱上实测） |
+| 原生 MMC 传输 | 可用（`SG_IO`） | 可用（SPTI，2026-10-10 在 USB 光驱上实测） |
 
-`cargo check` 覆盖四个目标三元组。Windows 的 SPTI 代码路径只保证能编译，没有真机验证过
-（本仓库没有 Windows 机器与光驱）。
+GUI 的读盘功能（设备页浏览、复制、回读校验）仍只有 xorriso 一条路，Windows 上因此
+不可用（ADR-0012 与 ADR-0017：原生读盘待做）。`cargo check` 覆盖四个目标三元组。
+SPTI 的写侧已在 CD-R 上真机验证，DVD/BD 各族还没有介质。

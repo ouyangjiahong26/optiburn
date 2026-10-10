@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow,
-    last_session_is_iso, read_volume_id,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, NativeEngine, NativeGap,
+    XorrisoEngine, grow, last_session_is_iso, read_volume_id,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
@@ -139,6 +139,79 @@ fn ensure_iso_extension(path: PathBuf) -> PathBuf {
     path
 }
 
+/// 引擎错误的用户文案：缺工具是跨动作的通用故障，单独成句并给出安装途径，动作
+/// 前缀只留给其它错误（挂载占用、盘内路径之类）。调用方给动作的裸词。
+pub(crate) fn engine_error_text(
+    lang: Lang,
+    action_zh: &str,
+    action_en: &str,
+    error: &BurnError,
+) -> String {
+    match error {
+        BurnError::MissingTool(tool) => missing_tool_text(lang, tool),
+        other => match lang {
+            Lang::Zh => format!("{action_zh}失败：{other}"),
+            Lang::En => format!("{action_en} failed: {other}"),
+        },
+    }
+}
+
+/// 缺外部工具的文案：中文与 CLI 共用引擎里的一份（口径不漂移），英文镜像在这里。
+/// Windows 上不给安装命令：MSYS2 的构建不含光驱访问，装了也读不了盘（见引擎注释）。
+pub(crate) fn missing_tool_text(lang: Lang, tool: &str) -> String {
+    match lang {
+        Lang::Zh => BurnError::missing_tool_user_text(tool),
+        Lang::En => format!(
+            "{tool} is missing, and reading discs and burning both depend on it. On Linux use your distribution's package manager (Debian/Ubuntu: sudo apt install {tool}). On Windows the MSYS2 build has no drive access, so installing it will not enable reading or burning."
+        ),
+    }
+}
+
+/// 原生引擎能力缺口的两语文案，与 CLI 的同名函数同口径（见原生引擎的 ADR-0017）。
+/// 建议里点明平台差异：xorriso 引擎只在 Linux 可用，Windows 上只能换盘或等引擎补齐。
+fn native_gap_text(lang: Lang, gap: NativeGap) -> String {
+    match gap {
+        NativeGap::WriteSpeed => pick(
+            lang,
+            "原生引擎暂不支持指定倍速：把倍速留空（自动）再试，Linux 上也可以改用 xorriso 引擎。",
+            "The native engine cannot set the write speed yet. Leave the speed empty (auto), or use the xorriso engine on Linux.",
+        )
+        .to_string(),
+        NativeGap::EmptyImage => pick(
+            lang,
+            "镜像为空文件，没有可刻录的内容。",
+            "The image is an empty file, so there is nothing to burn.",
+        )
+        .to_string(),
+        NativeGap::ImageTooLarge => pick(
+            lang,
+            "镜像超出介质容量，请换更大的盘。",
+            "The image does not fit on the disc. Use a larger one.",
+        )
+        .to_string(),
+        NativeGap::ImageBeyondAddressRange => pick(
+            lang,
+            "镜像超出 2048 字节块的地址上限。",
+            "The image exceeds the addressable 2048-byte blocks.",
+        )
+        .to_string(),
+        NativeGap::UnsupportedProfile(code) => match lang {
+            Lang::Zh => format!(
+                "这种介质（Profile {code:#06x}）暂不支持原生引擎，Linux 上可改用 xorriso 引擎。"
+            ),
+            Lang::En => format!(
+                "The native engine does not support this media yet (profile {code:#06x}). On Linux, use the xorriso engine instead."
+            ),
+        },
+        NativeGap::FinalizedDisc => pick(
+            lang,
+            "盘已封口，无法再写入，请更换盘片。",
+            "The disc is finalized and cannot be written again. Use another disc.",
+        )
+        .to_string(),
+    }
+}
+
 /// 任务失败的文案，按界面语言输出中英文。与 CLI 同源的说法按 GUI 调整（“追加页”而非命令行）。
 fn job_error_text(lang: Lang, error: &JobError) -> String {
     match error {
@@ -185,12 +258,18 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
             "The disc is finalized and cannot be written again. Use another disc.",
         )
         .into(),
-        JobError::Burn(BurnError::MissingTool(_)) => pick(
+        JobError::Burn(BurnError::MissingTool(tool)) => missing_tool_text(lang, tool),
+        JobError::Burn(BurnError::NativeGap(gap)) => native_gap_text(lang, *gap),
+        JobError::Burn(BurnError::Mmc(MmcError::NotReady)) => pick(
             lang,
-            "缺少刻录工具 xorriso，请先安装后再刻录。",
-            "The burn tool xorriso is missing. Install it first.",
+            "盘未就绪：请确认已放入可写盘片且仓门已关闭。",
+            "Disc not ready: make sure a writable disc is inserted and the tray is closed.",
         )
         .into(),
+        JobError::Burn(BurnError::Mmc(other)) => match lang {
+            Lang::Zh => format!("设备命令失败：{other}"),
+            Lang::En => format!("Device command failed: {other}"),
+        },
         JobError::Burn(BurnError::Cancelled) => pick(
             lang,
             "已中止：盘片内容不完整。",
@@ -627,10 +706,8 @@ fn unique_temp_dir(prefix: &str) -> Result<PathBuf, String> {
 #[tauri::command]
 pub async fn disc_volume_id(device: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        read_volume_id(&device).map_err(|e| match lang() {
-            Lang::Zh => format!("读取卷标失败：{e}"),
-            Lang::En => format!("Failed to read the volume label: {e}"),
-        })
+        read_volume_id(&device)
+            .map_err(|e| engine_error_text(lang(), "读取卷标", "Reading the volume label", &e))
     })
     .await
     .expect("volume id worker did not panic")
@@ -703,10 +780,21 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             speed: task.speed,
             multi: !task.close_disc,
         };
-        XorrisoEngine.burn(&job, &mut progress, task.cancel)
+        burn_engine().burn(&job, &mut progress, task.cancel)
     };
     result.map_err(JobError::Burn)?;
     Ok(sessions_message(task.device))
+}
+
+/// 刻录引擎的选择：Windows 上没有可用的 xorriso（MSYS2 的构建没有光驱访问，
+/// 见 ADR-0008 补记），刻录只能走原生引擎；Linux 维持 xorriso，原生引擎在那边
+/// 还没有真机验证过（ADR-0017）。追加（增长模式）只有 xorriso 一条路。
+fn burn_engine() -> Box<dyn BurnEngine> {
+    if cfg!(windows) {
+        Box::new(NativeEngine)
+    } else {
+        Box::new(XorrisoEngine)
+    }
 }
 
 /// 写前门禁：挂载占用、盘片状态与末区段格式，全部通过才允许动设备。
@@ -726,9 +814,13 @@ fn check_write_gates(device: &str, append: bool) -> Result<(), JobError> {
     approve_write(&info, append).map_err(JobError::Gate)?;
     // 追加路径再过一道：末区段不是 ISO 9660 的盘（例如 UDF 盘）拒绝，见 ADR-0010。
     if append && info.status == DiscStatus::Appendable {
-        let iso_readable = last_session_is_iso(device).map_err(|e| match lang() {
-            Lang::Zh => JobError::Input(format!("读取末区段格式失败：{e}")),
-            Lang::En => JobError::Input(format!("Failed to check the last session format: {e}")),
+        let iso_readable = last_session_is_iso(device).map_err(|e| {
+            JobError::Input(engine_error_text(
+                lang(),
+                "读取末区段格式",
+                "Reading the last session format",
+                &e,
+            ))
         })?;
         if !iso_readable {
             return Err(JobError::NoIsoSession);
@@ -824,15 +916,49 @@ mod tests {
     }
 
     #[test]
-    fn job_error_text_matches_the_pinned_wording() {
+    fn native_engine_wiring_is_pinned() {
+        // 平台规则：Windows 走原生引擎（那边没有可用的 xorriso），Linux 维持 xorriso。
+        let expected = if cfg!(windows) { "native" } else { "xorriso" };
+        assert_eq!(burn_engine().name(), expected);
         assert_eq!(
             job_error_text(
                 Lang::Zh,
-                &JobError::Burn(BurnError::MissingTool(
-                    "xorriso (sudo apt install xorriso)".into()
-                ))
+                &JobError::Burn(BurnError::NativeGap(NativeGap::FinalizedDisc))
             ),
-            "缺少刻录工具 xorriso，请先安装后再刻录。"
+            "盘已封口，无法再写入，请更换盘片。"
+        );
+        assert!(
+            job_error_text(
+                Lang::En,
+                &JobError::Burn(BurnError::NativeGap(NativeGap::WriteSpeed))
+            )
+            .contains("write speed")
+        );
+        assert_eq!(
+            job_error_text(
+                Lang::Zh,
+                &JobError::Burn(BurnError::Mmc(MmcError::NotReady))
+            ),
+            "盘未就绪：请确认已放入可写盘片且仓门已关闭。"
+        );
+    }
+
+    #[test]
+    fn job_error_text_matches_the_pinned_wording() {
+        // 缺工具：刻录路径与读盘路径共用同一份文案（引擎里的中文）。
+        assert_eq!(
+            job_error_text(
+                Lang::Zh,
+                &JobError::Burn(BurnError::MissingTool("xorriso".into()))
+            ),
+            BurnError::missing_tool_user_text("xorriso")
+        );
+        assert!(
+            job_error_text(
+                Lang::En,
+                &JobError::Burn(BurnError::MissingTool("xorriso".into()))
+            )
+            .contains("sudo apt install xorriso")
         );
         assert_eq!(
             job_error_text(Lang::Zh, &JobError::Burn(BurnError::Cancelled)),

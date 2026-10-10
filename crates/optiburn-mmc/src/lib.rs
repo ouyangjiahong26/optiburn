@@ -1,21 +1,45 @@
-//! MMC 命令层：把读侧 MMC 命令编码成 CDB，并把响应解析成结构化数据。
+//! MMC 命令层：把读侧与写侧的 MMC 命令编码成 CDB，并把响应解析成结构化数据。
 //!
 //! 依赖 [`optiburn_transport::ScsiTransport`] 这一个硬件接缝，因此可以在没有光驱的
-//! 机器上用替身完整测试。v0 只有读侧命令。写侧（RESERVE TRACK / WRITE(10) /
-//! CLOSE TRACK）留给路线图里的原生 MMC 引擎，不在本 crate 留空壳。
+//! 机器上用替身完整测试。读侧有 INQUIRY、TEST UNIT READY、READ DISC INFORMATION；
+//! 写侧（GET CONFIGURATION、MODE SELECT 写参数页、RESERVE TRACK、WRITE(10)、
+//! SYNCHRONIZE CACHE、CLOSE TRACK/SESSION）在 [`write`] 模块里，服务原生 MMC 引擎
+//! （ADR-0017）。
 
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use optiburn_transport::{Direction, ScsiTransport, TransportError};
 
+mod write;
+
+pub use write::{CurrentProfile, MAX_WRITE_BLOCKS, MediaKind, TrackInfo};
+
+/// 数据扇区的字节数。写侧与镜像都按这个块长对齐（ISO 9660 的逻辑块）。
+pub const SECTOR_BYTES: usize = 2048;
+
+/// 单条 READ(10) 最多带的块数：SPTI 的单次传输上限在 64 KiB 这个量级，
+/// 统一按它切块（见 [`MmcDevice::read_blocks`] 的实测记录）。
+pub const MAX_READ_BLOCKS: usize = 32;
+
 /// 只读命令的超时：盘片寻道与转速切换都在这个量级内完成。
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// 写命令超时：单条 WRITE(10) 最大 2 MiB，慢速介质也够用（libburn 取 200 秒）。
+const WRITE_TIMEOUT: Duration = Duration::from_secs(200);
+/// RESERVE TRACK 超时：驱动器要先做写入参数协商。
+const RESERVE_TIMEOUT: Duration = Duration::from_secs(200);
+/// SYNCHRONIZE CACHE 与 CLOSE 不置 IMMED，命令要等缓存落盘与 lead-out 写完，
+/// 整盘封口在慢速介质上可能要一分钟以上。
+const LONG_OP_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// INQUIRY 标准响应的长度（`SPC`：附加长度字段 + 8 + 16 + 4 字节）。
 const INQUIRY_LEN: usize = 36;
 /// READ DISC INFORMATION 标准响应（Data Type 000b）的长度。
 const DISC_INFORMATION_LEN: usize = 34;
+/// GET CONFIGURATION 读取长度：8 字节响应头加 8 字节特征描述符就够取当前 Profile。
+const CONFIGURATION_LEN: usize = 16;
+/// READ CAPACITY(10) 的响应长度：最后 LBA 与块长各 4 字节。
+const CAPACITY_LEN: usize = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MmcError {
@@ -23,6 +47,10 @@ pub enum MmcError {
     Transport(#[from] TransportError),
     #[error("device returned {got} bytes, need {need}")]
     ShortResponse { got: usize, need: usize },
+    #[error("device response too short to parse")]
+    MalformedResponse,
+    #[error("write of {len} bytes is not a whole number of 2048-byte blocks")]
+    MisalignedWrite { len: usize },
     #[error("device not ready within timeout")]
     NotReady,
 }
@@ -124,6 +152,108 @@ impl MmcDevice {
         })
     }
 
+    /// GET CONFIGURATION（0x46）：当前 Profile。写序列按它分组（见 [`MediaKind`]）。
+    pub fn get_configuration(&mut self) -> Result<CurrentProfile, MmcError> {
+        let data = self.read_into(
+            &write::get_configuration_cdb(CONFIGURATION_LEN as u16),
+            CONFIGURATION_LEN,
+        )?;
+        write::parse_current_profile(&data).ok_or(MmcError::MalformedResponse)
+    }
+
+    /// READ CAPACITY(10)（0x25）：最后可写 LBA。介质不报告容量时返回错误，
+    /// 由调用方决定这次写入是否必须知道容量。
+    pub fn read_capacity(&mut self) -> Result<u32, MmcError> {
+        let data = self.read_into(&write::read_capacity_cdb(), CAPACITY_LEN)?;
+        write::parse_capacity_last_lba(&data).ok_or(MmcError::MalformedResponse)
+    }
+
+    /// READ TRACK INFORMATION（0x52）：轨道起始地址与下一个可写地址（NWA）。
+    /// `track` 用 0xFF 取 CD 上“当前可写的那条”（libburn 对 CD 的取值）。
+    pub fn read_track_information(&mut self, track: u32) -> Result<TrackInfo, MmcError> {
+        let data = self.read_into(&write::track_info_cdb(track), write::TRACK_INFO_LEN)?;
+        write::parse_track_information(&data).ok_or(MmcError::MalformedResponse)
+    }
+
+    /// READ(10)（0x28）：从 `lba` 读一段数据，长度必须是整块。写侧命令的读侧对偶，
+    /// 写盘后的回读校验与将来的原生读盘都用它。
+    ///
+    /// 超过 [`MAX_READ_BLOCKS`] 的请求自动拆成多条命令：Windows 的 SPTI 单次传输
+    /// 卡在 64 KiB 这个量级，实测 81 块（165888 字节）的 READ(10) 直接被以
+    /// ERROR_INVALID_PARAMETER 拒绝（2026-10-10）。
+    pub fn read_blocks(&mut self, lba: u32, data: &mut [u8]) -> Result<(), MmcError> {
+        if !data.len().is_multiple_of(SECTOR_BYTES) {
+            return Err(MmcError::MisalignedWrite { len: data.len() });
+        }
+        let mut offset = 0usize;
+        let mut next = lba;
+        while offset < data.len() {
+            let blocks = ((data.len() - offset) / SECTOR_BYTES).min(MAX_READ_BLOCKS);
+            let cdb = write::read_10_cdb(next, blocks as u16);
+            let end = offset + blocks * SECTOR_BYTES;
+            self.transport.issue(
+                &cdb,
+                Direction::FromDevice,
+                &mut data[offset..end],
+                DEFAULT_TIMEOUT,
+            )?;
+            offset = end;
+            next += blocks as u32;
+        }
+        Ok(())
+    }
+
+    /// MODE SELECT(10)（0x55）：下发写参数页（Write Type 与 multi 位）。
+    /// `multi` 为真表示这次写的区段之后还要继续追加（不封盘）。
+    /// 返回是否真的发送了参数页：不写参数的介质组返回 `false`。
+    pub fn set_write_parameters(&mut self, kind: MediaKind, multi: bool) -> Result<bool, MmcError> {
+        let Some(mut payload) = write::write_params_payload(kind, multi) else {
+            return Ok(false);
+        };
+        let cdb = write::mode_select_cdb(payload.len() as u16);
+        self.transport
+            .issue(&cdb, Direction::ToDevice, &mut payload, DEFAULT_TIMEOUT)?;
+        Ok(true)
+    }
+
+    /// RESERVE TRACK（0x53）：为即将写入的数据预留轨道（块数按 2048 字节计）。
+    /// 顺序介质（CD-R、DVD-R 族）必须先预留，否则驱动器不给写。
+    pub fn reserve_track(&mut self, blocks: u32) -> Result<(), MmcError> {
+        let cdb = write::reserve_track_cdb(blocks);
+        self.transport
+            .issue(&cdb, Direction::None, &mut [], RESERVE_TIMEOUT)?;
+        Ok(())
+    }
+
+    /// WRITE(10)（0x2A）：从 `lba` 起写入一段数据。长度必须是整块。
+    pub fn write_blocks(&mut self, lba: u32, data: &mut [u8]) -> Result<(), MmcError> {
+        if !data.len().is_multiple_of(SECTOR_BYTES) || data.len() / SECTOR_BYTES > MAX_WRITE_BLOCKS
+        {
+            return Err(MmcError::MisalignedWrite { len: data.len() });
+        }
+        let cdb = write::write_10_cdb(lba, (data.len() / SECTOR_BYTES) as u16);
+        self.transport
+            .issue(&cdb, Direction::ToDevice, data, WRITE_TIMEOUT)?;
+        Ok(())
+    }
+
+    /// SYNCHRONIZE CACHE（0x35）：等驱动器把写缓存落盘，返回时数据已在介质上。
+    pub fn synchronize_cache(&mut self) -> Result<(), MmcError> {
+        let cdb = write::synchronize_cache_cdb();
+        self.transport
+            .issue(&cdb, Direction::None, &mut [], LONG_OP_TIMEOUT)?;
+        Ok(())
+    }
+
+    /// CLOSE TRACK/SESSION（0x5B）：关闭当前区段（写完 lead-out 才返回）。
+    /// 是否封盘由 MODE SELECT 的 multi 位决定，不在这里。
+    pub fn close_session(&mut self) -> Result<(), MmcError> {
+        let cdb = write::close_session_cdb();
+        self.transport
+            .issue(&cdb, Direction::None, &mut [], LONG_OP_TIMEOUT)?;
+        Ok(())
+    }
+
     /// 下发一条数据从设备发回主机的命令，并把“实际写入字节数 < 期望”当作错误。
     fn read_into(&mut self, cdb: &[u8], need: usize) -> Result<Vec<u8>, MmcError> {
         let mut data = vec![0u8; need];
@@ -143,7 +273,12 @@ impl MmcDevice {
 /// 等介质就绪：盘片上电与识别要几秒，这期间 TEST UNIT READY 报错。
 /// 20 秒内每 500 ms 重试一次，超时报 [`MmcError::NotReady`]，把决定权交还给人。
 pub fn wait_until_ready(mmc: &mut MmcDevice) -> Result<(), MmcError> {
-    poll_until_ready(mmc, Duration::from_secs(20), Duration::from_millis(500))
+    wait_until_ready_for(mmc, Duration::from_secs(20))
+}
+
+/// 自定义时限的就绪等待：关闭区段这类长操作之后驱动器还要忙一阵，调用方给更长的时限。
+pub fn wait_until_ready_for(mmc: &mut MmcDevice, deadline: Duration) -> Result<(), MmcError> {
+    poll_until_ready(mmc, deadline, Duration::from_millis(500))
 }
 
 /// 按 deadline 与 interval 轮询就绪。公开入口只填真实硬件的两个常量，
@@ -205,6 +340,8 @@ mod tests {
     #[derive(Default)]
     struct FakeTransport {
         issued: Rc<RefCell<Vec<Vec<u8>>>>,
+        /// 方向为写往设备的命令，记录其数据载荷。
+        writes: Rc<RefCell<Vec<Vec<u8>>>>,
         reply: Vec<u8>,
         residual: usize,
     }
@@ -213,11 +350,14 @@ mod tests {
         fn issue(
             &mut self,
             cdb: &[u8],
-            _dir: Direction,
+            dir: Direction,
             data: &mut [u8],
             _timeout: Duration,
         ) -> Result<optiburn_transport::Completion, TransportError> {
             self.issued.borrow_mut().push(cdb.to_vec());
+            if dir == Direction::ToDevice {
+                self.writes.borrow_mut().push(data.to_vec());
+            }
             let n = self.reply.len().min(data.len());
             data[..n].copy_from_slice(&self.reply[..n]);
             Ok(optiburn_transport::Completion {
@@ -232,18 +372,32 @@ mod tests {
         }
     }
 
+    /// 假驱动器收到的命令日志（CDB 与写往设备的数据载荷）。
+    type Log = Rc<RefCell<Vec<Vec<u8>>>>;
+
     /// 建一台只回放 `reply` 的假驱动器，返回设备与它收到的 CDB 日志。
-    fn device(reply: Vec<u8>) -> (MmcDevice, Rc<RefCell<Vec<Vec<u8>>>>) {
+    fn device(reply: Vec<u8>) -> (MmcDevice, Log) {
         device_with_residual(reply, 0)
     }
 
-    fn device_with_residual(
-        reply: Vec<u8>,
-        residual: usize,
-    ) -> (MmcDevice, Rc<RefCell<Vec<Vec<u8>>>>) {
+    /// 建一台假驱动器，返回设备、CDB 日志与写往设备的数据载荷日志。
+    fn device_capturing(reply: Vec<u8>) -> (MmcDevice, Log, Log) {
+        let issued = Rc::new(RefCell::new(Vec::new()));
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let fake = FakeTransport {
+            issued: Rc::clone(&issued),
+            writes: Rc::clone(&writes),
+            reply,
+            residual: 0,
+        };
+        (MmcDevice::new(Box::new(fake)), issued, writes)
+    }
+
+    fn device_with_residual(reply: Vec<u8>, residual: usize) -> (MmcDevice, Log) {
         let issued = Rc::new(RefCell::new(Vec::new()));
         let fake = FakeTransport {
             issued: Rc::clone(&issued),
+            writes: Rc::new(RefCell::new(Vec::new())),
             reply,
             residual,
         };
@@ -425,6 +579,162 @@ mod tests {
                 Duration::from_millis(10)
             ),
             Err(MmcError::NotReady)
+        ));
+    }
+
+    #[test]
+    fn get_configuration_parses_the_current_profile() {
+        let mut reply = vec![0u8; CONFIGURATION_LEN];
+        reply[3] = 0x0C;
+        reply[6] = 0x00;
+        reply[7] = 0x09; // CD-R
+        let (mut dev, cdbs) = device(reply);
+
+        assert_eq!(dev.get_configuration().unwrap(), CurrentProfile(0x0009));
+        assert_eq!(
+            cdbs.borrow().as_slice(),
+            &[vec![
+                0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00
+            ]]
+        );
+    }
+
+    #[test]
+    fn read_capacity_parses_the_last_writable_lba() {
+        let reply = vec![0x00, 0x00, 0x4F, 0xFF, 0x00, 0x00, 0x08, 0x00];
+        let (mut dev, cdbs) = device(reply);
+
+        assert_eq!(dev.read_capacity().unwrap(), 0x4FFF);
+        assert_eq!(
+            cdbs.borrow().as_slice(),
+            &[vec![
+                0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00
+            ]]
+        );
+    }
+
+    #[test]
+    fn set_write_parameters_sends_the_page_to_the_device() {
+        let (mut dev, cdbs, writes) = device_capturing(Vec::new());
+
+        assert!(dev.set_write_parameters(MediaKind::Cd, false).unwrap());
+        assert_eq!(
+            cdbs.borrow().as_slice(),
+            &[vec![
+                0x55, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C, 0x00
+            ]]
+        );
+        let payload = &writes.borrow()[0];
+        assert_eq!(payload.len(), 8 + 2 + 0x32);
+        assert!(payload[..8].iter().all(|b| *b == 0));
+        assert_eq!(&payload[8..10], &[0x05, 0x32]);
+        assert_eq!(payload[10], 0x41);
+    }
+
+    #[test]
+    fn set_write_parameters_is_a_no_op_without_a_page() {
+        let (mut dev, cdbs, writes) = device_capturing(Vec::new());
+
+        assert!(
+            !dev.set_write_parameters(MediaKind::NoWriteParameters, true)
+                .unwrap()
+        );
+        assert!(cdbs.borrow().is_empty());
+        assert!(writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn write_blocks_rejects_unaligned_and_oversized_lengths() {
+        let (mut dev, _, _) = device_capturing(Vec::new());
+
+        let mut odd = vec![0u8; SECTOR_BYTES + 1];
+        assert!(matches!(
+            dev.write_blocks(0, &mut odd),
+            Err(MmcError::MisalignedWrite { len }) if len == SECTOR_BYTES + 1
+        ));
+        let mut huge = vec![0u8; (MAX_WRITE_BLOCKS + 1) * SECTOR_BYTES];
+        assert!(matches!(
+            dev.write_blocks(0, &mut huge),
+            Err(MmcError::MisalignedWrite { .. })
+        ));
+    }
+
+    #[test]
+    fn write_blocks_sends_golden_write_10_with_the_payload() {
+        let (mut dev, cdbs, writes) = device_capturing(Vec::new());
+
+        let mut data = vec![0xABu8; 2 * SECTOR_BYTES];
+        dev.write_blocks(3, &mut data).unwrap();
+        assert_eq!(
+            cdbs.borrow().as_slice(),
+            &[vec![
+                0x2A, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x02, 0x00
+            ]]
+        );
+        assert_eq!(writes.borrow()[0], data);
+    }
+
+    #[test]
+    fn read_track_information_cdb_and_parse_are_golden() {
+        let mut reply = vec![0u8; write::TRACK_INFO_LEN];
+        reply[8..12].copy_from_slice(&0x0001_2345u32.to_be_bytes());
+        reply[12..16].copy_from_slice(&0x0001_2400u32.to_be_bytes());
+        let (mut dev, cdbs) = device(reply);
+
+        let info = dev.read_track_information(0xFF).unwrap();
+        assert_eq!(info.start_lba, 0x0001_2345);
+        assert_eq!(info.next_writable_address, 0x0001_2400);
+        assert_eq!(
+            cdbs.borrow().as_slice(),
+            &[vec![
+                0x52, 0x01, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x20, 0x00
+            ]]
+        );
+    }
+
+    #[test]
+    fn read_blocks_sends_golden_read_10() {
+        let (mut dev, cdbs, _) = device_capturing(Vec::new());
+
+        let mut data = vec![0u8; SECTOR_BYTES];
+        dev.read_blocks(0x0000_1234, &mut data).unwrap();
+        assert_eq!(
+            cdbs.borrow().as_slice(),
+            &[vec![
+                0x28, 0x00, 0x00, 0x00, 0x12, 0x34, 0x00, 0x00, 0x01, 0x00
+            ]]
+        );
+    }
+
+    #[test]
+    fn read_blocks_splits_requests_at_the_transport_limit() {
+        let (mut dev, cdbs, _) = device_capturing(Vec::new());
+
+        // 100 块拆成 32 + 32 + 32 + 4，LBA 依次跟进。
+        let mut data = vec![0u8; 100 * SECTOR_BYTES];
+        dev.read_blocks(0x0000_0010, &mut data).unwrap();
+        let lengths: Vec<u16> = cdbs
+            .borrow()
+            .iter()
+            .map(|cdb| u16::from_be_bytes([cdb[7], cdb[8]]))
+            .collect();
+        assert_eq!(lengths, vec![32, 32, 32, 4]);
+        let lbas: Vec<u32> = cdbs
+            .borrow()
+            .iter()
+            .map(|cdb| u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]))
+            .collect();
+        assert_eq!(lbas, vec![0x10, 0x30, 0x50, 0x70]);
+    }
+
+    #[test]
+    fn read_blocks_rejects_unaligned_lengths() {
+        let (mut dev, _, _) = device_capturing(Vec::new());
+
+        let mut odd = vec![0u8; SECTOR_BYTES - 1];
+        assert!(matches!(
+            dev.read_blocks(0, &mut odd),
+            Err(MmcError::MisalignedWrite { .. })
         ));
     }
 }

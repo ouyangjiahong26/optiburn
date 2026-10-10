@@ -14,12 +14,12 @@ Cross-platform optical disc burning toolkit in Rust for Windows and Linux on x86
 | Command | State |
 |---|---|
 | `optiburn build-image` | Works: builds ISO 9660 + Joliet + UDF Bridge images, verified against xorriso in tests. |
-| `optiburn burn` | Works on Linux (Windows builds and enumerates drives, not yet drive-verified). Multi-session by default (the disc stays appendable); `--close-disc` finalizes. |
-| `optiburn append` | Works on Linux (Windows not yet drive-verified). Appends a directory as a merged session; files from earlier sessions stay visible. |
+| `optiburn burn` | Works on Linux (`xorriso`, or `--engine native`) and on Windows (`--engine native`, the GUI default; the native engine was verified on a real CD-R on 2026-10-10, DVD/BD media still untested). Multi-session by default (the disc stays appendable); `--close-disc` finalizes. |
+| `optiburn append` | Works on Linux via xorriso grow mode. Not available on Windows yet: there is no usable xorriso build, and the native engine has no grow mode yet. Appends a directory as a merged session; files from earlier sessions stay visible. |
 | `optiburn probe` | Works on Linux (`/dev/sr*`) and Windows (drive letters). No drives found reports `未发现光驱` (exit 0). |
-| OptiBurn GUI | New in 0.1.1 (Tauri 2 + React). Four pages mirror the four subcommands; burn tasks can be cancelled mid-write. The device page browses a disc's file tree with drag and Ctrl/Shift multi-select and copies files straight to the system clipboard, the append page burns a list of files picked in the file dialog or pasted with Ctrl+V, it inherits the disc's current label, both disc pages can read the disc back and compare it with the source, and writes to a mounted disc are blocked with an unmount hint. Clipboard copy and the mount guard are Linux-only for now and the GUI has not been drive-verified on Windows. Windows NSIS installers (x64, arm64) and Linux AppImage/deb packages (x86_64, arm64) ship from the releases page. AppImages embed update information, so AppImageUpdate works, and the GUI checks for updates in place on Windows and AppImage installs. |
+| OptiBurn GUI | New in 0.1.1 (Tauri 2 + React). Four pages mirror the four subcommands; burn tasks can be cancelled mid-write. The device page browses a disc's file tree with drag and Ctrl/Shift multi-select and copies files straight to the system clipboard, the append page burns a list of files picked in the file dialog or pasted with Ctrl+V, it inherits the disc's current label, both disc pages can read the disc back and compare it with the source, and writes to a mounted disc are blocked with an unmount hint. Clipboard copy and the mount guard are Linux-only for now, and on Windows the device page can probe drives but not browse them: browsing, verification and burning all need `xorriso`, which has no usable Windows build (see the note under Install). Windows NSIS installers (x64, arm64) and Linux AppImage/deb packages (x86_64, arm64) ship from the releases page. AppImages embed update information, so AppImageUpdate works, and the GUI checks for updates in place on Windows and AppImage installs. |
 
-Native MMC writing (no external tools) is the next milestone, not part of 0.1.5. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layered design and [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) for the media/filesystem matrix.
+Native MMC writing (no external tools) landed as `--engine native` on the CLI and is the GUI's burn engine on Windows; DVD/BD media and grow mode are still open. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the layered design and [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) for the media/filesystem matrix.
 
 ## Install
 
@@ -31,9 +31,9 @@ cargo build --release
 ```
 
 - Rust 1.98.1 (pinned by `rust-toolchain.toml`).
-- `xorriso` on `PATH`, only for `burn`, and only because 0.1.5 shells out to it: `sudo apt install xorriso` on Debian/Ubuntu, `pacman -S xorriso` on MSYS2.
+- `xorriso` on `PATH` is needed by the CLI's default burn engine and by the GUI's disc browsing, copying and verification on Linux, and it is the reference reader in the tests. On Debian/Ubuntu: `sudo apt install xorriso`. On Windows there is no usable build: the MSYS2 package (`pacman -S xorriso`) is compiled without a drive-access backend, so it only works on image files, never on a drive (verified on hardware and against the upstream build logic on 2026-10-10; see the addendum in ADR-0008). Burning on Windows needs no external tool: the GUI and `--engine native` use the native MMC engine (ADR-0017).
 - Write access to the drive: usually membership in the `cdrom` group, or root.
-- GUI: on Windows grab `OptiBurn_0.1.5_x64-setup.exe` (or the arm64 build). On Linux grab the AppImage (make it executable and run) or the `.deb`. Burning still needs `xorriso` on `PATH`, same as the CLI. Offline Windows machines: grab the `-offline` build of the x64 installer instead; it embeds the WebView2 runtime (installer about 210 MB) and installs with zero downloads. On an unpatched Windows 7 the WebView2 installer fails with 0x8007007F: install KB2533623 and KB3063858 first, obtained offline from the [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) (see the addendum in ADR-0016).
+- GUI: on Windows grab `OptiBurn_0.1.5_x64-setup.exe` (or the arm64 build). On Linux grab the AppImage (make it executable and run) or the `.deb`. Burning uses the native engine on Windows (no external tool) and `xorriso` on Linux; browsing and copying need `xorriso`, which has no usable Windows build yet (see the note above). Offline Windows machines: grab the `-offline` build of the x64 installer instead; it embeds the WebView2 runtime (installer about 210 MB) and installs with zero downloads. On an unpatched Windows 7 the WebView2 installer fails with 0x8007007F: install KB2533623 and KB3063858 first, obtained offline from the [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) (see the addendum in ADR-0016).
 
 ## Usage
 
@@ -55,7 +55,7 @@ The image embeds a build timestamp, so sizes track the directory contents. `--pr
 optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
-Windows device names are drive letters: `--device E:`. By default the disc is left appendable (multi-session); pass `--close-disc` to finalize it. See [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) for the multi-session notes. The only engine is `xorriso` (`--engine xorriso`, the default); other values fail with an explicit "not implemented" error.
+Windows device names are drive letters: `--device E:`. By default the disc is left appendable (multi-session); pass `--close-disc` to finalize it. See [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md) for the multi-session notes. `--engine` takes `xorriso` (the default; needs `xorriso` on `PATH`) or `native` (our own MMC commands, the only option on Windows); other values fail with an explicit "not implemented" error. The native engine writes a new session on an appendable disc and refuses finalized media, bad profiles, empty images and images that do not fit; it cannot set the write speed yet (leave `--speed` empty).
 
 ### Append to a disc
 

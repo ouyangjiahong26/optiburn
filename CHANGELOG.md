@@ -7,6 +7,30 @@
 
 ## [Unreleased]
 
+**中文**
+
+### FEAT
+
+- **原生 MMC 写引擎（ADR-0017）**：`optiburn-engine` 新增 `NativeEngine`，自己发 MMC 命令（MODE SELECT 写参数页、WRITE(10)、SYNCHRONIZE CACHE、CLOSE TRACK/SESSION，起点取 NWA），不依赖任何外部程序；`optiburn-mmc` 增加整套写侧命令与 READ(10)、READ TRACK INFORMATION（逐条黄金 CDB 测试）。CLI 新增 `--engine native`（默认仍是 xorriso），GUI 在 Windows 上默认走原生引擎。在 Windows 的 USB 光驱与一张 CD-R 上真机验证：写 81 块的新区段后用 READ(10) 读回，与镜像逐字节一致。可追加盘按 NWA 写新区段、不覆写已有内容；已封口盘、未知 Profile、空镜像与放不下的镜像给出明确文案拒绝；倍速参数尚未支持。DVD/BD 各族与增长模式留待后续。
+- **真机验证落进代码与文档**：`inspect_real_media`（只读侦察）与 `native_burn_and_read_back_real`（写盘 + 读回对拍）两个 `--ignored` 真机测试；磁盘、平台表与 ADR 同步更新。
+
+### FIX
+
+- **缺 xorriso 的报错不再透出引擎内部英文串**：`MissingTool` 只带工具名，面向用户的说明改为中英各一份（中文收在引擎、CLI 与 GUI 共用，英文镜像在 GUI）。读盘路径（设备页浏览、复制、回读校验）此前没有映射这个错误，Windows 上会看到“读取盘片失败：missing tool: xorriso (sudo apt install xorriso)”，现在与刻录路径给同一份说明。
+- **文档修正：Windows 上没有可用的 xorriso**：MSYS2 的包（`pacman -S xorriso`）编译时未链 libcdio，不含光驱访问，实测 `-devices` 报无 MMC 传输层、设备参数落进 libburn 的 stdio 伪设备。Windows 的刻录与读盘暂不可用，等原生引擎。README、ARCHITECTURE 的平台表同步，证据记在 ADR-0008 补记。
+
+**English**
+
+### FEAT
+
+- **Native MMC burn engine (ADR-0017)**: `optiburn-engine` gains `NativeEngine`, which issues MMC commands itself (MODE SELECT write parameters, WRITE(10), SYNCHRONIZE CACHE, CLOSE TRACK/SESSION, starting at the NWA) with no external program; `optiburn-mmc` gains the whole write-side command set plus READ(10) and READ TRACK INFORMATION, each with golden CDB tests. The CLI accepts `--engine native` (xorriso stays the default) and the GUI uses the native engine on Windows. Verified on hardware (a USB drive and a CD-R on Windows): an 81-block session was written and read back with READ(10) byte for byte. Appendable discs are written as a new session at the NWA without overwriting existing data; finalized media, unknown profiles, empty images and oversized images are refused with explicit messages; write speed is not supported yet. DVD/BD media families and grow mode are future work.
+- **Hardware verification landed in code and docs**: two `--ignored` tests, `inspect_real_media` (read-only recon) and `native_burn_and_read_back_real` (burn plus read-back compare); README, the platform table and the ADRs are updated.
+
+### FIX
+
+- **The missing-xorriso error no longer leaks engine internals**: `MissingTool` carries only the tool name, and user-facing guidance now lives in one shared Chinese copy (engine, used by CLI and GUI) plus an English mirror in the GUI. The read paths (device page browsing, copying, read-back verification) previously did not map this error, so Windows users saw "读取盘片失败：missing tool: xorriso (sudo apt install xorriso)"; they now get the same text as the burn path.
+- **Docs: no usable xorriso on Windows**: the MSYS2 package (`pacman -S xorriso`) is built without libcdio and has no drive access; on hardware `-devices` reports no MMC transport and device arguments fall into libburn's stdio pseudo-drive. Burning and disc reading on Windows await the native engine. README and the ARCHITECTURE platform table are updated, and the evidence is recorded in the ADR-0008 addendum.
+
 ## [0.1.5] - 2026-10-10
 
 **中文**
