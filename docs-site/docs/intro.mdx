@@ -39,12 +39,13 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Wind
 | 命令 | 现状 |
 |---|---|
 | `optiburn build-image` | 可用。生成 ISO 9660 + Joliet + UDF Bridge 镜像，测试中与 xorriso 对拍验证。 |
-| `optiburn burn` | Linux 可用（Windows 已能构建并枚举光驱，未做真机验证）。默认多区段，`--close-disc` 才封盘。 |
-| `optiburn append` | Linux 可用（Windows 未做真机验证）。增长模式追加目录并合并已有区段，旧文件保持可见。 |
+| `optiburn burn` | Linux 与 Windows 可用（Windows 走原生 MMC 引擎，2026-10-10 在 CD-R 上真机验证，DVD/BD 各族待介质）。默认多区段，`--close-disc` 才封盘。 |
+| `optiburn append` | Linux 可用（xorriso 增长模式）。Windows 暂不可用（没有可用的 xorriso 构建，原生引擎暂无增长模式）。追加目录并合并已有区段，旧文件保持可见。 |
 | `optiburn probe` | Linux（`/dev/sr*`）与 Windows（盘符）可用。找不到设备时报“未发现光驱”，退出码 0。 |
+| 读盘 | 可用。Linux 走 xorriso，Windows 走原生 MMC 加 ISO 9660 解析（ADR-0018，2026-10-10 在 CD-R 上真机验证）。设备页浏览、回读校验、卷标预填与追加前置门禁都由它支撑。 |
 | OptiBurn 图形前端 | Tauri 2 + React，四个页面对应四个子命令，刻录类任务可中止。 |
 
-原生 MMC 写入（不借助外部工具）是下一个里程碑，不属于 0.1.5。
+原生 MMC 写入（不借助外部工具）已落地为 CLI 的 `--engine native` 与图形前端在 Windows 上的默认引擎（ADR-0017），原生读盘（ADR-0018）让 Windows 上刻录与读盘都不需要外部工具。DVD/BD 各族与增长模式仍待后续。
 
 ## 平台支持
 
@@ -52,7 +53,7 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Wind
 |---|---|---|---|
 | Linux | x86_64 | 支持 | AppImage、deb |
 | Linux | aarch64 | 支持 | AppImage、deb |
-| Windows | x86_64 | 支持（写盘未做真机验证） | NSIS 安装器 |
-| Windows | arm64 | 支持（写盘未做真机验证） | NSIS 安装器 |
+| Windows | x86_64 | 支持（写盘 2026-10-10 在 USB 光驱与 CD-R 上真机验证） | NSIS 安装器 |
+| Windows | arm64 | 支持（写盘路径与 x64 同源，未单独验证） | NSIS 安装器 |
 
 许可证是 MIT。

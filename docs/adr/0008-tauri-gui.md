@@ -28,3 +28,29 @@ Windows 只发 NSIS 安装包）。GUI 的能力与 CLI 等同：四个子命令
 
 - CI 增加 webkit2gtk 构建依赖与 node 22 工具链；根 workspace 的四目标检查不变。
 - Windows 刻录仍需用户自装 xorriso（与 CLI 相同的已知限制），GUI 会给出提示。
+
+## 补记：MSYS2 的 xorriso 没有光驱访问（2026-10-10）
+
+首次在 Windows 上实测（USB 光驱，盘符 D:，盘片可追加）：`pacman -S xorriso` 装到的
+构建（1.5.8.2-1）不含 MMC 传输层，`xorriso -devices` 报
+`No MMC transport adapter is present. Running on sg-dummy.c.` 与 `No drives found`。
+`-indev D:` 会落进 libburn 的 stdio 伪设备（Drive type 报 `YOYODYNE WARP DRIVE`）。
+
+原因在上游构建逻辑：cygwin*/mingw* 上 libburn 唯一的 MMC 通道是 libcdio
+（`configure.ac`：`cygwin*|mingw*) default_libcdio=yes`），而 MSYS2 的 PKGBUILD 既没
+装 libcdio-devel 也没开 `--enable-libcdio`，配置阶段退回 sg-dummy。附带一条：该构建
+按 msys 语义解析路径，`C:\…` 形态的绝对路径会被当成相对路径，连镜像文件操作也不适配
+本仓库传参的方式（`optiburn-mastering` 的回读对拍在 Windows 上因此跑不动）。
+
+结论：本文“缺工具时报可行动的错误”在当前 Windows 上无路可给，没有可用的外部引擎。
+Windows 的刻录与读盘要等原生 MMC 引擎（v0.5）与原生读盘能力（当天稍后写侧已由
+ADR-0017 补上，读侧仍待原生读盘）。缺工具文案不再给出
+Windows 安装指引。若将来要捆绑外部引擎，必须是链接 libcdio 的原生 Windows 构建，
+MSYS2 的包不行。README 的依赖说明与 ARCHITECTURE 的平台表已同步。
+
+## 补记：原生读盘落地（2026-10-10，ADR-0018）
+
+本文上一条补记与 ADR-0017 决策 5 记录的“Windows 读盘不可用、缺工具文案只能
+如此”的状态已解除：读侧（浏览、回读校验、卷标预填、末区段门禁）在 Windows 走
+原生 MMC 加 ISO 9660 解析，不再依赖外部程序（复制到剪贴板仍仅 Linux，见
+ADR-0012 补记）。增长模式（`append`）仍需 xorriso，那是写侧的已知缺口。

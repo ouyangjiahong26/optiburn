@@ -9,6 +9,7 @@
 | 镜像（Image） | 一份按扇区排列的完整光盘映像文件（`.iso`）。对应 `ImageSpec`、`ImageInfo`、`build_image`。 | ISO 文件、光盘文件、映象 |
 | 母盘制作（Mastering） | 把目录树组织成镜像的过程：目录结构连同文件数据写成 ISO 9660/Joliet/UDF 元数据齐备的镜像。对应 crate `optiburn-mastering`。 | 打包、构建镜像、制作镜像 |
 | 区段（Session） | 一次写入操作在盘上形成的完整 lead-in/数据/lead-out 单位。多区段盘上 Windows 只挂载最后一个区段。 | 会话、分节 |
+| 区段地址约定（Session Addressing） | 目录记录里 extent 的解释规则：区段相对（自家原生引擎，独立镜像原样落盘）或盘级绝对（xorriso 增长模式，libisofs 的 ms_block 位移）。读侧按根目录首记录是否自引用探测。 | 地址空间、寻址模式 |
 | 增长模式（Grow） | 追加刻录的方式：引擎读出盘上已有区段的目录树，把源目录内容并入后作为新区段提交，旧文件保持可见。对应 `GrowJob`、`optiburn_engine::grow`、CLI 的 `append`。 | 续刻、增量刻录、追加镜像 |
 | 图形前端（GUI） | optiburn 的图形入口：`src-tauri` 的命令层加 `frontend` 的 React 页面，与 CLI 平级，共用同一批核心 crate。 | 界面、客户端、UI |
 | 更新信息（update information） | 嵌在 AppImage 里的更新定位串（`gh-releases-zync|…`），AppImageUpdate 据此找到新版本的 `.zsync` 做增量更新。 | 更新数据、更新字符串 |
@@ -30,12 +31,13 @@
 | MMC（MultiMedia Commands） | 光盘驱动器命令集标准，定义了 `INQUIRY`、`READ DISC INFORMATION`、`WRITE(10)` 等命令与响应格式。对应 crate `optiburn-mmc`。 | 光驱命令、SCSI 多媒体命令 |
 | 介质 Profile（DiscProfile） | 目标介质类型：CD、DVD、BD。决定写哪几个文件系统。对应枚举 `DiscProfile`。 | 介质类型、盘类型 |
 | LBA / MSF | 两种扇区定位方式：LBA 是从 0 开始的线性扇区号，MSF 是分:秒:帧。CD 族的 lead-in/lead-out 地址以 MSF 表示，其它介质用 LBA。 | 扇区号、地址 |
-| 引擎（Engine） | 把镜像写到盘上的具体实现。对应 trait `BurnEngine`。v0 只有 `XorrisoEngine`。 | 后端、驱动、刻录器 |
+| 引擎（Engine） | 把镜像写到盘上的具体实现。对应 trait `BurnEngine`。现有 `NativeEngine`（原生 MMC 命令，ADR-0017）与 `XorrisoEngine`（子进程）。 | 后端、驱动、刻录器 |
 | 传输（Transport） | 把 CDB 交给设备并取回结果的通道。对应 trait `ScsiTransport`。 | 通道、驱动层、SCSI 层 |
 | 设备路径（device） | 光驱的寻址字符串：Linux `/dev/sr0`，Windows `E:`（内部规范成 `\\.\E:`）。 | 盘符、设备名 |
 | 倍速（speed） | 写入速度相对基准（CD 150 KB/s、DVD 1.35 MB/s、BD 4.5 MB/s 的整数倍）。缺省时交给驱动器自选。 | 速度、速率 |
 | 卷标（volume id） | 写在卷描述符里的盘名，Windows 资源管理器显示的就是它。对应 `ImageSpec::volume_id`。 | 标签、盘标、volume label |
 | 回读校验（Verify） | 写完盘后把盘上最后一区段的目录树抽回本地，与源（追加的待刻录文件或刻录的镜像）按文件名与内容逐文件对比的动作。对应 `compare_trees`、`JobKind::Verify`、GUI 的“校验盘片”。 | 验证、核对、对拍 |
+| 读盘（Disc Reading） | 读出盘上末区段内容的五个能力：卷标、末区段是否 ISO 9660、目录树列举、整树抽取、按路径抽取。接在 `ReadBackend` 接缝上，后端是 xorriso 子进程或原生解析（ADR-0018）。 | 读碟、光盘读取 |
 | 盘片容量（DiscCapacity） | READ FORMAT CAPACITIES 报出的介质容量：总容量与已写入量两个口径，凑齐才可用。对应 `DiscCapacity`、`read_format_capacities`。 | 光盘大小、介质容量、容量信息 |
-| 可用容量（free） | 盘片容量里总容量减已写入量的差值，写前容量门禁的比较基准（ADR-0017）。 | 剩余空间、可用空间、自由空间 |
+| 可用容量（free） | 盘片容量里总容量减已写入量的差值，写前容量门禁的比较基准（ADR-0019）。 | 剩余空间、可用空间、自由空间 |
 | 预演（print size） | 增长模式提交前用 `xorriso -print_size` 算出即将写入的新区段大小（字节），与可用容量同口径。对应 `grow_print_size`。 | 大小估算、dry-run |

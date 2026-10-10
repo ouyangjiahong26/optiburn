@@ -1,20 +1,27 @@
 //! 刻录引擎：把镜像写到盘上。
 //!
-//! v0 只有一种引擎：调用 `xorriso -as cdrecord` 子进程（ADR-0004）。原生 MMC 写入
-//! 引擎（RESERVE TRACK / WRITE(10) / CLOSE TRACK）落地后接在同一个 [`BurnEngine`]
-//! 接缝上，不需要空壳占位。
+//! 两种引擎接在同一个 [`BurnEngine`] 接缝上：
 //!
-//! 除写盘外还有回读用的小工具：读盘上卷标、把镜像或设备的目录树抽到本地，以及
-//! 本地目录树的内容对比（回读校验，见 ADR-0010）。
+//! - [`NativeEngine`]：自己发 MMC 命令（MODE SELECT / WRITE(10) / SYNCHRONIZE CACHE /
+//!   CLOSE TRACK/SESSION），
+//!   不依赖外部程序，Windows 上唯一可用的刻录路径（ADR-0017）。
+//! - [`XorrisoEngine`]：调用 `xorriso -as cdrecord` 子进程（ADR-0004）。
+//!
+//! 除写盘外还有读侧：读盘上卷标、列目录树、抽取到本地，以及本地目录树的内容
+//! 对比（回读校验，见 ADR-0010）。读侧同样有两个后端（xorriso 子进程与原生
+//! MMC 加 ISO 9660 解析，ADR-0018），Windows 走原生、Linux 维持 xorriso。
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod disc_read;
+mod native;
 mod readback;
 mod verify;
 mod xorriso;
 
+pub use native::NativeEngine;
 pub use readback::{
     DiscEntry, extract_paths, extract_tree, grow_print_size, last_session_is_iso, list_tree,
     read_volume_id,
@@ -26,7 +33,7 @@ pub use xorriso::{BurnFailure, XorrisoEngine, grow};
 pub(crate) const XORRISO: &str = "xorriso";
 /// 子进程失败时保留多少行 stderr 作为摘要。
 pub(crate) const TAIL_LINES: usize = 10;
-/// 容量门禁的区段开销余量（ADR-0017）：待写入量（[`grow_print_size`] 的预演块数
+/// 容量门禁的区段开销余量（ADR-0019）：待写入量（[`grow_print_size`] 的预演块数
 /// 或镜像大小）只算数据区，不含区段 lead-in/lead-out 与链接区。CD 每区段最大约
 /// 15 MB，DVD/BD 约 2 MB，取覆盖最坏情形的 16 MB。CLI 与 GUI 的写前容量门禁
 /// 共用这一个常量，避免两端口径漂移。
@@ -81,8 +88,47 @@ pub enum BurnError {
     /// 盘内路径不安全（盘符前缀、`..` 或 Windows 分隔符），拒绝抽取。
     #[error("unsafe path in image: {0}")]
     UnsafePath(String),
+    /// 原生引擎的 MMC 命令失败（传输层错误或命令级失败），与子进程引擎的错误分开。
+    #[error("MMC: {0}")]
+    Mmc(#[from] optiburn_mmc::MmcError),
+    /// 原生引擎做不到这次请求，原因见 [`NativeGap`]，文案由 CLI 与 GUI 分别给出。
+    #[error("native engine gap: {0}")]
+    NativeGap(NativeGap),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// 原生引擎的能力缺口：结构与理由分开，界面层才能各给母语文案（ADR-0017）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum NativeGap {
+    #[error("setting the write speed (SET CD SPEED) is not implemented yet")]
+    WriteSpeed,
+    #[error("the image is empty")]
+    EmptyImage,
+    #[error("the image does not fit on the media")]
+    ImageTooLarge,
+    #[error("the image exceeds the addressable 2048-byte blocks")]
+    ImageBeyondAddressRange,
+    #[error("media profile {0:#06x} is not in the supported list")]
+    UnsupportedProfile(u16),
+    #[error("the disc is finalized")]
+    FinalizedDisc,
+}
+
+impl BurnError {
+    /// 缺外部工具时给用户的中文说明，CLI 与 GUI 共用一份，避免两端各写一份后
+    /// 口径漂移。安装指引只在这里和 GUI 的英文镜像里维护，`MissingTool` 本身
+    /// 只带工具名，不再把某一种系统的安装命令编进跨平台的错误里。
+    ///
+    /// Windows 上写 MSYS2 的构建不可用而不是给出安装命令：实测（1.5.8.pl02，
+    /// 2026-10-10 于 USB 光驱）该构建不含 MMC 传输层，`-devices` 报
+    /// `No MMC transport adapter is present. Running on sg-dummy.c.`，设备参数会
+    /// 落进 libburn 的 stdio 伪设备。装了也读不了盘、刻不了录。
+    pub fn missing_tool_user_text(tool: &str) -> String {
+        format!(
+            "缺少 {tool}，读取盘片与刻录都依赖它。Linux 用发行版的包管理器安装（Debian/Ubuntu 是 sudo apt install {tool}）。Windows 上 MSYS2 的构建不含光驱访问，装了也无法读盘与刻录。"
+        )
+    }
 }
 
 /// 协作式取消令牌：取消方置位，引擎在进度循环里检查并停掉子进程。
@@ -119,4 +165,20 @@ pub trait BurnEngine {
         progress: &mut dyn FnMut(f32),
         cancel: &CancelToken,
     ) -> Result<(), BurnError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 缺工具文案钉住两条事实：Linux 给得出安装命令，Windows 不给（MSYS2 的构建
+    /// 不含光驱访问，写成安装指引会把用户引到死路）。
+    #[test]
+    fn missing_tool_text_names_the_linux_route_only() {
+        let text = BurnError::missing_tool_user_text("xorriso");
+        assert!(text.contains("xorriso"), "{text}");
+        assert!(text.contains("sudo apt install xorriso"), "{text}");
+        assert!(text.contains("MSYS2"), "{text}");
+        assert!(!text.contains("pacman"), "{text}");
+    }
 }

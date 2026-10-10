@@ -1,5 +1,9 @@
 //! 读侧与回读工具：读盘上目录树与卷标、抽取到本地，供设备页浏览与回读校验
 //! （ADR-0010）。只读访问一律用 `-drive_access shared` 打开，独占冲突不在这里发生。
+//!
+//! 两个读侧后端接在 [`ReadBackend`] 接缝上：[`XorrisoRead`]（子进程，Linux 的
+//! 默认）与 [`NativeRead`]（MMC 加 ISO 9660 解析，ADR-0018，Windows 的默认）。
+//! 分派规则与刻录引擎同理由：那边哪条路走得通，不是设备语义差异。
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -7,20 +11,135 @@ use std::process::{Command, Stdio};
 
 use crate::{BurnError, CancelToken, GrowJob, TAIL_LINES, XORRISO};
 
+use super::disc_read::NativeRead;
 use super::xorriso::{print_size_args, run};
 
-/// 从 `xorriso -pvd_info` 读盘上最后一个区段的卷标（PVD 的 `Volume Id`），用于
-/// GUI 追加页预填（ADR-0010）。
-///
-/// `-pvd_info` 的关键行出在 stdout：`Volume Id    : <文本>`（不带引号）。解析依赖
-/// 英文消息，统一加 `LC_ALL=C`，本机实测该 locale 下非 ASCII 卷标原样输出。
-pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
-    let (stdout, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
-    if has_no_real_volume_id(&stderr) {
-        return Err(BurnError::NoIsoSession);
+/// 读侧后端：五个读盘能力的实现约定（[`BurnEngine`] 的读侧对偶，ADR-0018）。
+pub(crate) trait ReadBackend {
+    fn read_volume_id(&self, source: &str) -> Result<String, BurnError>;
+    fn last_session_is_iso(&self, source: &str) -> Result<bool, BurnError>;
+    fn list_tree(&self, source: &str) -> Result<Vec<DiscEntry>, BurnError>;
+    fn extract_tree(
+        &self,
+        source: &Path,
+        dest: &Path,
+        cancel: &CancelToken,
+    ) -> Result<(), BurnError>;
+    fn extract_paths(
+        &self,
+        source: &str,
+        paths: &[String],
+        dest: &Path,
+        cancel: &CancelToken,
+    ) -> Result<(), BurnError>;
+}
+
+/// 选读侧后端：Windows 走原生（那边没有能访问光驱的 xorriso），Linux 维持
+/// xorriso（原生读侧还没在 Linux 真机验证过）。与 `burn_engine` 同一条规则。
+fn read_backend() -> &'static dyn ReadBackend {
+    const XORRISO_READ: XorrisoRead = XorrisoRead;
+    const NATIVE_READ: NativeRead = NativeRead;
+    if cfg!(windows) {
+        &NATIVE_READ
+    } else {
+        &XORRISO_READ
     }
-    parse_volume_id(&stdout)
-        .ok_or_else(|| BurnError::ReadFailed("xorriso did not report a Volume Id".to_string()))
+}
+
+/// xorriso 读侧后端：包住子进程调用，行为与本模块改造前一致。
+struct XorrisoRead;
+
+impl ReadBackend for XorrisoRead {
+    fn read_volume_id(&self, device: &str) -> Result<String, BurnError> {
+        let (stdout, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
+        if has_no_real_volume_id(&stderr) {
+            return Err(BurnError::NoIsoSession);
+        }
+        parse_volume_id(&stdout)
+            .ok_or_else(|| BurnError::ReadFailed("xorriso did not report a Volume Id".to_string()))
+    }
+
+    fn last_session_is_iso(&self, device: &str) -> Result<bool, BurnError> {
+        let (_, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
+        Ok(!is_blank_image_fallback(&stderr))
+    }
+
+    fn list_tree(&self, device: &str) -> Result<Vec<DiscEntry>, BurnError> {
+        let (stdout, stderr) = run_output(XORRISO, &list_args(device))?;
+        // 盘上没有 ISO 9660 时 xorriso 会兜底造一个空镜像并照常成功，stdout 只列根目录。
+        // 这里按 stderr 识破兜底：真空白盘由调用方区分，有内容却读不出 ISO 的盘不能
+        // 被显示成空盘（实测，见 ADR-0010）。
+        if is_blank_image_fallback(&stderr) {
+            return Err(BurnError::NoIsoSession);
+        }
+        Ok(parse_lsdl(&stdout))
+    }
+
+    fn extract_tree(
+        &self,
+        source: &Path,
+        dest: &Path,
+        cancel: &CancelToken,
+    ) -> Result<(), BurnError> {
+        run(XORRISO, &extract_args(source, dest), &mut |_| {}, cancel).map_err(read_side_error)
+    }
+
+    fn extract_paths(
+        &self,
+        device: &str,
+        paths: &[String],
+        dest: &Path,
+        cancel: &CancelToken,
+    ) -> Result<(), BurnError> {
+        // 路径来自盘片本身，逐条校验并落成本地相对路径后再交给 xorriso。
+        let mut targets = Vec::with_capacity(paths.len());
+        for path in paths {
+            let target = dest.join(safe_relative_path(path)?);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            targets.push((path.clone(), target));
+        }
+        run(
+            XORRISO,
+            &extract_paths_args(device, &targets),
+            &mut |_| {},
+            cancel,
+        )
+        .map_err(read_side_error)
+    }
+}
+
+/// 从盘上最后一个区段读卷标（PVD 的 `Volume Id`），用于 GUI 追加页预填
+/// （ADR-0010）。
+///
+/// xorriso 路径的解析依赖英文消息，统一加 `LC_ALL=C`，本机实测该 locale 下
+/// 非 ASCII 卷标原样输出。
+pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
+    read_backend().read_volume_id(device)
+}
+
+/// 盘上最后一个区段是否能作为 ISO 9660 读出。
+///
+/// 追加前门禁用它挡住“末区段不是 ISO 9660”的盘，例如 Windows 写入的 UDF 盘。
+/// 这类盘续写 ISO 区段后，按最后一区段挂载的系统（Windows）只会看到新内容，
+/// 原有文件被遮住（实测，见 ADR-0010）。
+pub fn last_session_is_iso(device: &str) -> Result<bool, BurnError> {
+    read_backend().last_session_is_iso(device)
+}
+
+/// 把镜像或设备的目录树抽取到本地目录，供回读校验与复制使用（ADR-0010）。
+///
+/// xorriso 路径的 `-osirrox on` 打开抽取权限，`-extract / <目标>` 把整树落到目标
+/// 目录。xorriso 会尽力还原时间戳，但抽出的文件 ctime 必然是新值，所以校验只在
+/// 本地按名字与内容对比，不比较属性。
+pub fn extract_tree(source: &Path, dest: &Path, cancel: &CancelToken) -> Result<(), BurnError> {
+    read_backend().extract_tree(source, dest, cancel)
+}
+
+/// 列出盘上最后一区段的目录树，用于 GUI 的盘片浏览。
+pub fn list_tree(device: &str) -> Result<Vec<DiscEntry>, BurnError> {
+    read_backend().list_tree(device)
 }
 
 /// 判断 xorriso 是否因为盘上没有 ISO 9660 而兜底造了一个空镜像。
@@ -42,18 +161,8 @@ fn has_no_real_volume_id(stderr: &str) -> bool {
     is_blank_image_fallback(stderr) || stderr.contains("Media status : is blank")
 }
 
-/// 盘上最后一个区段是否能作为 ISO 9660 读出。
-///
-/// 追加前门禁用它挡住“末区段不是 ISO 9660”的盘，例如 Windows 写入的 UDF 盘。
-/// 这类盘续写 ISO 区段后，按最后一区段挂载的系统（Windows）只会看到新内容，
-/// 原有文件被遮住（实测，见 ADR-0010）。
-pub fn last_session_is_iso(device: &str) -> Result<bool, BurnError> {
-    let (_, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
-    Ok(!is_blank_image_fallback(&stderr))
-}
-
 /// 预演增长模式：按与 [`crate::grow`] 相同的参数把 `-commit` 换成 `-print_size`，
-/// 返回即将写入的新区段大小（字节），供写前容量门禁比较（ADR-0017）。
+/// 返回即将写入的新区段大小（字节），供写前容量门禁比较（ADR-0019）。
 ///
 /// xorriso 自己算 ISO 9660/Joliet/UDF 的目录开销与合并盘上旧目录的增量，比把
 /// 源目录文件大小求和准确：小文件多的目录里，每文件半扇区取整加三份目录结构
@@ -114,15 +223,6 @@ fn parse_volume_id(stdout: &str) -> Option<String> {
     None
 }
 
-/// 把镜像或设备的目录树抽取到本地目录，供回读校验与复制使用（ADR-0010）。
-///
-/// `-osirrox on` 打开抽取权限，`-extract / <目标>` 把整树落到目标目录。xorriso 会
-/// 尽力还原时间戳，但抽出的文件 ctime 必然是新值，所以校验只在本地按名字与内容
-/// 对比，不比较属性。
-pub fn extract_tree(source: &Path, dest: &Path, cancel: &CancelToken) -> Result<(), BurnError> {
-    run(XORRISO, &extract_args(source, dest), &mut |_| {}, cancel).map_err(read_side_error)
-}
-
 /// 组装抽取参数表。路径按 `OsStr` 原样传递，不做有损转换。
 fn extract_args(source: &Path, dest: &Path) -> Vec<OsString> {
     vec![
@@ -144,21 +244,6 @@ pub struct DiscEntry {
     /// 文件大小，目录为 0。
     pub size: u64,
     pub is_dir: bool,
-}
-
-/// 列出盘上最后一区段的目录树，用于 GUI 的盘片浏览。
-///
-/// `-find / -exec lsdl` 一次读取拿到全部条目的路径与大小。`-drive_access shared`
-/// 是只读打开，本机已挂载的盘也有机会直接读到（挂载点之外仍优先用盘上最后一区段）。
-pub fn list_tree(device: &str) -> Result<Vec<DiscEntry>, BurnError> {
-    let (stdout, stderr) = run_output(XORRISO, &list_args(device))?;
-    // 盘上没有 ISO 9660 时 xorriso 会兜底造一个空镜像并照常成功，stdout 只列根目录。
-    // 这里按 stderr 识破兜底：真空白盘由调用方区分，有内容却读不出 ISO 的盘不能
-    // 被显示成空盘（实测，见 ADR-0010）。
-    if is_blank_image_fallback(&stderr) {
-        return Err(BurnError::NoIsoSession);
-    }
-    Ok(parse_lsdl(&stdout))
 }
 
 /// 组装列清单的参数表。
@@ -237,32 +322,17 @@ fn parse_quoted_name(text: &str, start: usize) -> Option<(String, usize)> {
     Some((name, index))
 }
 
-/// 从盘上按 ISO 路径抽取若干文件或目录到本地目录，一次 xorriso 调用完成。
+/// 从盘上按 ISO 路径抽取若干文件或目录到本地目录，一次后端调用完成。
 ///
 /// 每个 ISO 路径落到 `dest` 下同名的相对位置，父目录预先建好。只读打开
-/// （`-drive_access shared`），供 GUI 把盘上文件复制到本地。
+/// （xorriso 路径带 `-drive_access shared`），供 GUI 把盘上文件复制到本地。
 pub fn extract_paths(
     device: &str,
     paths: &[String],
     dest: &Path,
     cancel: &CancelToken,
 ) -> Result<(), BurnError> {
-    // 路径来自盘片本身，逐条校验并落成本地相对路径后再交给 xorriso。
-    let mut targets = Vec::with_capacity(paths.len());
-    for path in paths {
-        let target = dest.join(safe_relative_path(path)?);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        targets.push((path.clone(), target));
-    }
-    run(
-        XORRISO,
-        &extract_paths_args(device, &targets),
-        &mut |_| {},
-        cancel,
-    )
-    .map_err(read_side_error)
+    read_backend().extract_paths(device, paths, dest, cancel)
 }
 
 /// 读侧提取失败：写盘语义的 [`BurnError::Failed`] 归一成 [`BurnError::ReadFailed`]，
@@ -280,8 +350,8 @@ fn read_side_error(error: BurnError) -> BurnError {
 /// 盘片内容不能当可信输入：Windows 上 `C:` 这类带盘符前缀的段会让 `Path` 的拼接
 /// 替换掉已累积的路径，把文件抽到暂存目录之外（实测 xorriso 能写出这样的镜像）。
 /// 每段都要查，冒号本身不拒绝，只有「单个 ASCII 字母加冒号」这种盘符形态段不放行，
-/// `12:30.txt` 这类普通名字照常通过。
-fn safe_relative_path(path: &str) -> Result<PathBuf, BurnError> {
+/// `12:30.txt` 这类普通名字照常通过。原生读侧（`disc_read`）落盘文件名也过这层。
+pub(crate) fn safe_relative_path(path: &str) -> Result<PathBuf, BurnError> {
     let mut relative = PathBuf::new();
     for segment in path.split('/') {
         if segment.is_empty() || segment == "." {
@@ -336,9 +406,7 @@ fn run_output(program: &str, args: &[OsString]) -> Result<(String, String), Burn
         .stdin(Stdio::null())
         .output()
         .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                BurnError::MissingTool(format!("{program} (sudo apt install {program})"))
-            }
+            std::io::ErrorKind::NotFound => BurnError::MissingTool(program.to_string()),
             _ => BurnError::Io(e),
         })?;
     if !output.status.success() {
@@ -390,6 +458,17 @@ Preparer Id  : XORRISO
     }
 
     #[test]
+    fn missing_binary_on_the_read_side_is_a_missing_tool_error() {
+        let err = run_output("optiburn-nonexistent-program", &[])
+            .expect_err("spawning a nonexistent program must fail");
+        // 载荷只有工具名，安装指引由调用方按系统给出。
+        assert!(
+            matches!(&err, BurnError::MissingTool(name) if name == "optiburn-nonexistent-program"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn parse_print_size_reads_the_measured_line_shape() {
         // 实测（1.5.6）stdout 只有关键行一行，"Image size" 与冒号之间是对齐空格，
         // 数值以 `s` 结尾，单位 2048 字节块。
@@ -431,7 +510,6 @@ Preparer Id  : XORRISO
         assert_eq!(bytes % 2048, 0, "size is counted in 2048-byte blocks");
         let _ = std::fs::remove_dir_all(&base);
     }
-
     #[test]
     fn extract_args_carry_osirrox_and_root() {
         assert_eq!(

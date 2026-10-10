@@ -221,9 +221,11 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 读取盘片失败的文案：盘被挂载占用时给出卸载指引，末区段与路径问题单独说清。
+/// 读取盘片失败的文案：缺工具与末区段格式先走专用分支，盘被挂载占用时给出
+/// 卸载指引（缺工具时卸载帮不上忙，不给这一条），其余错误保留动作前缀。
 fn disc_read_error(lang: Lang, device: &str, error: BurnError) -> String {
     match (&lang, &error) {
+        (_, BurnError::MissingTool(tool)) => super::missing_tool_text(lang, tool),
         (_, BurnError::NoIsoSession) => pick(
             lang,
             "盘上末区段不是 ISO 9660（例如 Windows 写入的 UDF 盘），读不出内容。",
@@ -258,6 +260,19 @@ fn disc_read_error(lang: Lang, device: &str, error: BurnError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归：缺 xorriso 时读盘失败给出与刻录路径同一份安装途径，不再把引擎内部
+    /// 的英文串（历史行为里还带只适用于 Debian 的安装提示）原样透给用户。
+    #[test]
+    fn missing_tool_read_message_gives_install_routes() {
+        let zh = disc_read_error(Lang::Zh, "D:", BurnError::MissingTool("xorriso".into()));
+        assert_eq!(zh, BurnError::missing_tool_user_text("xorriso"));
+        assert!(!zh.contains("missing tool"), "{zh}");
+        let en = disc_read_error(Lang::En, "D:", BurnError::MissingTool("xorriso".into()));
+        assert!(en.contains("sudo apt install xorriso"), "{en}");
+        assert!(en.contains("MSYS2"), "{en}");
+        assert!(!en.contains("missing tool"), "{en}");
+    }
 
     #[test]
     fn human_bytes_matches_device_page_wording() {

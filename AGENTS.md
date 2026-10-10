@@ -6,21 +6,24 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
 ## Project Overview
 
 五个 crate 的 workspace，依赖单向：`cli` 依赖 `mastering`、`engine`、`mmc`，并直接依赖
-`transport`（probe 用它打开与枚举设备）。`mastering` 依赖 `hadris-cd`，`mmc` 依赖
-`transport`。
+`transport`（probe 用它打开与枚举设备）。`engine` 依赖 `mmc` 与 `transport`（原生 MMC
+引擎用前者发命令、用后者打开设备），`mastering` 依赖 `hadris-cd`，`mmc` 依赖 `transport`。
 
 - `optiburn-transport`：SCSI 传输。全仓库唯一的硬件抽象点，`ScsiTransport` trait 只有
   一个方法 `issue(cdb, dir, data, timeout)`。Linux 走 `SG_IO`，Windows 走 SPTI，光驱设备
   枚举（`list_optical_devices`）也按平台收在这里。CDB 上限 16 字节，
   sense 上限 32 字节，命令级成功 = SCSI 状态字节与宿主机/驱动状态全 0。
-- `optiburn-mmc`：MMC 命令编解码。v0 只有读侧三条（`inquiry`、`test_unit_ready`、
-  `read_disc_information`）。写侧（`RESERVE TRACK`/`WRITE(10)`/`CLOSE TRACK`）在路线图上，
-  落地前不留空壳类型。
+- `optiburn-mmc`：MMC 命令编解码。读侧有 `inquiry`、`test_unit_ready`、`read_disc_information`、
+  `read_track_information`、`read_toc_session_info`、`read_capacity`、`read_blocks`。写侧有 `get_configuration`、
+  `set_write_parameters`、`reserve_track`、`write_blocks`、`synchronize_cache`、`close_session`
+  （CDB 布局对照 libburn，见 ADR-0017）。
 - `optiburn-mastering`：`build_image(source_dir, output, spec) -> ImageInfo`。profile 到文件
   系统的映射（`options_for`）是 Windows 可读性的唯一落点。输出文件必须以读写方式打开
   （hadris 写完卷描述符会回读打补丁，只写句柄会 `EBADF`）。
-- `optiburn-engine`：`BurnEngine` trait + `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。
-  原生 MMC 引擎将接在同一个 trait 上。
+- `optiburn-engine`：`BurnEngine` trait 加两个引擎：`NativeEngine`（原生 MMC 写引擎，
+  ADR-0017）与 `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。读侧接在 `ReadBackend`
+  接缝上：`XorrisoRead`（子进程）与 `NativeRead`（MMC 读块加 hadris-iso 的 ISO 9660
+  解析，两种区段地址约定自动探测，ADR-0018），Windows 走原生、Linux 维持 xorriso。
 - `optiburn-cli`：`optiburn build-image | burn | append | probe`。二进制名是 `optiburn`
   （`[[bin]] name`），不是 `optiburn-cli`。`burn` 默认多区段不封盘，追加刻录走
   `append`（xorriso 增长模式，ADR-0006）。
@@ -63,21 +66,22 @@ npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 #   --config src-tauri/tauri.offline.conf.json
 ```
 
-硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real` 需要
-`OPTIBURN_DEVICE` 与 `OPTIBURN_IMAGE`，本机与 CI 都没有光驱，默认不跑。
+硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real`（xorriso 引擎）与
+`native_burn_and_read_back_real`（原生引擎）需要 `OPTIBURN_DEVICE` 与 `OPTIBURN_IMAGE`。
+CI 没有光驱，默认不跑。本机的 Windows 侧接了 USB 光驱，可用它做真机验证。
 
 ## Key Directories
 
 | 路径 | 用途 |
 |---|---|
 | `crates/optiburn-transport/` | `lib.rs`（trait + 平台分发）、`linux.rs`（SG_IO）、`windows.rs`（SPTI） |
-| `crates/optiburn-mmc/` | CDB 编解码与响应解析，含黄金 CDB 断言与固定缓冲区解析测试 |
+| `crates/optiburn-mmc/` | CDB 编解码与响应解析（`write.rs` 是写侧），含黄金 CDB 断言与固定缓冲区解析测试 |
 | `crates/optiburn-mastering/` | `build_image` + profile 映射。`tests/roundtrip.rs` 是 xorriso 对拍 |
-| `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`）、`xorriso.rs`（参数与进度解析） |
+| `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`/`NativeGap`）、`native.rs`（原生 MMC 写引擎）、`xorriso.rs`（参数与进度解析） |
 | `crates/optiburn-cli/` | `src/main.rs` 四个子命令 |
 | `src-tauri/` | GUI 的 Rust 侧：Tauri 命令层，调用核心 crate |
 | `frontend/` | GUI 的 React 页面，Vite + TS |
-| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0014） |
+| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0017） |
 | `CONTEXT.md` | 领域术语表（术语/定义/禁用同义词三列），命名一律照它 |
 | `.github/workflows/` | `ci.yml`（job 名即分支保护的 required checks）、`release.yml` |
 

@@ -53,3 +53,9 @@ pub trait ScsiTransport {
   不能复制其代码。本仓库的 `linux.rs` 是按 `scsi/sg.h` 的 C 布局自行编写的。
 - 走 `/dev/sg*` 而非 `/dev/sr*`：`sg` 节点要额外枚举映射关系，而 `sr` 设备就是我们
   要操作的驱动器本身，少一层猜测。
+
+## 补记：Windows 真机验证（2026-10-10）
+
+本文「Windows 路径目前只保证编译通过」的现状已经变了：设备枚举、probe 与原生 MMC
+写引擎（ADR-0017）已在 Windows 的 USB 光驱上真机跑通，写盘还做了读回对拍。Linux 侧
+仍没有光驱可测。

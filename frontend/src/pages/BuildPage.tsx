@@ -31,6 +31,23 @@ function defaultOutputHint(src: string): string | null {
   return `${stripped.slice(0, cut)}${stripped[cut]}${stripped.slice(cut + 1)}.iso`;
 }
 
+// 用户填写的输出没有扩展名时，后端 start_build_image 会补 .iso；这里提前展示补全后
+// 的名字，让用户提交前就看到最终保存位置。判断规则对齐后端的 Path::extension：
+// 文件名里最后一个点出现在开头之前才算有扩展名。同样只是提示，不保证与后端逐字
+// 一致。
+function isoSuffixHint(output: string): string | null {
+  const stripped = output.trim().replace(/[\\/]+$/, "");
+  if (stripped === "") {
+    return null;
+  }
+  const cut = Math.max(stripped.lastIndexOf("/"), stripped.lastIndexOf("\\"));
+  const name = stripped.slice(cut + 1);
+  if (name.lastIndexOf(".") > 0) {
+    return null;
+  }
+  return `${stripped}.iso`;
+}
+
 export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { locked: boolean }) {
   const [src, setSrc] = useState("");
   const [output, setOutput] = useState("");
@@ -39,6 +56,7 @@ export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { lo
   const [imageInfo, setImageInfo] = useState<ImageInfoDto | null>(null);
 
   const defaultHint = output.trim() === "" ? defaultOutputHint(src) : null;
+  const suffixHint = defaultHint !== null ? null : isoSuffixHint(output);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -80,9 +98,11 @@ export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { lo
         <FormRow
           label={t("Output image", "输出镜像")}
           hint={
-            defaultHint === null
-              ? undefined
-              : t(`Defaults to ${defaultHint}`, `留空时保存为 ${defaultHint}`)
+            defaultHint !== null
+              ? t(`Defaults to ${defaultHint}`, `留空时保存为 ${defaultHint}`)
+              : suffixHint !== null
+                ? t(`Will be saved as ${suffixHint}`, `将保存为 ${suffixHint}`)
+                : undefined
           }
         >
           <PathField

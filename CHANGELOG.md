@@ -7,6 +7,38 @@
 
 ## [Unreleased]
 
+**中文**
+
+### FEAT
+
+- **原生读盘（ADR-0018）**：读侧五个能力（读卷标、末区段 ISO 门禁、列目录树、整树抽取、按路径抽取）接在新的 `ReadBackend` 接缝上：`XorrisoRead`（子进程，Linux 维持）与 `NativeRead`（MMC 读块加 hadris-iso 的 ISO 9660 解析，Windows 默认）。末区段定位用 READ TOC Format 1（libburn 同源），两种区段地址约定（区段相对与盘级绝对）按根目录首记录自引用自动探测。真机验证（Windows，USB 光驱，CD-R）：原生刻的末区段读卷标、列目录树、抽取并与镜像逐文件对拍一致，xorriso 增长的旧区段按绝对约定读通。离线与 xorriso 的列举对拍逐条一致。Windows 上设备页浏览、回读校验、卷标预填与 CLI `append` 的末区段门禁不再依赖外部工具。
+- **`optiburn-mmc` 增加会话信息命令**：READ TOC Format 1（`read_toc_session_info`）与 `DiscInformation::last_session_first_track`、`TrackInfo::track_blocks`，黄金 CDB 与解析测试按实测响应字节钉住。
+
+- **原生 MMC 写引擎（ADR-0017）**：`optiburn-engine` 新增 `NativeEngine`，自己发 MMC 命令（MODE SELECT 写参数页、WRITE(10)、SYNCHRONIZE CACHE、CLOSE TRACK/SESSION，起点取 NWA），不依赖任何外部程序。`optiburn-mmc` 增加整套写侧命令与 READ(10)、READ TRACK INFORMATION（逐条黄金 CDB 测试）。CLI 新增 `--engine native`（默认仍是 xorriso），GUI 在 Windows 上默认走原生引擎。在 Windows 的 USB 光驱与一张 CD-R 上真机验证：写 81 块的新区段后用 READ(10) 读回，与镜像逐字节一致。可追加盘按 NWA 写新区段、不覆写已有内容。已封口盘、未知 Profile、空镜像与放不下的镜像给出明确文案拒绝。倍速参数尚未支持。DVD/BD 各族与增长模式留待后续。
+- **真机验证落进代码与文档**：`inspect_real_media`（只读侦察）与 `native_burn_and_read_back_real`（写盘 + 读回对拍）两个 `--ignored` 真机测试。中文 README、文档站、平台表、ADR 同步更新。
+- **盘片容量与写前门禁（ADR-0019）**：`optiburn-mmc` 新增 `read_format_capacities`（READ FORMAT CAPACITIES，op 0x23），变长响应按 residual 截断解析，总容量与已写入量两个口径凑齐才可用（实机 CD-R 驱动器会把已写块数填进类型 0 描述符，单一口径不可信）。追加的待写入量用 `xorriso -print_size` 预演，镜像刻录用文件大小，待写入加 16 MB 区段开销余量（`SESSION_OVERHEAD`）超过可用容量即拒绝；读不到容量口径（CD 介质典型）跳过并提示。`probe`、CLI 的 `burn`/`append`、GUI 的刻录/追加路径与设备页、追加页都接入容量。
+
+### FIX
+
+- **缺 xorriso 的报错不再透出引擎内部英文串**：`MissingTool` 只带工具名，面向用户的说明改为中英各一份（中文收在引擎、CLI 与 GUI 共用，英文镜像在 GUI）。读盘路径（设备页浏览、复制、回读校验）此前没有映射这个错误，Windows 上会看到“读取盘片失败：missing tool: xorriso (sudo apt install xorriso)”，现在与刻录路径给同一份说明。
+- **文档修正：Windows 上没有可用的 xorriso**：MSYS2 的包（`pacman -S xorriso`）编译时未链 libcdio，不含光驱访问，实测 `-devices` 报无 MMC 传输层、设备参数落进 libburn 的 stdio 伪设备。Windows 的读盘暂不可用（刻录已由同版本的原生引擎补上）。相关说法在 README、中文 README、文档站、ARCHITECTURE 的平台表同步，证据记在 ADR-0008 补记。
+
+**English**
+
+### FEAT
+
+- **Native disc reading (ADR-0018)**: the five read capabilities (volume id, last-session ISO check, tree listing, whole-tree extraction, per-path extraction) move to a new `ReadBackend` seam with `XorrisoRead` (the subprocess, still used on Linux) and `NativeRead` (MMC block reads plus hadris-iso ISO 9660 parsing, the Windows default). The last session is located via READ TOC Format 1 (the same command libburn uses) and the two session-addressing conventions (session-relative and disc-absolute) are auto-detected from the root directory's self-referential first record. Verified on hardware (Windows, USB drive, CD-R): the natively burned last session reads back its volume id, tree and files matching the image byte for byte, and an xorriso-grown older session reads through the absolute convention; an offline listing comparison against xorriso matches entry for entry. Device-page browsing, verification, label prefill and the CLI append guard no longer need external tools on Windows.
+- **Session-information commands in `optiburn-mmc`**: READ TOC Format 1 (`read_toc_session_info`) plus `DiscInformation::last_session_first_track` and `TrackInfo::track_blocks`, with golden CDB and parse tests pinned to bytes captured from real hardware.
+
+- **Native MMC burn engine (ADR-0017)**: `optiburn-engine` gains `NativeEngine`, which issues MMC commands itself (MODE SELECT write parameters, WRITE(10), SYNCHRONIZE CACHE, CLOSE TRACK/SESSION, starting at the NWA) with no external program; `optiburn-mmc` gains the whole write-side command set plus READ(10) and READ TRACK INFORMATION, each with golden CDB tests. The CLI accepts `--engine native` (xorriso stays the default) and the GUI uses the native engine on Windows. Verified on hardware (a USB drive and a CD-R on Windows): an 81-block session was written and read back with READ(10) byte for byte. Appendable discs are written as a new session at the NWA without overwriting existing data; finalized media, unknown profiles, empty images and oversized images are refused with explicit messages; write speed is not supported yet. DVD/BD media families and grow mode are future work.
+- **Hardware verification landed in code and docs**: two `--ignored` tests, `inspect_real_media` (read-only recon) and `native_burn_and_read_back_real` (burn plus read-back compare); README, the platform table and the ADRs are updated.
+- **Disc capacity and write gate (ADR-0019)**: `optiburn-mmc` gains `read_format_capacities` (READ FORMAT CAPACITIES, op 0x23), whose variable-length reply is truncated by residual; capacity is usable only when both the total and used descriptors are present (a real CD-R drive filled the used block count into descriptor type 0, so a single count is not trustworthy). Append sizes come from an `xorriso -print_size` rehearsal and image burns from the file size; a write whose size plus the 16 MB session overhead (`SESSION_OVERHEAD`) exceeds the free capacity is rejected, and when no capacity is reported (typical on CD media) the gate is skipped with a notice. `probe`, the CLI `burn`/`append` paths, the GUI burn/append tasks and the devices/append pages all surface the capacity.
+
+### FIX
+
+- **The missing-xorriso error no longer leaks engine internals**: `MissingTool` carries only the tool name, and user-facing guidance now lives in one shared Chinese copy (engine, used by CLI and GUI) plus an English mirror in the GUI. The read paths (device page browsing, copying, read-back verification) previously did not map this error, so Windows users saw "读取盘片失败：missing tool: xorriso (sudo apt install xorriso)"; they now get the same text as the burn path.
+- **Docs: no usable xorriso on Windows**: the MSYS2 package (`pacman -S xorriso`) is built without libcdio and has no drive access; on hardware `-devices` reports no MMC transport and device arguments fall into libburn's stdio pseudo-drive. Disc reading on Windows is still unavailable, burning is covered by the native engine shipped in the same release. README, its Chinese mirror, the docs site and the ARCHITECTURE platform table are updated, and the evidence is recorded in the ADR-0008 addendum.
+
 ## [0.1.5] - 2026-10-10
 
 **中文**

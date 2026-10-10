@@ -19,8 +19,7 @@ cargo build --release
 ```
 
 - Rust 1.98.1（由 `rust-toolchain.toml` 固定，rustup 会自动装好）。
-- `xorriso` 在 `PATH` 上，只有 `burn` 需要（0.1.5 通过子进程调用）：Debian/Ubuntu 用
-  `sudo apt install xorriso`，MSYS2 用 `pacman -S xorriso`。
+- `xorriso` 在 `PATH` 上：CLI 的默认刻录引擎（Linux）与图形前端在 Linux 上的盘上浏览、回读校验、增长模式都用它。Debian/Ubuntu 用 `sudo apt install xorriso`。Windows 上没有可用的构建（MSYS2 的包碰不到光驱，实测见 ADR-0008 补记），刻录与读盘都走原生路径，不需要外部工具（ADR-0017、ADR-0018）。
 - 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
 
 :::tip[写权限]
@@ -30,7 +29,7 @@ Linux 上用 `sudo usermod -aG cdrom "$USER"` 把自己加进 `cdrom` 组，注�
 
 :::
 
-图形界面不额外需要依赖，装好发行包或 AppImage 后，刻录仍要求 `xorriso` 在 `PATH` 上，与命令行相同。
+图形界面不额外需要依赖：Windows 上刻录与读盘都走原生路径（不需要外部工具），Linux 上刻录、盘上浏览与回读校验要求 `xorriso` 在 `PATH` 上。
 
 ## 用图形界面安装（可选）
 

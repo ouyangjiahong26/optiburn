@@ -150,9 +150,7 @@ pub(crate) fn run(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                BurnError::MissingTool(format!("{program} (sudo apt install {program})"))
-            }
+            std::io::ErrorKind::NotFound => BurnError::MissingTool(program.to_string()),
             _ => BurnError::Io(e),
         })?;
 
@@ -451,8 +449,9 @@ mod tests {
             &CancelToken::default(),
         )
         .expect_err("spawning a nonexistent program must fail");
+        // 载荷只有工具名：安装指引不编进跨平台的错误里（Windows 与 Linux 的途径不同）。
         assert!(
-            matches!(&err, BurnError::MissingTool(name) if name.starts_with("optiburn-nonexistent-program")),
+            matches!(&err, BurnError::MissingTool(name) if name == "optiburn-nonexistent-program"),
             "{err:?}"
         );
     }

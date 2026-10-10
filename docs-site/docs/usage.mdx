@@ -43,7 +43,7 @@ optiburn burn docs.iso --device /dev/sr0 --speed 8
 | `--device` | Linux 是 `/dev/sr*`，Windows 是盘符（`E:`） |
 | `--speed` | 倍速，留空交给驱动自选 |
 | `--close-disc` | 写完后封盘。不传时盘保持可追加 |
-| `--engine` | 目前只有 `xorriso`（默认值），其它值报“未实现” |
+| `--engine` | `xorriso`（默认值，需要 `PATH` 上有 `xorriso`）或 `native`（自己发 MMC 命令，Windows 上唯一可用），其它值报“未实现” |
 
 默认多区段：盘写完后还能继续追加，省着用一张盘。需要归档一次性写死的场景就传 `--close-disc`。
 
