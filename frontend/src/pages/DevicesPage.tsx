@@ -6,6 +6,7 @@ import { Copy, FileText, Folder, RefreshCw } from "lucide-react";
 import { copyDiscFiles, listDisc } from "../api";
 import { useDeviceProbe } from "../hooks";
 import { t } from "../i18n";
+import { capacityLabel, formatBytes } from "../format";
 import type { DiscEntry, JobControls } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
 
@@ -13,20 +14,6 @@ type ListingState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | { kind: "ready"; entries: DiscEntry[] };
-
-// 按量级格式化大小，数值与单位之间留一个空格。
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${bytes} ${t("bytes", "字节")}`;
-}
 
 export function DevicesPage({
   locked,
@@ -210,7 +197,9 @@ export function DevicesPage({
         <div className="empty-state">{t("No optical drives found", "未发现光驱")}</div>
       ) : (
         <ul className="device-list">
-          {devices.map((device) => (
+          {devices.map((device) => {
+            const capacity = capacityLabel(device.capacityBytes, device.freeBytes);
+            return (
             <li
               key={device.path}
               className={`device-card${openDevice === device.path ? " expanded" : ""}`}
@@ -248,6 +237,7 @@ export function DevicesPage({
                     )}
                   </span>
                 )}
+                {capacity !== null && <span>{capacity}</span>}
               </div>
               {device.error !== null && (
                 <p className="device-error">{device.error}</p>
@@ -338,7 +328,8 @@ export function DevicesPage({
                 </div>
               )}
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>

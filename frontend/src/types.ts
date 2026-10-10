@@ -8,6 +8,9 @@ export type DeviceInfo = {
   status: DiscStatus | null;
   statusBits: number | null;
   sessions: number | null;
+  // 盘片容量（字节）。两个口径各自可缺，读不到时为 null，界面按能读到的部分显示。
+  capacityBytes: number | null;
+  freeBytes: number | null;
   error: string | null;
 };
 
@@ -34,7 +37,7 @@ export type DiscProfile = "cd" | "dvd" | "bd";
 export type JobKind = "build" | "burn" | "append" | "verify" | "copy";
 
 // 门禁类失败的标记：后端随 job-done 一起发，前端据此弹引导对话框而不是靠文案匹配。
-export type GateKind = "append" | "finalized" | "mounted" | "noIsoSession";
+export type GateKind = "append" | "finalized" | "mounted" | "noIsoSession" | "capacity";
 
 export type JobOutcome = "done" | "cancelled" | "failed";
 

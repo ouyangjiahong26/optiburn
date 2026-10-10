@@ -9,10 +9,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::{BurnError, CancelToken, TAIL_LINES, XORRISO};
+use crate::{BurnError, CancelToken, GrowJob, TAIL_LINES, XORRISO};
 
 use super::disc_read::NativeRead;
-use super::xorriso::run;
+use super::xorriso::{print_size_args, run};
 
 /// 读侧后端：五个读盘能力的实现约定（[`BurnEngine`] 的读侧对偶，ADR-0018）。
 pub(crate) trait ReadBackend {
@@ -159,6 +159,36 @@ fn is_blank_image_fallback(stderr: &str) -> bool {
 /// 只有卷标预填需要把空盘一并挡掉。
 fn has_no_real_volume_id(stderr: &str) -> bool {
     is_blank_image_fallback(stderr) || stderr.contains("Media status : is blank")
+}
+
+/// 预演增长模式：按与 [`crate::grow`] 相同的参数把 `-commit` 换成 `-print_size`，
+/// 返回即将写入的新区段大小（字节），供写前容量门禁比较（ADR-0019）。
+///
+/// xorriso 自己算 ISO 9660/Joliet/UDF 的目录开销与合并盘上旧目录的增量，比把
+/// 源目录文件大小求和准确：小文件多的目录里，每文件半扇区取整加三份目录结构
+/// 会让求和显著低估。实测（1.5.6）：关键行在 stdout，形态 `Image size   : 288s`
+/// （冒号前有对齐空格，数值尾部 `s`，单位 2048 字节块）；数值只含即将提交的新
+/// 区段，盘上已有区段不在内，与 READ FORMAT CAPACITIES 算出的可用容量同口径。
+/// 预演在一次性介质上不写入（写入只发生在 `-commit`）；可覆写介质（含 xorriso
+/// 的 stdio 文件目标）在退出时会自动提交，那是目标介质的行为，与 `-print_size`
+/// 无关（实测）。
+pub fn grow_print_size(job: &GrowJob) -> Result<u64, BurnError> {
+    let (stdout, _) = run_output(XORRISO, &print_size_args(job))?;
+    parse_print_size(&stdout)
+        .ok_or_else(|| BurnError::ReadFailed("xorriso did not report an image size".to_string()))
+}
+
+/// 从 `-print_size` 的 stdout 里取即将写入的块数并换算成字节。
+fn parse_print_size(stdout: &str) -> Option<u64> {
+    for line in stdout.lines() {
+        let Some(rest) = line.strip_prefix("Image size") else {
+            continue;
+        };
+        let value = rest.split_once(':')?.1.trim();
+        let blocks: u64 = value.strip_suffix('s')?.parse().ok()?;
+        return Some(blocks * 2048);
+    }
+    None
 }
 
 /// 组装读卷标的参数表。
@@ -438,6 +468,48 @@ Preparer Id  : XORRISO
         );
     }
 
+    #[test]
+    fn parse_print_size_reads_the_measured_line_shape() {
+        // 实测（1.5.6）stdout 只有关键行一行，"Image size" 与冒号之间是对齐空格，
+        // 数值以 `s` 结尾，单位 2048 字节块。
+        let stdout = "Image size   : 288s\n";
+        assert_eq!(parse_print_size(stdout), Some(288 * 2048));
+        assert_eq!(parse_print_size("xorriso : UPDATE : 2 files added\n"), None);
+        assert_eq!(parse_print_size(""), None);
+        // 没有块数后缀或不是数字的行不当成功。
+        assert_eq!(parse_print_size("Image size   : 288\n"), None);
+        assert_eq!(parse_print_size("Image size   : xs\n"), None);
+        // 混在别的行中间也要命中。
+        assert_eq!(
+            parse_print_size("booted\nImage size   : 2304s\n"),
+            Some(2304 * 2048)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn grow_print_size_runs_xorriso_on_a_stdio_target() {
+        // xorriso 的 -dev 也接受普通文件（stdio 目标），CI 没有光驱也能真跑这条
+        // 预演路径。stdio 目标是可覆写介质，退出时 xorriso 会自动提交，在临时
+        // 目录里落一个文件，结尾一并清理。
+        let base = std::env::temp_dir().join(format!("optiburn-printsize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("src");
+        std::fs::create_dir_all(&src).expect("create source dir");
+        std::fs::write(src.join("a.txt"), b"print size probe").expect("write sample");
+        let job = GrowJob {
+            src,
+            device: base.join("target.iso").display().to_string(),
+            speed: None,
+            volume_id: "PRINTSIZE".to_string(),
+            close_disc: false,
+        };
+
+        let bytes = grow_print_size(&job).expect("print size must succeed");
+        assert!(bytes > 0, "a non-empty tree must report blocks");
+        assert_eq!(bytes % 2048, 0, "size is counted in 2048-byte blocks");
+        let _ = std::fs::remove_dir_all(&base);
+    }
     #[test]
     fn extract_args_carry_osirrox_and_root() {
         assert_eq!(

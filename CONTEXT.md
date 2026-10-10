@@ -38,3 +38,7 @@
 | 卷标（volume id） | 写在卷描述符里的盘名，Windows 资源管理器显示的就是它。对应 `ImageSpec::volume_id`。 | 标签、盘标、volume label |
 | 回读校验（Verify） | 写完盘后把盘上最后一区段的目录树抽回本地，与源（追加的待刻录文件或刻录的镜像）按文件名与内容逐文件对比的动作。对应 `compare_trees`、`JobKind::Verify`、GUI 的“校验盘片”。 | 验证、核对、对拍 |
 | 读盘（Disc Reading） | 读出盘上末区段内容的五个能力：卷标、末区段是否 ISO 9660、目录树列举、整树抽取、按路径抽取。接在 `ReadBackend` 接缝上，后端是 xorriso 子进程或原生解析（ADR-0018）。 | 读碟、光盘读取 |
+| 盘片容量（DiscCapacity） | 总容量与可用容量两个口径，可用容量优先取 READ TRACK INFORMATION 的剩余块数，退回 READ FORMAT CAPACITIES 的格式化容量（ADR-0019）。对应 `DiscCapacity`、`read_disc_capacity`。 | 光盘大小、介质容量、容量信息 |
+| 可用容量（free） | 盘片容量里还能写入的量，写前容量门禁的比较基准。顺序介质上是剩余块数乘 2048 字节（ADR-0019）。 | 剩余空间、可用空间、自由空间 |
+| 格式化容量（FormatCapacity） | READ FORMAT CAPACITIES 报出的两个数值：未格式化介质的最大可格式化容量（描述符类型 1）与已格式化介质的当前格式化容量（类型 2）。对应 `FormatCapacity`、`read_format_capacities`。 | 介质容量、盘片大小 |
+| 预演（print size） | 增长模式提交前用 `xorriso -print_size` 算出即将写入的新区段大小（字节），与可用容量同口径。对应 `grow_print_size`。 | 大小估算、dry-run |

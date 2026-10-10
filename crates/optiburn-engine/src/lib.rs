@@ -23,7 +23,8 @@ mod xorriso;
 
 pub use native::NativeEngine;
 pub use readback::{
-    DiscEntry, extract_paths, extract_tree, last_session_is_iso, list_tree, read_volume_id,
+    DiscEntry, extract_paths, extract_tree, grow_print_size, last_session_is_iso, list_tree,
+    read_volume_id,
 };
 pub use verify::compare_trees;
 pub use xorriso::{BurnFailure, XorrisoEngine, grow};
@@ -32,6 +33,11 @@ pub use xorriso::{BurnFailure, XorrisoEngine, grow};
 pub(crate) const XORRISO: &str = "xorriso";
 /// 子进程失败时保留多少行 stderr 作为摘要。
 pub(crate) const TAIL_LINES: usize = 10;
+/// 容量门禁的区段开销余量（ADR-0019）：待写入量（[`grow_print_size`] 的预演块数
+/// 或镜像大小）只算数据区，不含区段 lead-in/lead-out 与链接区。CD 每区段最大约
+/// 15 MB，DVD/BD 约 2 MB，取覆盖最坏情形的 16 MB。CLI 与 GUI 的写前容量门禁
+/// 共用这一个常量，避免两端口径漂移。
+pub const SESSION_OVERHEAD: u64 = 16 * 1024 * 1024;
 
 /// 一次镜像刻录任务的输入。
 #[derive(Debug, Clone, PartialEq, Eq)]

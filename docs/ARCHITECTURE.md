@@ -70,19 +70,23 @@ optiburn-cli        命令行：build-image / burn / probe
 ### optiburn-mmc
 
 接口：`MmcDevice` 上的读侧命令 `inquiry`、`test_unit_ready`、`read_disc_information`、
-`read_track_information`、`read_toc_session_info`、`read_capacity`、`read_blocks`，与写侧命令
-`get_configuration`、`set_write_parameters`、`reserve_track`、`write_blocks`、
-`synchronize_cache`、`close_session`。返回 `Inquiry` / `DiscInformation` /
-`TrackInfo` / `SessionInfo` / `MediaKind` 等结构。
+`read_track_information`、`read_toc_session_info`、`read_capacity`、`read_blocks`、
+`read_format_capacities` 与 `read_disc_capacity`，与写侧命令 `get_configuration`、
+`set_write_parameters`、`reserve_track`、`write_blocks`、`synchronize_cache`、
+`close_session`。返回 `Inquiry` / `DiscInformation` / `TrackInfo` / `SessionInfo` /
+`MediaKind` / `FormatCapacity` / `DiscCapacity` 等结构。`DiscCapacity` 是给上层的
+容量视图（总容量与可用容量），两个口径的来源与退回规则见 ADR-0019。
 
 隐藏：CDB 字节序与分配长度字段位置（`READ DISC INFORMATION` 的分配长度在 CDB 第
 7–8 字节）、响应里哪些位是盘片状态（字节 2 的低 2 位，同一字节还带 last-session 状态与
-erasable 标志）、尾部空格与 NUL 填充、短响应判定（用 `residual` 反推实际长度）、写参数页
-（Mode Page 5）的字段、Close Function 的位置、Profile 到写序列分组的映射。写侧 CDB
-与字段逐条对照 libburn，见 ADR-0017。
+erasable 标志）、尾部空格与 NUL 填充、短响应判定（用 `residual` 反推实际长度）、
+READ FORMAT CAPACITIES 的变长列表解析（按实际长度而不是满长判定，描述符类型位在
+字节 4 的低 2 位，实机验证见 ADR-0019）、写参数页（Mode Page 5）的字段、Close
+Function 的位置、Profile 到写序列分组的映射。写侧 CDB 与字段逐条对照 libburn，
+见 ADR-0017。
 
 没有的东西：增长模式（合并既有区段）要读出旧区段目录树并合并重写，留给原生增长
-模式那一步。
+模式那一步。CD 介质的 ATIP 读取仍未实现，容量不依赖它（见 ADR-0019）。
 
 ### optiburn-mastering
 
@@ -106,8 +110,10 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 原生引擎拒绝时会给出结构化的 `NativeGap`。进度都通过 `&mut dyn FnMut(f32)` 回调。
 另有读侧的五个能力 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
 `last_session_is_iso`，接在 `ReadBackend` 接缝上（`XorrisoRead` 子进程与 `NativeRead`
-原生 MMC 加 ISO 9660 解析，Windows 默认原生，见 ADR-0018），以及 `compare_trees`
-（按文件名与内容单向对比，见 ADR-0010）。
+原生 MMC 加 ISO 9660 解析，Windows 默认原生，见 ADR-0018），`grow_print_size`
+（增长模式预演，返回即将写入的新区段字节数，供写前容量门禁比较），以及
+`compare_trees`（按文件名与内容单向对比，见 ADR-0010）。容量门禁的区段开销余量
+共用常量 `SESSION_OVERHEAD`。
 
 隐藏：`xorriso -as cdrecord` 与增长模式（`-dev … -map <目录> / -commit`，见
 ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、stderr 上的百分比
@@ -124,9 +130,10 @@ ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换
 
 接口：四个子命令，其余全是实现细节。`burn` 与 `append` 先跑前置检查
 （`ensure_burnable`：挂载占用与末区段格式直接拒绝，等介质就绪，按盘片状态路由
-放行或拒绝，见 ADR-0006 与 ADR-0010）再进引擎。
-`probe` 在任何情况下都以 0 退出（没光驱不是错误）。真正失败（路径不存在、刻录退出
-码非零）退 1 并把原因写到 stderr。
+放行或拒绝，见 ADR-0006 与 ADR-0010），再过写前容量门禁（`ensure_fits`：待写入
+量加区段开销超过可用容量直接拒绝，读不到容量口径则跳过，见 ADR-0019），然后进
+引擎。`probe` 在任何情况下都以 0 退出（没光驱不是错误），行尾带盘片容量（读得到
+口径时）。真正失败（路径不存在、刻录退出码非零）退 1 并把原因写到 stderr。
 
 ## 路线图
 
@@ -139,8 +146,9 @@ ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换
 - v0.6 原生读盘（已落地，ADR-0018）：MMC 读块加 hadris-iso 的 ISO 9660 解析，
   接在 `ReadBackend` 接缝上，Windows 上读侧不再依赖外部程序。剩余：Rock Ridge 名
   的显式优先策略、UDF 盘读侧、Linux 真机验证。
-- v0.7：`probe` 增加介质容量（`READ CAPACITY` / `GET CONFIGURATION`），
-  `build-image` 据此在写盘前就拒绝放不下的镜像。
+- v0.7：介质容量已落地（可用容量取 `READ TRACK INFORMATION` 的剩余块数，
+  `READ FORMAT CAPACITIES` 兜底，`probe` 与 GUI 设备页/追加页显示，写盘前容量
+  门禁，见 ADR-0019）。ATIP 读取仍缺，容量不依赖它。
 - 后续：BD-R 伪覆盖、Windows 上的 IMAPI2 校验（仅校验，不接管写入，
   见 ADR-0005）。多区段追加已由 `append`（xorriso 增长模式）覆盖，见 ADR-0006。
 

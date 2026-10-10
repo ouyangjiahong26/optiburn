@@ -5,6 +5,7 @@ import { RefreshCw, X } from "lucide-react";
 import { discVolumeId, pasteFiles, pickFiles, speedOption, startAppend, startVerify } from "../api";
 import { useDeviceProbe, useGateNotice } from "../hooks";
 import { discStatusLabel } from "../discStatus";
+import { capacityLabel } from "../format";
 import { t } from "../i18n";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormRow } from "../components/FormRow";
@@ -262,6 +263,24 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
               {t("Refresh", "刷新")}
             </button>
           </div>
+          {devices !== null &&
+            (() => {
+              // 选中盘的容量提示：读得到口径才显示。数字来自盘片查询而不是挂载
+              // 视图，多区段盘不会被首区段的挂载容量误导。
+              const selected = devices.find((item) => item.path === device);
+              const label =
+                selected === undefined
+                  ? null
+                  : capacityLabel(selected.capacityBytes, selected.freeBytes);
+              if (label === null) {
+                return null;
+              }
+              return (
+                <p className="page-note">
+                  {t(`On the selected disc: ${label}.`, `所选盘片${label}。`)}
+                </p>
+              );
+            })()}
         </FormRow>
         <FormRow label={t("Volume label", "卷标")} htmlFor="append-volume">
           <input
