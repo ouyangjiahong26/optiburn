@@ -4,7 +4,7 @@
 
 [package]
 name = "optiburn-gui"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 license = "MIT"
 description = "OptiBurn 图形前端"
