@@ -739,9 +739,10 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
                 Lang::Zh => {
                     JobError::Input(format!("读取镜像 {} 大小失败：{e}", task.path.display()))
                 }
-                Lang::En => {
-                    JobError::Input(format!("Failed to stat the image {}: {e}", task.path.display()))
-                }
+                Lang::En => JobError::Input(format!(
+                    "Failed to stat the image {}: {e}",
+                    task.path.display()
+                )),
             })?
             .len();
         ensure_fits(task.device, needed)?;
@@ -970,7 +971,10 @@ mod tests {
             ),
             "The disc cannot hold this write: about 4.4 GB to write, 4.0 GB free on the disc. Remove some files or use another disc."
         );
-        assert_eq!(gate_of(&JobError::Capacity { needed: 1, free: 1 }), Some("capacity"));
+        assert_eq!(
+            gate_of(&JobError::Capacity { needed: 1, free: 1 }),
+            Some("capacity")
+        );
         assert_eq!(
             job_error_text(
                 Lang::Zh,
