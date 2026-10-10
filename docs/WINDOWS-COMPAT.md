@@ -97,6 +97,12 @@ ISO 区段后，Windows 只看最后一个区段，原有文件会从资源管�
 求用户确认，因为被跳过区段里的文件会从资源管理器的可见目录里消失。Linux 的 xorriso
 路径没有这条回退，这类盘在那边仍报末区段不可读。
 
+驱动器把下一轨道报成损坏时（`READ TRACK INFORMATION` 的 Damage 位置位），盘能不能
+再写要看 NWA_V 位：还置位就能增量写，清零则先尝试关闭损坏的轨道与区段（`optiburn
+repair --device <设备> [--force]`，Windows 侧按 libburn 的顺序自己发命令，Linux 侧
+交给 xorriso 的 `-close_damaged`）。修复被驱动器拒绝时这张盘就只能读：把数据读出来
+换一张盘，工具会明确这么提示，不会拿 0 当写入地址去试（真机实测，ADR-0022 补记）。
+
 制作端在 Linux 上有两条要留意的事实，均在本机实测（CD-R，HL-DT-ST GP70N）。
 
 - 内核把多区段盘的块设备容量停在第一区段，`blockdev --getsize64` 只覆盖第一区段

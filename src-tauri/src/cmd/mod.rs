@@ -104,6 +104,11 @@ enum JobError {
     DamagedSession {
         fallback: SessionFallback,
     },
+    /// 驱动器报出的可写地址无效，不能安全续写（ADR-0022）。
+    WriteAddressUnknown {
+        last_session_start: u32,
+        damaged: bool,
+    },
     /// 盘上最后一区段是 UDF，但用了本工具读不了的结构（VAT、元数据分区等）。
     UnsupportedUdf(String),
     Burn(BurnError),
@@ -322,6 +327,23 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
             Lang::En => {
                 format!("The appended content conflicts with what is on the disc: {detail}")
             }
+        },
+        JobError::WriteAddressUnknown {
+            last_session_start,
+            damaged,
+        } => match (lang, damaged) {
+            (Lang::Zh, true) => format!(
+                "驱动器把盘上的下一轨道报成损坏（末区段起点 {last_session_start}），关闭损坏轨道与区段的修复也失败：按 libburn 的口径这是“损坏、未关闭且不可写”。这张盘不能续写，请先读盘把数据取出来，再换一张空白盘。"
+            ),
+            (Lang::Zh, false) => format!(
+                "驱动器没有报出可写地址（NWA_V 清零，末区段起点 {last_session_start}）：盘上地址不可信，不能续写。请先读盘把数据取出来，再换一张空白盘。"
+            ),
+            (Lang::En, true) => format!(
+                "The drive reports the upcoming track as damaged (last session at LBA {last_session_start}) and closing the damaged track/session failed: by libburn's wording this disc is \"Damaged, not closed and not writable\". Read the data back and use a blank disc."
+            ),
+            (Lang::En, false) => format!(
+                "The drive did not report a next writable address (NWA_V clear, last session at LBA {last_session_start}): addresses on this disc cannot be trusted. Read the data back and use a blank disc."
+            ),
         },
         JobError::UnsupportedUdf(detail) => match lang {
             Lang::Zh => format!("这张盘的 UDF 结构本工具暂不支持读取：{detail}"),
@@ -930,6 +952,14 @@ fn job_error_of_burn(error: BurnError) -> JobError {
         BurnError::NotEnoughSpace { needed, free } => JobError::Capacity { needed, free },
         BurnError::GrowUnsupported(detail) => JobError::GrowUnsupported(detail),
         BurnError::GrowConflict(detail) => JobError::GrowConflict(detail),
+        BurnError::DamagedLastSession { fallback } => JobError::DamagedSession { fallback },
+        BurnError::WriteAddressUnknown {
+            last_session_start,
+            damaged,
+        } => JobError::WriteAddressUnknown {
+            last_session_start,
+            damaged,
+        },
         BurnError::UnsupportedUdf(detail) => JobError::UnsupportedUdf(detail),
         other => JobError::Burn(other),
     }

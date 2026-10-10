@@ -78,6 +78,15 @@ enum Command {
     },
     /// 列出光驱与其中的盘片状态
     Probe,
+    /// 尝试修复被中断刻录留下的损坏轨道与区段（等价于 xorriso 的 -close_damaged）
+    Repair {
+        /// 目标设备，例如 /dev/sr0 或 E:
+        #[arg(long)]
+        device: String,
+        /// 驱动器没有报损坏时也强制尝试
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -129,6 +138,7 @@ fn main() -> ExitCode {
             allow_damaged_last_session,
         ),
         Command::Probe => probe_command(),
+        Command::Repair { device, force } => repair_command(&device, force),
     };
 
     match outcome {
@@ -183,6 +193,12 @@ fn burn_error_text(error: &BurnError) -> String {
             format!("这张盘暂时没法用原生引擎追加：{detail}。Linux 上可以改用 xorriso 引擎。")
         }
         BurnError::GrowConflict(detail) => format!("追加内容与盘上内容有冲突：{detail}"),
+        // 引擎里的拒绝与门禁里的同源信息走同一份文案。
+        BurnError::DamagedLastSession { fallback } => damaged_session_text(*fallback, false),
+        BurnError::WriteAddressUnknown {
+            last_session_start,
+            damaged,
+        } => write_address_text(*last_session_start, *damaged),
         BurnError::UnsupportedUdf(detail) => {
             format!("这张盘的 UDF 结构本工具暂不支持读取：{detail}")
         }
@@ -343,6 +359,56 @@ fn ensure_burnable(
         println!("盘上已有 {} 个区段，将追加新区段。", info.sessions);
     }
     Ok(damaged)
+}
+
+/// 尝试修复损坏的轨道与区段，并把修复前后的状态报出来（对齐 xorriso 的
+/// `-close_damaged as_needed|force`，ADR-0022）。
+fn repair_command(device: &str, force: bool) -> Result<(), String> {
+    let outcome = optiburn_engine::repair(device, force).map_err(|e| burn_error_text(&e))?;
+    if !outcome.attempted {
+        println!("驱动器没有把下一轨道报成损坏，按 as_needed 不尝试修复。要强制尝试加 --force。");
+    } else if let Some(error) = &outcome.error {
+        println!("修复失败：{error}");
+    }
+    println!(
+        "驱动器报损坏：{}；已尝试修复：{}；修复后可写：{}",
+        yes_no(outcome.damaged),
+        yes_no(outcome.attempted),
+        yes_no(outcome.writable)
+    );
+    if let Some(address) = outcome.next_writable_address {
+        println!("下一个可写地址：{address}");
+    }
+    match outcome.free_bytes {
+        Some(bytes) => println!("可用容量：{}", bytes_text(bytes)),
+        None => println!("可用容量：驱动器没有报出（跳过容量门禁）"),
+    }
+    if !outcome.writable {
+        println!("这张盘在修复后仍不可写：先读盘把数据取出来，再换一张空白盘。");
+    }
+    Ok(())
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "是" } else { "否" }
+}
+
+/// 没有可用可写地址时的文案（libburn 的两种形态，ADR-0022）：
+/// Damage 置位且 NWA_V 清零是「损坏、未关闭且不可写」，只有 NWA_V 清零是「驱动器
+/// 没报地址」。两种都建议先把数据读出来。
+fn write_address_text(last_session_start: u32, damaged: bool) -> String {
+    let head = if damaged {
+        format!(
+            "驱动器把盘上的下一轨道报成损坏（末区段起点 {last_session_start}），关闭损坏轨道与区段的修复也失败（libburn 的口径：损坏、未关闭且不可写）。"
+        )
+    } else {
+        format!(
+            "驱动器没有报出可写地址（NWA_V 清零，末区段起点 {last_session_start}）：盘上地址不可信。"
+        )
+    };
+    format!(
+        "{head}这张盘不能续写：先读盘把数据取出来（图形前端的设备页支持整树抽取），再换一张空白盘。"
+    )
 }
 
 /// 末区段损坏、要回退到更早区段时的文案。`confirmed` 区分“要求确认”与“已确认，

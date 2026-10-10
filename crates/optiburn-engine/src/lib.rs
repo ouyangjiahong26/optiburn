@@ -50,6 +50,20 @@ pub fn grow(
     }
 }
 
+/// 尝试修复被中断刻录留下的损坏轨道与区段：按 libburn 的 `burn_disc_close_damaged`
+/// 的顺序（CD 与 DVD-R 族先下发写参数页再关区段，+R 族与 BD-R 关最后一条轨道），
+/// 等价于 xorriso 的 `-close_damaged as_needed`（`force` 对应 `force`）。驱动器报
+/// 损坏才动，`force` 时无条件尝试；命令与介质族不匹配时返回错误。
+///
+/// 只做修复与状态复核，不写数据；修复成功后 [`grow`] 就可能在这张盘上继续。
+pub fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnError> {
+    if cfg!(windows) {
+        native::repair(device, force)
+    } else {
+        xorriso::repair(device, force)
+    }
+}
+
 /// 追加会话的尺寸预演：返回即将写入的新区段字节数，供调用方的写前容量门禁
 /// （ADR-0019）。不写盘，但会读盘片状态与旧区段目录树。
 pub fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
@@ -121,6 +135,23 @@ pub struct SessionFallback {
     pub session_start: u32,
 }
 
+/// 修复尝试的结果（`optiburn repair`，对齐 xorriso 的 `-close_damaged`，ADR-0022）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepairOutcome {
+    /// 驱动器是否把下一轨道报成损坏（MMC 的 Damage 位）。
+    pub damaged: bool,
+    /// 是否真的执行了修复（未报损坏且没强制时不执行）。
+    pub attempted: bool,
+    /// 修复后是否拿到可用的可写地址。
+    pub writable: bool,
+    /// 修复后的下一个可写地址。
+    pub next_writable_address: Option<u32>,
+    /// 修复后的剩余可写字节数（驱动器报剩余块数时）。
+    pub free_bytes: Option<u64>,
+    /// 修复命令自身的报错（驱动器拒绝修复时），执行成功是 `None`。
+    pub error: Option<String>,
+}
+
 /// 盘上 ISO 9660 会话的可用状态，追加门禁据此分流（ADR-0022）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IsoSessionState {
@@ -163,9 +194,21 @@ pub enum BurnError {
     GrowUnsupported(String),
     /// 末区段损坏，回退到更早区段前需要用户确认（ADR-0022）。
     #[error(
-        "the last session is damaged: skipped {skipped} candidates, the readable session starts at LBA {session_start}"
+        "the last session is damaged: skipped {} candidates, the readable session starts at LBA {}",
+        .fallback.skipped,
+        .fallback.session_start
     )]
-    DamagedLastSession { skipped: usize, session_start: u32 },
+    DamagedLastSession { fallback: SessionFallback },
+    /// 盘上没有可用的可写地址（NWA_V 清零，或 NWA 不落在末区段之后），不能续写。
+    /// `damaged` 区分两种形态：驱动器认了损坏轨道（libburn 的 "Damaged, not closed
+    /// and not writable"）与单纯的地址不可用（"No Next-Writable-Address"）。
+    #[error(
+        "no usable next writable address (last session at LBA {last_session_start}, damaged {damaged})"
+    )]
+    WriteAddressUnknown {
+        last_session_start: u32,
+        damaged: bool,
+    },
     /// 追加的目录与盘上已有内容冲突（同名文件对目录、命名空间内重名）。
     #[error("growth content conflicts with the disc: {0}")]
     GrowConflict(String),

@@ -40,9 +40,11 @@
 
 ## 后果
 
-- 刻录中断的盘只要更早区段完好，就能读、能继续追加。被跳过区段里的文件从可见目录
-  消失（数据仍在盘上，但没有目录指向它们），因此追加前必须确认，两端文案都点名会
-  跳过什么。
+- 刻录中断的盘分两种结局。更早区段完好时读总能救回来（读侧回退到最新的可用会话，
+  被跳过区段里的文件从可见目录消失，数据仍在盘上但没有目录指向它们）。续写取决于
+  驱动器：NWA_V 仍置位时可以直接续写；Damage 置位时先按 libburn 的顺序尝试关闭损坏
+  的轨道与区段，成功后（NWA_V 恢复）才能继续；驱动器拒绝修复时这张盘就是
+  "Damaged, not closed and not writable"，只能读（真机实测，见补记）。
 - 读盘对这类盘是透明回退：列出的文件来自最新的可用区段，卷标同理，用户看到的树比
   物理上盘上的内容少。回退信息经 `iso_session_state` 报给调用方，浏览路径的提示
   记在 issue #40 的后续（本轮只做了追加门的确认）。
@@ -57,6 +59,51 @@
   夹具按 MMC 与内核的语义构造，真机证据待有这类盘时补。
 - `READ TOC Format 0` 的解析夹具取自实测的 9 区段 CD-R 响应：`data_len=82`、首末
   轨道 1 与 9、十条描述符（含 0xAA 导出区）、轨道起点 0 到 287070。
+
+## 补记：Linux 侧的参考实现与真机结论（2026-10-11）
+
+维护者指出这条路径在 Linux 上已有实现，源码级对齐（libburn 1.5.6 与 xorriso 1.5.6
+的源码与手册）得到两件东西：
+
+1. **判定**：libburn 的 `mmc_get_nwa`（`libburn/mmc.c`）读 `READ TRACK INFORMATION`
+   的响应字节 5 bit 5（MMC-5 6.27.3.7 的 Damage 位）与字节 7 bit 0（6.27.3.9 的
+   NWA_V），按四种组合分流：Damage 置位且 NWA_V 清零是 "Damaged, not closed and
+   not writable"，Damage 置位而 NWA_V 仍置位是 "Damaged and not closed"，只有 NWA_V
+   清零是 "No Next-Writable-Address"，都伴随 `next_track_damaged` 状态位；xorriso 把
+   它呈现在 `-toc` 的 Media status 行（"but next track is damaged"）与驱动器接管时的
+   警告里。
+2. **修复**：libburn 的 `burn_disc_close_damaged`（`libburn/write.c`）在驱动器报了
+   Damage 位时尝试关闭损坏的轨道与区段：CD 与 DVD-R 族先下发写参数页（CD 用 TAO，
+   DVD-R 用增量写）再关区段；DVD+R 与 BD-R 关最后一条轨道（按 `multi` 决定是否连
+   区段一起关）。xorriso 用它做 `-close_damaged as_needed|force`，`as_needed` 只在
+   驱动器报损坏时动，`force` 无条件尝试，手册明说“这可能适用于 CD-R、CD-RW、DVD-R、
+   DVD-RW、DVD+R、DVD+R DL 或 BD-R”。
+
+本仓库按同一口径实现（Windows 原生侧）：`TrackInfo` 补 `damaged` 与 `nwa_valid`
+两个位，写前路由只信 NWA_V 置位的地址字段，位清零时按 `close_damaged` 的顺序尝试
+修复再复读一次，仍拿不到地址就按 `BurnError::WriteAddressUnknown` 拒绝并区分两种
+文案；`optiburn repair --device <设备> [--force]` 是显式入口，等价于
+`-close_damaged as_needed|force`；Linux 侧直接调 xorriso 的 `-close_damaged`。
+
+CDB 编码也照 libburn 的 `mmc_close` 修正：`CLOSE TRACK/SESSION` 的功能码是字节 2 的
+位 2-0（`(session & 3) << 1 | !!track`，0b001 关轨道、0b010 关区段），轨道号是字节
+4-5 的 **16 位大端**字段。本仓库早期只往字节 4 填轨道号，实测被驱动器以 INVALID
+FIELD IN CDB 拒绝（等于在关轨道 0）。`READ TRACK INFORMATION` 的轨道号同理：早期把
+32 位写进字节 2-5，低字节落进保留的字节 5，实测任何轨道号都回地址全零的退化描述符；
+字节 1 也不能置位（同一台驱动器回 INVALID FIELD IN CDB）。改到「字节 1 置 0、轨道号
+在字节 2-3」后，同一张盘回出真实描述符：轨道 0xFF 给开放轨道，起始 301170。
+
+**真机结论（同一张被拔线的 CD-R，HL-DT-ST GP70N）**：所有修复路径都被驱动器拒绝——
+`WRITE(10)` 到开放轨道地址报 ILLEGAL REQUEST 加地址越界，`CLOSE TRACK/SESSION`
+功能码 2 与 6 报 SESSION FIXATION ERROR（ASC 0x72/ASCQ 0x03），功能码 0、1、3、4、5、7
+报 INVALID FIELD IN CDB，`REPAIR TRACK/SESSION`（0x58）整条命令不实现（INVALID
+COMMAND OPERATION CODE）。按 libburn 的口径这张盘就是 "Damaged, not closed and not
+writable"：**软件能把状态判准、能把修复尝试做全、不能把这份固件状态变回可写**。盘上
+已有数据仍完整可读（读侧回退到最新的可用会话，27 个条目、卷标 RECOVERY 未被破坏）。
+
+顺带更正一处早期结论：`READ TRACK INFORMATION` 的 NWA 字段与起始地址都不可单独当作
+写入位置——健康盘上两者相等，损坏盘上两者都可能为零或不可信，只能以 NWA_V 位为准
+（libburn 的取法），本仓库早期用「两个字段取大者」是一种推测，已废弃。
 
 ## 被否决的方案
 

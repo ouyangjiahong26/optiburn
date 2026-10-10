@@ -24,7 +24,10 @@ use optiburn_mmc::{
     wait_until_ready_for,
 };
 
-use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, NativeGap, SESSION_OVERHEAD};
+use crate::{
+    BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, NativeGap, RepairOutcome,
+    SESSION_OVERHEAD, SessionFallback,
+};
 
 /// 单条 WRITE(10) 携带的块数：32 块（64 KiB）。同步写、没有缓冲队列，
 /// 块小一点让取消与进度的粒度都细一些，慢速介质也来得及落盘。实测过这一档
@@ -114,9 +117,16 @@ pub(crate) fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
 pub(crate) fn grow_size_with_device(mmc: &mut MmcDevice, job: &GrowJob) -> Result<u64, BurnError> {
     wait_until_ready(mmc)?;
     let info = mmc.read_disc_information()?;
+    let profile = mmc.get_configuration()?;
+    let kind = profile
+        .media_kind()
+        .ok_or(BurnError::NativeGap(NativeGap::UnsupportedProfile(
+            profile.0,
+        )))?;
     let (start, old) = growth_start(
         mmc,
         info.status,
+        kind,
         &CancelToken::default(),
         job.allow_damaged_last_session,
     )?;
@@ -142,7 +152,13 @@ pub(crate) fn grow_with_device(
         .ok_or(BurnError::NativeGap(NativeGap::UnsupportedProfile(
             profile.0,
         )))?;
-    let (start, old) = growth_start(mmc, info.status, cancel, job.allow_damaged_last_session)?;
+    let (start, old) = growth_start(
+        mmc,
+        info.status,
+        kind,
+        cancel,
+        job.allow_damaged_last_session,
+    )?;
     let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
     guard_grow_capacity(mmc, plan.total_bytes())?;
 
@@ -161,6 +177,42 @@ pub(crate) fn grow_with_device(
     Ok(())
 }
 
+/// 修复主体：读损坏标志，按需关闭损坏的轨道与区段，再复核可写地址。
+/// 见 [`crate::repair`]。
+pub(crate) fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnError> {
+    let transport =
+        optiburn_transport::open(device).map_err(|e| BurnError::Mmc(MmcError::Transport(e)))?;
+    let mut mmc = MmcDevice::new(transport);
+    wait_until_ready(&mut mmc)?;
+    let info = mmc.read_disc_information()?;
+    let profile = mmc.get_configuration()?;
+    let Some(kind) = profile.media_kind() else {
+        return Err(BurnError::NativeGap(NativeGap::UnsupportedProfile(
+            profile.0,
+        )));
+    };
+    let track = mmc.read_track_information(LAST_TRACK)?;
+    let attempted = force || track.damaged;
+    let mut error = None;
+    if attempted {
+        // 失败不即时上抛：把驱动器的理由带在结果里，后面的复核照样做。
+        error = mmc
+            .close_damaged(kind, u16::from(info.last_session_last_track), true)
+            .err()
+            .map(|e| e.to_string());
+    }
+    let after = mmc.read_track_information(LAST_TRACK)?;
+    Ok(RepairOutcome {
+        damaged: track.damaged,
+        attempted,
+        writable: after.nwa_valid && after.next_writable_address > 0,
+        next_writable_address: after.nwa_valid.then_some(after.next_writable_address),
+        free_bytes: (after.free_blocks > 0)
+            .then(|| u64::from(after.free_blocks) * SECTOR_BYTES as u64),
+        error,
+    })
+}
+
 /// 增长模式的写前路由：返回新区段的起点与旧区段模型。空盘从 0 起写第一区段；
 /// 可追加盘接在 NWA（下一个可写地址）后面写，旧区段则从 READ TOC Format 1 报的
 /// 末区段起点读（NWA 指向旧区段之后的位置，不能用来定位旧区段的内容）；封口盘与
@@ -169,18 +221,21 @@ pub(crate) fn grow_with_device(
 fn growth_start(
     mmc: &mut MmcDevice,
     status: DiscStatus,
+    kind: MediaKind,
     cancel: &CancelToken,
     allow_damaged_last_session: bool,
 ) -> Result<(u32, Option<crate::grow::OldSession>), BurnError> {
     match status {
         DiscStatus::Empty => Ok((0, None)),
         DiscStatus::Appendable => {
-            let start = mmc
-                .read_track_information(LAST_TRACK)?
-                .next_writable_address;
             let Some(session) = mmc.read_toc_session_info()? else {
                 return Err(BurnError::NoIsoSession);
             };
+            // 修复与关轨道都要末条轨道的编号：READ DISC INFORMATION 的字节 6 是
+            // 末区段里最后一条轨道（含 NWA 处的隐形轨道）。
+            let info = mmc.read_disc_information()?;
+            let last_track = u16::from(info.last_session_last_track);
+            let start = grow_write_address(mmc, kind, session.last_session_start, last_track)?;
             let old = read_graft_source(
                 mmc,
                 session.last_session_start,
@@ -192,6 +247,35 @@ fn growth_start(
         DiscStatus::Finalized => Err(BurnError::NativeGap(NativeGap::FinalizedDisc)),
         DiscStatus::Other(_) => Err(BurnError::NativeGap(NativeGap::GrowthOnRewritable)),
     }
+}
+
+/// 新区段的写入位置，按 libburn 的 `mmc_get_nwa` 口径：只看 NWA 字段，且要求
+/// NWA_V（字节 7 的 bit 0）置位。位清零说明地址不可信（中断刻录留下的损坏轨道），
+/// 此时按 `burn_disc_close_damaged` 的顺序尝试关掉损坏的轨道与区段再重读一次；
+/// 仍拿不到有效地址就拒绝，文案区分“损坏且不可写”与“驱动器没报地址”两种。
+fn grow_write_address(
+    mmc: &mut MmcDevice,
+    kind: MediaKind,
+    last_session_start: u32,
+    last_track: u16,
+) -> Result<u32, BurnError> {
+    let track = mmc.read_track_information(LAST_TRACK)?;
+    if track.nwa_valid && track.next_writable_address > last_session_start {
+        return Ok(track.next_writable_address);
+    }
+    // 修复尝试：Damage 位置位说明驱动器自己认了损坏轨道，交给它关（as_needed）。
+    let damaged = track.damaged;
+    if damaged {
+        let _ = mmc.close_damaged(kind, last_track, true);
+        let repaired = mmc.read_track_information(LAST_TRACK)?;
+        if repaired.nwa_valid && repaired.next_writable_address > last_session_start {
+            return Ok(repaired.next_writable_address);
+        }
+    }
+    Err(BurnError::WriteAddressUnknown {
+        last_session_start,
+        damaged,
+    })
 }
 
 /// 读出要嫁接的旧区段。末区段读得出来就是它；读不出来时按候选列表（轨道起点加
@@ -216,18 +300,21 @@ fn read_graft_source(
         Ok(old) => return Ok(old),
         Err(error) => error,
     };
-    for (index, base) in crate::disc_read::session_candidates(mmc)?
-        .into_iter()
-        .enumerate()
-    {
+    let candidates = crate::disc_read::session_candidates(mmc)?;
+    let total = candidates.len();
+    for (index, base) in candidates.into_iter().enumerate() {
         if base == last_session_start {
             continue;
         }
         if let Ok(old) = read_session(mmc, base) {
             if !allow_damaged_last_session {
                 return Err(BurnError::DamagedLastSession {
-                    skipped: index,
-                    session_start: base,
+                    fallback: SessionFallback {
+                        skipped: index,
+                        ordinal: total - index,
+                        candidates: total,
+                        session_start: base,
+                    },
                 });
             }
             return Ok(old);

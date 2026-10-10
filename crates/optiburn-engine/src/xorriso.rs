@@ -10,7 +10,10 @@ use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
-use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, TAIL_LINES, XORRISO};
+use crate::readback::run_output;
+use crate::{
+    BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, RepairOutcome, TAIL_LINES, XORRISO,
+};
 
 /// 用 `xorriso -as cdrecord` 写盘。
 #[derive(Debug, Default, Clone, Copy)]
@@ -57,6 +60,45 @@ pub(crate) fn grow(
 /// 预演在一次性介质上不写入（写入只发生在 `-commit`）；可覆写介质（含 xorriso
 /// 的 stdio 文件目标）在退出时会自动提交，那是目标介质的行为，与 `-print_size`
 /// 无关（实测）。
+/// Linux 侧的修复：交给 xorriso 的 `-close_damaged`（libburn 的
+/// `burn_disc_close_damaged`），语义与 Windows 侧一致：驱动器报介质损坏时尝试关闭
+/// 未完成的轨道与区段，`force` 无条件尝试。修复后用 `-toc` 复核状态。
+pub(crate) fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnError> {
+    let needed = if force { "force" } else { "as_needed" };
+    let (_, stderr) = run_output(XORRISO, &repair_args(device, needed))?;
+    // xorriso 把“下一轨道损坏”写在 `-toc` 的 Media status 行上（“but next track is
+    // damaged”），修复结果与它一并从输出里取。
+    let (stdout, _) = run_output(XORRISO, &toc_args(device))?;
+    let damaged = stdout.contains("next track is damaged");
+    let scratch = format!("{stdout}\n{stderr}");
+    Ok(RepairOutcome {
+        damaged,
+        attempted: true,
+        writable: !scratch.contains("not writable"),
+        next_writable_address: None,
+        free_bytes: None,
+        error: scratch
+            .contains("Failed to close")
+            .then(|| "xorriso could not close the damaged track/session".to_string()),
+    })
+}
+
+/// 组装 `-close_damaged` 的参数表。
+fn repair_args(device: &str, needed: &str) -> Vec<OsString> {
+    ["-dev", device, "-close_damaged", needed, "-indev", device]
+        .iter()
+        .map(OsString::from)
+        .collect()
+}
+
+/// 组装只读的 `-toc` 参数表。
+fn toc_args(device: &str) -> Vec<OsString> {
+    ["-indev", device, "-toc"]
+        .iter()
+        .map(OsString::from)
+        .collect()
+}
+
 pub(crate) fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
     let (stdout, _) = crate::readback::run_output(XORRISO, &print_size_args(job))?;
     parse_print_size(&stdout)

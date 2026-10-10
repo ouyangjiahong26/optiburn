@@ -15,6 +15,12 @@ struct ScriptedDrive {
     free_blocks: u32,
     /// READ TRACK INFORMATION 报的下一个可写地址（新区段起点）。
     nwa: u32,
+    /// READ TRACK INFORMATION 报的开放轨道起始地址；给 None 时与 `nwa` 相同。
+    open_track_start: Option<u32>,
+    /// 报 Damage 位置位（驱动器认了损坏轨道）。
+    damaged: bool,
+    /// 报 NWA_V 置位（地址字段可信）。中断刻录的实机形态是置 Damage、清 NWA_V。
+    nwa_valid: bool,
     /// READ TOC Format 1 报的末区段起点（旧区段内容的位置）。
     last_session_start: u32,
     /// READ TOC Format 0 报的轨道（编号与起点），候选枚举用它。
@@ -34,6 +40,9 @@ impl ScriptedDrive {
             capacity: Some(0x10_0000),
             free_blocks: 100_000,
             nwa: 0x2000,
+            open_track_start: None,
+            damaged: false,
+            nwa_valid: true,
             last_session_start: 0x1000,
             tracks: vec![(1, 0), (2, 0x1000)],
             disc: Vec::new(),
@@ -82,9 +91,14 @@ impl ScsiTransport for ScriptedDrive {
                 }
             },
             0x52 => {
-                // READ TRACK INFORMATION：起始地址 8-11，NWA 12-15，剩余块数 16-19。
+                // READ TRACK INFORMATION：起始地址 8-11，NWA 12-15，剩余块数 16-19，
+                // Damage 位在字节 5 的 bit 5、NWA_V 在字节 7 的 bit 0（libburn 的
+                // `mmc_get_nwa` 按这两位移流）。默认报健康：地址有效、没有损坏。
                 if data.len() >= 20 {
-                    data[8..12].copy_from_slice(&self.nwa.to_be_bytes());
+                    let start = self.open_track_start.unwrap_or(self.nwa);
+                    data[5] = if self.damaged { 0x20 } else { 0x00 };
+                    data[7] = u8::from(self.nwa_valid);
+                    data[8..12].copy_from_slice(&start.to_be_bytes());
                     data[12..16].copy_from_slice(&self.nwa.to_be_bytes());
                     data[16..20].copy_from_slice(&self.free_blocks.to_be_bytes());
                 }
@@ -494,9 +508,42 @@ fn grow_refuses_a_damaged_last_session_without_confirmation() {
     assert!(
         matches!(
             error,
-            BurnError::DamagedLastSession {
-                skipped: 1,
-                session_start: 0x1000
+            BurnError::DamagedLastSession { fallback }
+                if fallback.skipped == 1
+                    && fallback.ordinal == 1
+                    && fallback.candidates == 2
+                    && fallback.session_start == 0x1000
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn grow_refuses_a_missing_write_address_without_confirmation() {
+    // 中断刻录之后驱动器可能报不出 NWA（实测地址字段全零）：不许拿 0 当起点写，
+    // 推得出来的位置也要用户确认。
+    let tmp = TempDir::new("grow-no-nwa");
+    std::fs::write(tmp.path().join("a.txt"), b"hello").expect("write sample");
+    let mut drive = ScriptedDrive::new(CurrentProfile::CD_R, 0b01);
+    drive.nwa = 0;
+    drive.nwa_valid = false;
+    drive.last_session_start = 0x1000;
+    drive.tracks = vec![(1, 0), (2, 0x1000), (0xAA, 0x1100)];
+
+    let mut mmc = MmcDevice::new(Box::new(drive));
+    let error = grow_with_device(
+        &mut mmc,
+        &grow_job(tmp.path()),
+        &mut |_| {},
+        &CancelToken::default(),
+    )
+    .expect_err("报不出 NWA 时不该硬写");
+    assert!(
+        matches!(
+            error,
+            BurnError::WriteAddressUnknown {
+                last_session_start: 0x1000,
+                damaged: false
             }
         ),
         "{error:?}"
@@ -541,6 +588,57 @@ fn grow_grafts_onto_the_previous_session_when_confirmed() {
     assert_eq!(
         names(&session.root),
         vec!["new.txt".to_string(), "old.txt".to_string()]
+    );
+}
+
+#[test]
+fn grow_refuses_when_nwa_is_invalid_even_if_the_start_address_looks_usable() {
+    // 实机形态（2026-10-11）：驱动器报 Damage 位置位、NWA_V 清零，起始地址字段仍
+    // 给一个看着合理的值（301170）。libburn 的 mmc_get_nwa 不信这个值，我们同样
+    // 不用它当起点。
+    let tmp = TempDir::new("grow-open-track");
+    let old_src = tmp.path().join("old");
+    std::fs::create_dir_all(&old_src).expect("create old src");
+    std::fs::write(old_src.join("old.txt"), b"old content").expect("write old file");
+    let old_plan = crate::grow::plan_session(None, &old_src, "OLD".into(), 0x1000)
+        .expect("plan the old session");
+    let mut old_image = Vec::new();
+    old_plan
+        .write_image(&mut old_image, &CancelToken::default())
+        .expect("write the old session");
+    let mut disc = vec![0u8; 0x3000 * SECTOR_BYTES];
+    disc[0x1000 * SECTOR_BYTES..0x1000 * SECTOR_BYTES + old_image.len()]
+        .copy_from_slice(&old_image);
+
+    let new_src = tmp.path().join("new");
+    std::fs::create_dir_all(&new_src).expect("create new src");
+    std::fs::write(new_src.join("new.txt"), b"new content").expect("write new file");
+
+    let mut drive = ScriptedDrive::new(CurrentProfile::CD_R, 0b01);
+    drive.disc = disc;
+    drive.last_session_start = 0x1000;
+    drive.tracks = vec![(1, 0x1000), (2, 0x1200)];
+    drive.nwa = 0;
+    drive.open_track_start = Some(0x1200);
+    drive.damaged = true;
+    drive.nwa_valid = false;
+    let mut mmc = MmcDevice::new(Box::new(drive));
+    let error = grow_with_device(
+        &mut mmc,
+        &grow_job(&new_src),
+        &mut |_| {},
+        &CancelToken::default(),
+    )
+    .expect_err("NWA_V 清零时不认起始地址");
+    assert!(
+        matches!(
+            error,
+            BurnError::WriteAddressUnknown {
+                last_session_start: 0x1000,
+                damaged: true
+            }
+        ),
+        "{error:?}"
     );
 }
 
