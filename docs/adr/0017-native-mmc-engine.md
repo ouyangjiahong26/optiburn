@@ -22,7 +22,7 @@ GP70N）可做真机验证，ADR-0008 当年“本机没有可验证环境”的
      关区段。
    - DVD-R / DVD-RW 顺序记录 / DVD-R DL：MODE SELECT 设增量写（BUFE、LS_V、固定包、
      轨道模式 5、link 与 packet size 16），写，关区段。
-   - DVD+R[W]、BD-R：不设写参数，写完关区段；DVD-RAM、BD-RE 是随机可写介质，
+   - DVD+R[W]、BD-R：不设写参数，写完关区段。DVD-RAM、BD-RE 是随机可写介质，
      不设写参数，也没有区段可关。
    - 其余 Profile（含受限覆盖 DVD-RW）拒绝并给出明确文案，不猜写序列。
    - 起点：空盘从 LBA 0，可追加盘从 NWA（READ TRACK INFORMATION 取），随机可写
@@ -50,7 +50,9 @@ GP70N）可做真机验证，ADR-0008 当年“本机没有可验证环境”的
   块数（当前固定 32 块，只有 CD-R 上的一档实测）。这两项都要有对应介质才能验证。
 - 写入被中止时盘上留下未完成的轨道，与 xorriso 被中止时相同，走同一套“已中止”文案。
   实测这种未关轨道的盘后续仍可继续写（NWA 跳过它），驱动器不计入区段数。
-- MODE SELECT 的 multi 位承接“不封盘”默认，与 `--close-disc` 同义。
+- CD 与 DVD-R 族的封盘由 MODE SELECT 的 multi 位承接，与 `--close-disc` 同义。+R 族与
+  BD-R 不发参数页，该族的封盘（libburn 用不同的 Close Function 收尾）未实现，
+  `--close-disc` 的两个取值目前是同一条命令序列，记为缺口。
 - 读侧分块上限（32 块）与 CD 容量预检的跳过原因是平台与介质事实，都写在代码注释里，
   将来传输层若暴露单次传输上限，可以把它从 mmc 挪到 transport。
 

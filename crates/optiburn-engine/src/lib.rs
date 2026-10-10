@@ -2,7 +2,8 @@
 //!
 //! 两种引擎接在同一个 [`BurnEngine`] 接缝上：
 //!
-//! - [`NativeEngine`]：自己发 MMC 命令（RESERVE TRACK / WRITE(10) / CLOSE TRACK），
+//! - [`NativeEngine`]：自己发 MMC 命令（MODE SELECT / WRITE(10) / SYNCHRONIZE CACHE /
+//!   CLOSE TRACK/SESSION），
 //!   不依赖外部程序，Windows 上唯一可用的刻录路径（ADR-0017）。
 //! - [`XorrisoEngine`]：调用 `xorriso -as cdrecord` 子进程（ADR-0004）。
 //!

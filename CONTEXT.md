@@ -30,7 +30,7 @@
 | MMC（MultiMedia Commands） | 光盘驱动器命令集标准，定义了 `INQUIRY`、`READ DISC INFORMATION`、`WRITE(10)` 等命令与响应格式。对应 crate `optiburn-mmc`。 | 光驱命令、SCSI 多媒体命令 |
 | 介质 Profile（DiscProfile） | 目标介质类型：CD、DVD、BD。决定写哪几个文件系统。对应枚举 `DiscProfile`。 | 介质类型、盘类型 |
 | LBA / MSF | 两种扇区定位方式：LBA 是从 0 开始的线性扇区号，MSF 是分:秒:帧。CD 族的 lead-in/lead-out 地址以 MSF 表示，其它介质用 LBA。 | 扇区号、地址 |
-| 引擎（Engine） | 把镜像写到盘上的具体实现。对应 trait `BurnEngine`。v0 只有 `XorrisoEngine`。 | 后端、驱动、刻录器 |
+| 引擎（Engine） | 把镜像写到盘上的具体实现。对应 trait `BurnEngine`。现有 `NativeEngine`（原生 MMC 命令，ADR-0017）与 `XorrisoEngine`（子进程）。 | 后端、驱动、刻录器 |
 | 传输（Transport） | 把 CDB 交给设备并取回结果的通道。对应 trait `ScsiTransport`。 | 通道、驱动层、SCSI 层 |
 | 设备路径（device） | 光驱的寻址字符串：Linux `/dev/sr0`，Windows `E:`（内部规范成 `\\.\E:`）。 | 盘符、设备名 |
 | 倍速（speed） | 写入速度相对基准（CD 150 KB/s、DVD 1.35 MB/s、BD 4.5 MB/s 的整数倍）。缺省时交给驱动器自选。 | 速度、速率 |

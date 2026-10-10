@@ -19,7 +19,7 @@ Windows 能读的镜像，再把镜像写到盘上。本页说明各 crate 的�
 optiburn-cli              命令行：build-image / burn / append / probe
   optiburn-mastering        目录做成镜像文件（ISO 9660 + Joliet + UDF Bridge）
     hadris-cd               上游镜像写入器（MIT，纯 Rust）
-  optiburn-engine           镜像写到盘（v0：xorriso 子进程）
+  optiburn-engine           镜像写到盘（xorriso 子进程与原生 MMC 引擎）
   optiburn-mmc              MMC 命令编解码（v0：读侧三条）
     optiburn-transport      SCSI 传输（Linux SG_IO / Windows SPTI）
 ```
@@ -45,7 +45,7 @@ optiburn-cli              命令行：build-image / burn / append / probe
   build_image 生成 .iso（ISO 9660 + Joliet + UDF Bridge）
   .iso 用于归档与校验，镜像本身与盘上字节一一对应
   .iso 交给 BurnJob，由 BurnEngine 写进光驱
-    v0 用 xorriso -as cdrecord，v0.5 换原生 MMC 写入
+    0.1.5 之前用 xorriso -as cdrecord，原生 MMC 写入已落地（ADR-0017）
 
 盘
   probe 读出设备标识与盘片状态（SG_IO / SPTI 加 READ DISC INFORMATION）

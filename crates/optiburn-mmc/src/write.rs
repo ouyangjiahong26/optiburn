@@ -1,4 +1,7 @@
-//! 写侧 MMC 命令：CDB 组装与写参数页（原生 MMC 引擎用，见 ADR-0017）。
+//! 写盘相关的 MMC 命令：CDB 组装与写参数页（原生 MMC 引擎用，见 ADR-0017）。
+//! 主体是写侧（MODE SELECT、RESERVE TRACK、WRITE(10)、SYNCHRONIZE CACHE、CLOSE），
+//! 读侧几条（GET CONFIGURATION、READ CAPACITY、READ TRACK INFORMATION、READ(10)）
+//! 与它们成对，同放一处。
 //!
 //! 字节布局对齐 libburn（xorriso 的写后端）的同类命令，字段含义以 MMC-5 为准。
 //! 每条 CDB 与写参数页的关键字节都有黄金断言，防止改参数时静默漂移。

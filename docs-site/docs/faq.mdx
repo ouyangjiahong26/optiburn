@@ -16,8 +16,7 @@ slug: /faq
 
 ## 提示命令找不到 xorriso
 
-0.1.5 的写盘引擎是 `xorriso` 子进程。Debian/Ubuntu 用 `sudo apt install xorriso`，
-MSYS2 用 `pacman -S xorriso`。图形界面与命令行共用这个依赖。
+CLI 的默认刻录引擎、图形前端的盘上浏览与复制用 `xorriso`。Debian/Ubuntu 用 `sudo apt install xorriso`。Windows 上没有可用的构建（MSYS2 的包编译时未链 libcdio，碰不到光驱），Windows 上刻录请用原生引擎（图形前端默认，CLI 加 `--engine native`）。
 
 ## 写入被拒绝，提示盘被挂载
 

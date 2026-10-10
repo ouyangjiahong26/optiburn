@@ -43,6 +43,7 @@ Windows 只发 NSIS 安装包）。GUI 的能力与 CLI 等同：四个子命令
 本仓库传参的方式（`optiburn-mastering` 的回读对拍在 Windows 上因此跑不动）。
 
 结论：本文“缺工具时报可行动的错误”在当前 Windows 上无路可给，没有可用的外部引擎。
-Windows 的刻录与读盘要等原生 MMC 引擎（v0.5）与原生读盘能力。缺工具文案不再给出
+Windows 的刻录与读盘要等原生 MMC 引擎（v0.5）与原生读盘能力（当天稍后写侧已由
+ADR-0017 补上，读侧仍待原生读盘）。缺工具文案不再给出
 Windows 安装指引。若将来要捆绑外部引擎，必须是链接 libcdio 的原生 Windows 构建，
 MSYS2 的包不行。README 的依赖说明与 ARCHITECTURE 的平台表已同步。

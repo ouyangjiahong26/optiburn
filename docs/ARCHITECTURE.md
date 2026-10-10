@@ -15,20 +15,22 @@ flowchart TD
     MAS --> HADRIS[hadris-cd]
     MMC --> TR[optiburn-transport]
     ENG --> XORRISO[xorriso 子进程]
+    ENG --> MMC
+    ENG --> TR
     TR --> SGIO[Linux: SG_IO /dev/sr*]
     TR --> SPTI[Windows: SPTI DeviceIoControl]
 ```
 
 依赖方向只有一条，自上而下：`cli` 依赖 `engine`、`mastering`、`mmc`，并直接依赖
-`transport`（probe 用它打开与枚举设备）。`mastering` 依赖 `hadris-cd`，`mmc` 依赖
-`transport`。没有反向依赖，也没有 crate 之间互相认识对方的实现。
+`transport`（probe 用它打开与枚举设备）。`engine` 依赖 `mmc` 与 `transport`（原生引擎用
+前者发命令、用后者打开设备），`mastering` 依赖 `hadris-cd`，`mmc` 依赖 `transport`。没有反向依赖，也没有 crate 之间互相认识对方的实现。
 
 ```
 optiburn-cli        命令行：build-image / burn / probe
 ├── optiburn-mastering   目录做成镜像文件（ISO 9660 + Joliet + UDF Bridge）
 │   └── hadris-cd        上游镜像写入器（MIT，纯 Rust）
-├── optiburn-engine      镜像写到盘（v0：xorriso 子进程）
-└── optiburn-mmc         MMC 命令编解码（v0：读侧）
+├── optiburn-engine      镜像写到盘（xorriso 子进程与原生 MMC 引擎）
+└── optiburn-mmc         MMC 命令编解码（读侧与写侧）
     └── optiburn-transport   SCSI 传输（Linux SG_IO / Windows SPTI）
 ```
 
@@ -99,7 +101,7 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 
 接口：两种引擎接在同一个 `BurnEngine::{name, burn}` 接缝上（`XorrisoEngine` 子进程、
 `NativeEngine` 自己发 MMC 命令，见 ADR-0017），输入 `BurnJob`：镜像、设备、倍速、是否
-多区段；追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘）；
+多区段。追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘）。
 原生引擎拒绝时会给出结构化的 `NativeGap`。进度都通过 `&mut dyn FnMut(f32)` 回调。
 另有回读侧的小工具 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
 `last_session_is_iso` 与 `compare_trees`（按文件名与内容单向对比，见 ADR-0010）。
@@ -111,7 +113,7 @@ ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换
 原生写序列（起点取 NWA、写参数页、关区段）与块与块之间的取消检查。
 
 已知不足：xorriso 引擎的进度只是粗粒度提示，cdrecord 风格输出里缓冲区/fifo 的百分比
-与写入百分比同格式，且成功时统一补发 1.0；原生引擎的进度按已写块数算，是精确的。
+与写入百分比同格式，且成功时统一补发 1.0。原生引擎的进度按已写块数算，是精确的。
 原生引擎的缺口（增长模式、倍速、写失败重试）见 ADR-0017。
 
 ### optiburn-cli
