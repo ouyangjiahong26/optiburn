@@ -128,6 +128,17 @@ fn default_output(src: &Path) -> PathBuf {
     }
 }
 
+/// 用户填写的输出路径没有扩展名时补 `.iso`：手工输入与保存对话框（Linux 端不自动
+/// 补后缀）都可能给出无后缀文件名，落盘后系统无法识别镜像格式。已有扩展名（含
+/// `.img` 等别名与大小写变体）尊重输入。
+fn ensure_iso_extension(path: PathBuf) -> PathBuf {
+    let mut path = path;
+    if path.extension().is_none() {
+        path.set_extension("iso");
+    }
+    path
+}
+
 /// 任务失败的文案，按界面语言输出中英文。与 CLI 同源的说法按 GUI 调整（“追加页”而非命令行）。
 fn job_error_text(lang: Lang, error: &JobError) -> String {
     match error {
@@ -372,7 +383,7 @@ pub async fn start_build_image(
 ) -> Result<ImageInfoDto, String> {
     let profile = profile_from_str(lang(), &profile)?;
     let output = match output.as_deref().filter(|o| !o.is_empty()) {
-        Some(path) => PathBuf::from(path),
+        Some(path) => ensure_iso_extension(PathBuf::from(path)),
         None => default_output(Path::new(&src)),
     };
     begin_job(&state)?;
@@ -788,6 +799,27 @@ mod tests {
         assert_eq!(
             default_output(Path::new("/")),
             PathBuf::from("optiburn.iso")
+        );
+    }
+
+    #[test]
+    fn extensionless_output_gains_iso_suffix() {
+        assert_eq!(
+            ensure_iso_extension(PathBuf::from("/tmp/photos")),
+            PathBuf::from("/tmp/photos.iso")
+        );
+        assert_eq!(
+            ensure_iso_extension(PathBuf::from(r"C:\isos\photos")),
+            PathBuf::from(r"C:\isos\photos.iso")
+        );
+        // 已有扩展名（别名与大小写变体）不改写。
+        assert_eq!(
+            ensure_iso_extension(PathBuf::from("/tmp/photos.img")),
+            PathBuf::from("/tmp/photos.img")
+        );
+        assert_eq!(
+            ensure_iso_extension(PathBuf::from("/tmp/photos.ISO")),
+            PathBuf::from("/tmp/photos.ISO")
         );
     }
 
