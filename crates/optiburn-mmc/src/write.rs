@@ -186,7 +186,8 @@ pub struct TrackInfo {
     pub start_lba: u32,
     /// 下一个可写地址（响应字节 12-15）。追加刻录的起点在它后面（中间是链接块）。
     pub next_writable_address: u32,
-    /// 轨道大小（响应字节 24-27，2048 字节块计）。诊断与末区段起点兜底用。
+    /// 轨道大小（响应字节 24-27，2048 字节块计）。诊断用（打印轨道布局核对
+    /// 解析偏移时读的就是它）。
     pub track_blocks: u32,
 }
 
@@ -217,25 +218,29 @@ pub fn parse_track_information(response: &[u8]) -> Option<TrackInfo> {
 }
 
 /// READ TOC Format 1（会话信息）的响应长度：4 字节头加一条 8 字节描述符。
-/// 盘上有几个已完结区段就回几条描述符，末区段的信息在最后一条里，只取
-/// 12 字节就够（头 4 字节加末条描述符的前 8 字节），多分配的空间是零。
+/// Format 1 只回一条描述符（末个可读区段的，MMC-5 6.26.3.3），不是每个已完结
+/// 区段一条，8 区段的盘实测数据长度仍是 10。取 12 字节覆盖头加整条描述符。
 pub const SESSION_INFO_LEN: usize = 12;
 
-/// 会话信息（READ TOC Format 1 最后一条会话描述符的关键字段）。
+/// 会话信息（READ TOC Format 1 那条会话描述符的关键字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionInfo {
     /// 首个已完结区段的编号（响应字节 2）。
     pub first_session: u8,
-    /// 末个已完结区段的编号（响应字节 3）。
+    /// 末个已完结区段的编号（响应字节 3）。可追加盘上它比 READ DISC
+    /// INFORMATION 的区段数少 1（开放区段不计入），两个口径不要对齐。
     pub last_session: u8,
-    /// 末区段的起始地址（末条描述符的字节 4-7）。CD 与 DVD/BD 都填 LBA
-    /// （MMC-5 6.26.3.2：CD 用 MSF 是 Format 0 的规则，Format 1 一律 LBA）。
+    /// 末区段的起始地址（描述符的字节 4-7）。Format 1 一律 LBA，但 MMC-5
+    /// 6.26.3.3.3 提醒非 CD 介质可能回 track 1、LBA 0 的无用假值，libburn 因此
+    /// 先查 TOC 再兜底。本机 USB 光驱对 CD-R 回真值（实测），DVD/BD 驱动器若照
+    /// 规范回假值，读侧会静默定位到首个区段，记为待验证缺口。
     pub last_session_start: u32,
 }
 
 /// READ TOC/PMA/ATIP（0x43）Format 1（会话信息）。CDB 对齐 libburn 的
-/// `MMC_GET_MSINFO`，alloc length 给 12 字节（libburn 给 16，实测 12 字节
-/// 驱动器只回 10 字节，末条描述符照常完整）。
+/// `MMC_GET_MSINFO` 同一布局（format 1、MSF 位 0），alloc length 给 12 字节
+/// （libburn 的 `mmc_read_multi_session_c1` 把模板里的 16 覆写成 0x000C，
+/// 实测 12 字节申请下驱动器只回 10 字节，描述符照常完整）。
 pub fn toc_session_info_cdb() -> [u8; 10] {
     [
         0x43,

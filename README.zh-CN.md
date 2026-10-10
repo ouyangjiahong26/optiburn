@@ -36,7 +36,7 @@ cargo build --release
 ```
 
 - Rust 1.98.1（由 `rust-toolchain.toml` 固定）。
-- `xorriso` 在 `PATH` 上：CLI 的默认刻录引擎（Linux）与图形前端的盘上浏览、复制、回读校验都用它，它也是测试里的参考实现。Debian/Ubuntu 用 `sudo apt install xorriso`。Windows 上没有可用的构建：MSYS2 的包（`pacman -S xorriso`）编译时未链 libcdio，只能操作镜像文件，碰不到光驱（2026-10-10 实测，证据见 ADR-0008 补记）。Windows 上刻录不需要外部工具：图形前端与 `--engine native` 走原生 MMC 引擎（ADR-0017）。
+- `xorriso` 在 `PATH` 上：CLI 的默认刻录引擎（Linux）与图形前端在 Linux 上的盘上浏览、复制、回读校验、增长模式都用它，它也是测试里的参考实现。Debian/Ubuntu 用 `sudo apt install xorriso`。Windows 上没有可用的构建：MSYS2 的包（`pacman -S xorriso`）编译时未链 libcdio，只能操作镜像文件，碰不到光驱（2026-10-10 实测，证据见 ADR-0008 补记）。Windows 上刻录与读盘都不需要外部工具：图形前端与 `--engine native` 走原生 MMC 引擎（ADR-0017），读侧走原生解析（ADR-0018）。
 - 图形前端：Windows 下载 `OptiBurn_0.1.5_x64-setup.exe`（或 arm64 版），Linux 下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。刻录与读盘在 Windows 上都走原生路径（不需要外部工具），Linux 上走 `xorriso`（见上）。无网的 Windows 机器改用 x64 安装包的 `-offline` 版本：内嵌 WebView2 运行时（安装器约 210 MB），安装全程不需要联网。缺补丁的 Windows 7 上 WebView2 安装器会报 0x8007007F，先从 [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) 离线装 KB2533623 与 KB3063858 再安装（详见 ADR-0016 补记）。
 - 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
 

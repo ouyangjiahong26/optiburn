@@ -100,8 +100,8 @@ pub struct DiscInformation {
     /// 响应字节 5：末区段的首轨号。
     ///
     /// 可追加盘上它指向尚未写入的开放区段（实测 2026-10-10，CD-R：盘上 8 条轨道，
-    /// 它给 9，即 NWA 处的隐形轨道，读那里会落在空区），所以读侧只用它做兜底，
-    /// 末区段定位的主路径是 [`MmcDevice::read_toc_session_info`]。
+    /// 它给 9，即 NWA 处的隐形轨道，读那里会落在空区），末区段定位不能用它，
+    /// 读侧走 [`MmcDevice::read_toc_session_info`]。
     pub last_session_first_track: u8,
 }
 
@@ -183,12 +183,13 @@ impl MmcDevice {
         write::parse_track_information(&data).ok_or(MmcError::MalformedResponse)
     }
 
-    /// READ TOC/PMA/ATIP（0x43）Format 1：会话信息，末区段起始地址在最后一条会话
-    /// 描述符里。读侧用它定位末区段（[`DiscInformation::last_session_first_track`]
-    /// 在可追加盘上指向开放区段的兜底见那里的说明）。
-    pub fn read_toc_session_info(&mut self) -> Result<SessionInfo, MmcError> {
+    /// READ TOC/PMA/ATIP（0x43）Format 1：会话信息，末区段起始地址在唯一一条
+    /// 会话描述符里。读侧用它定位末区段（[`DiscInformation::last_session_first_track`]
+    /// 为什么不能用见那里的说明）。盘上没有已完结区段（空白盘）时数据不足一条
+    /// 描述符，返回 `Ok(None)`，与命令失败区分开。
+    pub fn read_toc_session_info(&mut self) -> Result<Option<SessionInfo>, MmcError> {
         let data = self.read_into(&write::toc_session_info_cdb(), write::SESSION_INFO_LEN)?;
-        write::parse_session_info(&data).ok_or(MmcError::MalformedResponse)
+        Ok(write::parse_session_info(&data))
     }
 
     /// READ(10)（0x28）：从 `lba` 读一段数据，长度必须是整块。写侧命令的读侧对偶，
@@ -737,7 +738,10 @@ mod tests {
         reply[8..12].copy_from_slice(&279_570u32.to_be_bytes());
         let (mut dev, cdbs) = device(reply);
 
-        let info = dev.read_toc_session_info().unwrap();
+        let info = dev
+            .read_toc_session_info()
+            .unwrap()
+            .expect("disc with a closed session");
         assert_eq!(
             info,
             write::SessionInfo {
@@ -752,6 +756,10 @@ mod tests {
                 0x43, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x00
             ]]
         );
+
+        // 空白盘：数据长度不足一条描述符，返回 None 而不是错误。
+        let (mut blank, _) = device(vec![0u8; write::SESSION_INFO_LEN]);
+        assert_eq!(blank.read_toc_session_info().unwrap(), None);
     }
 
     #[test]

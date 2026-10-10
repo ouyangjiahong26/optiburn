@@ -23,7 +23,7 @@
    份（`MMC_GET_MSINFO`），CDB 逐字节对齐。可追加盘上 READ DISC INFORMATION 的
    字节 5（末区段首轨）指向开放区段的隐形轨道，读那里落在空区，不能用（实测见
    补记）。
-3. 地址空间两种都认，按“根目录首记录是否自引用”探测：
+3. 区段地址约定两种都认，按“根目录首记录是否自引用”探测：
    - 区段相对（自家原生引擎写出的区段，独立镜像原样落盘）：目录记录里的 extent
      加区段起点。
    - 盘级绝对（xorriso 增长模式的区段，libisofs 的 ms_block 位移语义）：extent
@@ -40,16 +40,20 @@
    条目处检查。取消经 io 错误上抛时不能用 `ErrorKind::Interrupted`（hadris 的
    read_exact 会无限重试它），用令牌状态归因。
 6. 盘上没有 ISO 9660（空白盘、UDF 盘、音频轨）报 `NoIsoSession`，与 xorriso 路径
-   识别兜底空镜像的口径一致，`last_session_is_iso` 把它翻成“不是”。
+   识别兜底空镜像的口径一致，`last_session_is_iso` 把它翻成“不是”。空白盘在设备
+   路径上先查 READ DISC INFORMATION 的状态位再发 TOC：没有已完结区段时 TOC 按
+   驱动器不同可能回短数据也可能报命令失败，先查状态才不会把空盘当设备错误。
 
 [`ReadBackend`]: ../crates/optiburn-engine/src/readback.rs
 [`safe_relative_path`]: ../crates/optiburn-engine/src/readback.rs
 
 ## 后果
 
-- Windows 上读侧不再依赖外部程序：设备页浏览、复制、回读校验、追加页卷标预填、
+- Windows 上读侧不再依赖外部程序：设备页浏览、回读校验、追加页卷标预填、
   CLI `append` 的末区段门禁全部可用（`append` 仍会在增长模式那一步报缺 xorriso，
-  已知缺口见 ADR-0017）。`MissingTool` 在 Windows 读路径上不再出现。
+  已知缺口见 ADR-0017）。“复制选中文件”仍仅 Linux：抽取这步走得通，最后一步写
+  系统剪贴板在非 Linux 平台返回错误（ADR-0012）。`MissingTool` 在 Windows 读路径
+  上不再出现。
 - Linux 行为不变（xorriso 路径原样保留），等 Linux 真机验证后再评估切换。
 - 读块走既有的 `MmcDevice::read_blocks`（READ(10)，32 块一条，SPTI 单次传输上限，
   ADR-0017 补记），批量内部缓冲 64 KiB，顺序读时每块一条命令。
@@ -58,9 +62,11 @@
 - 尚未支持，记为缺口：Rock Ridge 名的显式优先策略（当前按 hadris 的 best_choice，
   与“Joliet 优先”的实际差异只在两者同存且都有效时的名字来源）、UDF 盘的读侧
   （Windows 写的纯 UDF 盘仍报 NoIsoSession）、原生增长模式（合并目录树后续做）、
-  写侧位移补丁（自家刻的区段是区段相对约定，标准读取器按“末区段起点加偏移”读
-  extent 会读错位，Windows 挂载视图要等换盘才看到新区段也是这个原因。是否把镜像
-  块地址整体位移后再写，另开决策）。
+  非 CD 介质上会话信息的假值风险（MMC-5 6.26.3.3.3 允许驱动器对非 CD 回 track 1、
+  LBA 0 的无用假值，实测的 CD-R 驱动器回真值，DVD/BD 未验证，遇假值会静默定位到
+  首个区段）、写侧位移补丁（自家刻的区段是区段相对约定，标准读取器按
+  “末区段起点加偏移”读 extent 会读错位，Windows 挂载视图要等换盘才看到新区段
+  也是这个原因。是否把镜像块地址整体位移后再写，另开决策）。
 
 ## 被否决的方案
 
@@ -82,7 +88,7 @@
 - READ DISC INFORMATION 字节 5 的实测行为：刻录前后各读一次，它始终指向 NWA 处
    尚未写入的隐形轨道（8 轨时给 9，写入后给 10），轨道信息查询返回的 start 与
    NWA 相等，盘上该位置没有数据。末区段定位不能用它。
-- 两种地址约定的实测证据：xorriso 增长的区段（起点 150093）PVD 里根 extent 是
+- 两种区段地址约定的实测证据：xorriso 增长的区段（起点 150093）PVD 里根 extent 是
    150112（绝对，等于起点加 19），而卷空间大小是 107575（区段相对大小，不是
    绝对卷尾）。所以 extent 与 vss 的约定不同源，源长度一律按“区段起点加 vss”
    算。自家原生引擎刻的四个区段（NATIVETEST）全部按区段相对约定读通。
