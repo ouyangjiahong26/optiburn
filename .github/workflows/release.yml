@@ -104,6 +104,21 @@ jobs:
         run: npm --prefix frontend exec -- tauri build --target ${{ matrix.target }} --bundles nsis
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      # 常规安装包先收进 bundles：下面的离线构建会在 bundle/nsis/ 产出同名文件，
+      # 不先拷走就会被覆盖成离线版。
+      - name: 收起常规安装包
+        shell: pwsh
+        run: |
+          mkdir bundles
+          Copy-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" bundles/
+          Copy-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe.sig" bundles/
+      # 离线安装包只做 x64：内嵌 WebView2 Standalone（约 127 MB），给无网与 Windows 7
+      # 机器（ADR-0016）。arm64 的 Win7 不存在，按需再加。
+      - name: 构建 NSIS 离线安装包
+        if: matrix.arch == 'x64'
+        run: npm --prefix frontend exec -- tauri build --target ${{ matrix.target }} --bundles nsis --config src-tauri/tauri.offline.conf.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       # 便携版 zip（改名后的单个主程序）供 Scoop 这类直接解压的渠道使用。
       - name: 打包便携版
         shell: pwsh
@@ -113,13 +128,17 @@ jobs:
           Compress-Archive -Path "$dir/optiburn.exe" -DestinationPath "optiburn-gui-${{ matrix.target }}-portable.zip"
       # 两个来源的根目录不同（nsis 子目录与仓库根），不拍平的话 artifact 会带出
       # src-tauri/... 子目录，发布阶段的 sha256sum 只扫顶层文件并会因目录报错。
+      # 离线版与常规版同名，拷贝时加 -offline 后缀区分；latest.json 的产物匹配
+      # 规则以 _x64-setup.exe 结尾，天然不匹配离线版（updater 仍指常规安装包）。
       - name: Stage bundles
         shell: pwsh
         run: |
-          mkdir bundles
-          Copy-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" bundles/
-          Copy-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe.sig" bundles/
           Copy-Item "optiburn-gui-${{ matrix.target }}-portable.zip" bundles/
+          if ("${{ matrix.arch }}" -eq "x64") {
+            $offline = Get-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe"
+            $name = $offline.Name -replace "\.exe$", "-offline.exe"
+            Copy-Item $offline.FullName "bundles/$name"
+          }
       - uses: actions/upload-artifact@v7
         with:
           name: optiburn-gui-windows-${{ matrix.arch }}

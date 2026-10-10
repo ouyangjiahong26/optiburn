@@ -59,6 +59,8 @@ npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 # 出安装包的构建还要求更新签名私钥（createUpdaterArtifacts，ADR-0015），本地是
 #   TAURI_SIGNING_PRIVATE_KEY=~/.tauri/optiburn-updater.key npm --prefix frontend exec -- tauri build
 # 私钥的备份责任在维护者，丢了它 updater 就再签不出可被旧版信任的更新包。
+# Windows 离线安装包（内嵌 WebView2，ADR-0016）在同一命令上再加
+#   --config src-tauri/tauri.offline.conf.json
 ```
 
 硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real` 需要
