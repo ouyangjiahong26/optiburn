@@ -1,4 +1,3 @@
-
 //! 真机测试：需要光驱，用环境变量指定设备后手动跑。
 //!
 //! - 只读侦察：`cargo test -p optiburn-engine -- --ignored inspect_real_media --nocapture`

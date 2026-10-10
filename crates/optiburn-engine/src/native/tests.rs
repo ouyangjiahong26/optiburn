@@ -1,4 +1,3 @@
-
 use super::*;
 use optiburn_mmc::CurrentProfile;
 use optiburn_transport::{Completion, Direction, ScsiTransport, TransportError};
