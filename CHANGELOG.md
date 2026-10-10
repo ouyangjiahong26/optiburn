@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-10
+
 **中文**
 
 图形前端补上更新能力：AppImage 嵌入更新信息并随 Release 发布 `.zsync`（AppImageUpdate 可增量更新，消除 AppImageHub 收录测试的 warning），应用内新增“检查更新”（Windows 安装包与 Linux AppImage 可就地更新，Ed25519 签名校验，deb 安装不显示入口）。CLI 无变化。
@@ -24,6 +26,8 @@ The GUI gains update capabilities: AppImages now embed update information and sh
 
 - **In-app update checks**: a sidebar entry runs the check, confirm, download, install loop; the update source is the release's `latest.json` and packages are verified against an Ed25519 signature. The entry is disabled while a burn/append task is running; download and install are separate steps so the install only fires when no task is running and never interrupts a burn. Shown only for the Windows NSIS installer and the Linux AppImage (deb installs belong to the system package manager). See ADR-0015.
 - **Embedded AppImage update information and `.zsync`**: the build passes `UPDATE_INFORMATION` through to linuxdeploy, embedding a `gh-releases-zsync` string and producing a `.zsync` published with the release, enabling AppImageUpdate delta updates from the next release on.
+
+**Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.3...v0.1.4
 
 ## [0.1.3] - 2026-10-09
 
