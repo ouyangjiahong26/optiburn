@@ -30,9 +30,9 @@ pub struct DeviceInfo {
     /// status 为 "other" 时的原始状态位（随机可写介质）。
     status_bits: Option<u8>,
     sessions: Option<u8>,
-    /// 盘片总容量（字节）。CD 介质等读不到容量口径时为 null（ADR-0019）。
+    /// 盘片总容量（字节），读不到时为 null（ADR-0019）。
     capacity_bytes: Option<u64>,
-    /// 可用容量（字节，总容量减已写入）。
+    /// 可用容量（字节），由剩余块数或未格式化介质的最大容量得出，读不到时为 null。
     free_bytes: Option<u64>,
     error: Option<String>,
 }
@@ -390,17 +390,11 @@ fn probe_one(path: String) -> DeviceInfo {
         }
     }
     // 容量是概览字段，读不到保持 null 且不改写 error（盘片状态已在上面给出）。
-    // 两个口径要凑齐才显示：实机观察到 CD-R 驱动器会把已写块数填进最大容量的
-    // 描述符（ADR-0019），单一口径的数字不可信。
-    if let Ok(capacity) = device.read_format_capacities()
-        && let Some(free) = capacity
-            .total
-            .zip(capacity.used)
-            .map(|(total, used)| total - used)
-    {
-        info.capacity_bytes = capacity.total;
-        info.free_bytes = Some(free);
-    }
+    // 两个口径分头取证（可用容量优先取剩余块数，规则见 read_disc_capacity），
+    // 任一读不到就单独留空，界面按能读到的部分显示（ADR-0019）。
+    let capacity = device.read_disc_capacity();
+    info.capacity_bytes = capacity.total;
+    info.free_bytes = capacity.free;
     info
 }
 
@@ -842,8 +836,8 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
 
 /// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝（ADR-0019）。
 ///
-/// 容量口径来自 READ FORMAT CAPACITIES（总容量减已写入），两个口径要凑齐。
-/// 读不到（CD 介质、驱动器不回该命令）时放行：门禁是尽力而为的预检，不该成为
+/// 可用容量取 [`MmcDevice::read_disc_capacity`]（顺序介质上是 READ TRACK
+/// INFORMATION 的剩余块数）。读不到时放行：门禁是尽力而为的预检，不该成为
 /// 新的故障点，真放不下由引擎写入失败兜底。区段开销余量与 CLI 共用
 /// [`optiburn_engine::SESSION_OVERHEAD`]。
 fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), JobError> {
@@ -852,17 +846,10 @@ fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), JobError> {
         source: e,
     })?;
     let mut mmc = MmcDevice::new(transport);
-    let capacity = mmc.read_format_capacities();
+    let capacity = mmc.read_disc_capacity();
     // 查完立刻释放句柄：刻录引擎随后要以独占方式打开设备。
     drop(mmc);
-    let free = match capacity {
-        Ok(capacity) => capacity
-            .total
-            .zip(capacity.used)
-            .map(|(total, used)| total - used),
-        Err(_) => None,
-    };
-    let Some(free) = free else {
+    let Some(free) = capacity.free else {
         return Ok(());
     };
     if needed_bytes + optiburn_engine::SESSION_OVERHEAD > free {

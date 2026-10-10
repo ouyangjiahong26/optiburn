@@ -175,8 +175,8 @@ pub fn write_params_payload(kind: MediaKind, multi: bool) -> Option<Vec<u8>> {
     Some(payload)
 }
 
-/// READ TRACK INFORMATION（0x52）的响应长度：起始地址（8-11）与 NWA（12-15）都在前 16 字节里，
-/// 取 32 字节连轨道大小（24-27）一起读回来，便于诊断。
+/// READ TRACK INFORMATION（0x52）的响应长度：起始地址（8-11）与 NWA（12-15）
+/// 都在前 16 字节里，剩余块数（16-19）与轨道大小（24-27）跟在后面，一次读全。
 pub const TRACK_INFO_LEN: usize = 32;
 
 /// 一条轨道的信息（READ TRACK INFORMATION 响应的关键字段）。
@@ -186,6 +186,9 @@ pub struct TrackInfo {
     pub start_lba: u32,
     /// 下一个可写地址（响应字节 12-15）。追加刻录的起点在它后面（中间是链接块）。
     pub next_writable_address: u32,
+    /// 剩余可写块数（响应字节 16-19，MMC 的 Free Blocks，2048 字节块计）。
+    /// 顺序介质上 NWA 加它就是盘的可写上限（容量门禁用它，见 ADR-0019）。
+    pub free_blocks: u32,
     /// 轨道大小（响应字节 24-27，2048 字节块计）。诊断用（打印轨道布局核对
     /// 解析偏移时读的就是它）。
     pub track_blocks: u32,
@@ -205,14 +208,16 @@ pub fn track_info_cdb(track: u32) -> [u8; 10] {
     cdb
 }
 
-/// 从 READ TRACK INFORMATION 的响应取起始地址、NWA 与轨道大小。
+/// 从 READ TRACK INFORMATION 的响应取起始地址、NWA、剩余块数与轨道大小。
 pub fn parse_track_information(response: &[u8]) -> Option<TrackInfo> {
     let start = response.get(8..12)?;
     let nwa = response.get(12..16)?;
+    let free = response.get(16..20)?;
     let size = response.get(24..28)?;
     Some(TrackInfo {
         start_lba: u32::from_be_bytes([start[0], start[1], start[2], start[3]]),
         next_writable_address: u32::from_be_bytes([nwa[0], nwa[1], nwa[2], nwa[3]]),
+        free_blocks: u32::from_be_bytes([free[0], free[1], free[2], free[3]]),
         track_blocks: u32::from_be_bytes([size[0], size[1], size[2], size[3]]),
     })
 }

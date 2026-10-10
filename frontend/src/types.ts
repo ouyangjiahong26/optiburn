@@ -8,7 +8,7 @@ export type DeviceInfo = {
   status: DiscStatus | null;
   statusBits: number | null;
   sessions: number | null;
-  // 盘片容量（字节）。CD 介质等读不到容量口径时为 null；两字段要么都有要么都没有。
+  // 盘片容量（字节）。两个口径各自可缺，读不到时为 null，界面按能读到的部分显示。
   capacityBytes: number | null;
   freeBytes: number | null;
   error: string | null;

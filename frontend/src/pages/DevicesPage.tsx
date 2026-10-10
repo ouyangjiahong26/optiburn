@@ -6,7 +6,7 @@ import { Copy, FileText, Folder, RefreshCw } from "lucide-react";
 import { copyDiscFiles, listDisc } from "../api";
 import { useDeviceProbe } from "../hooks";
 import { t } from "../i18n";
-import { formatBytes } from "../format";
+import { capacityLabel, formatBytes } from "../format";
 import type { DiscEntry, JobControls } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
 
@@ -235,13 +235,8 @@ export function DevicesPage({
                     )}
                   </span>
                 )}
-                {device.capacityBytes !== null && device.freeBytes !== null && (
-                  <span>
-                    {t(
-                      `${formatBytes(device.capacityBytes)} total, ${formatBytes(device.freeBytes)} free`,
-                      `总容量 ${formatBytes(device.capacityBytes)}，可用 ${formatBytes(device.freeBytes)}`,
-                    )}
-                  </span>
+                {capacityLabel(device.capacityBytes, device.freeBytes) !== null && (
+                  <span>{capacityLabel(device.capacityBytes, device.freeBytes)}</span>
                 )}
               </div>
               {device.error !== null && (

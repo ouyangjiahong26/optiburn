@@ -9,7 +9,7 @@ use optiburn_engine::{
     grow, grow_print_size, last_session_is_iso,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
-use optiburn_mmc::{DiscStatus, MmcDevice, MmcError, WriteBlock};
+use optiburn_mmc::{DiscCapacity, DiscStatus, MmcDevice, MmcError, WriteBlock};
 
 #[derive(Parser)]
 #[command(
@@ -308,29 +308,18 @@ fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> 
 /// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝，避免写到一半废一张盘
 /// （ADR-0019）。区段开销余量共用 [`optiburn_engine::SESSION_OVERHEAD`]。
 ///
-/// 容量口径来自 READ FORMAT CAPACITIES（总容量减已写入）。读不到口径（典型是
-/// CD 介质与不回该命令的驱动器）时打印提示后放行：门禁是尽力而为的预检，不该
-/// 成为新的故障点，真放不下由引擎写入失败兜底。
+/// 可用容量取 [`MmcDevice::read_disc_capacity`]（顺序介质上是 READ TRACK
+/// INFORMATION 的剩余块数）。读不到时打印提示后放行：门禁是尽力而为的预检，
+/// 不该成为新的故障点，真放不下由引擎写入失败兜底。
 fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), String> {
     let transport =
         optiburn_transport::open(device).map_err(|e| format!("打开 {device} 失败：{e}"))?;
     let mut mmc = MmcDevice::new(transport);
-    let capacity = mmc.read_format_capacities();
+    let capacity = mmc.read_disc_capacity();
     // 查完立刻释放句柄：刻录引擎随后要以独占方式打开设备。
     drop(mmc);
-    let capacity = match capacity {
-        Ok(capacity) => capacity,
-        Err(e) => {
-            println!("未能读取盘片容量（{e}），跳过容量检查。");
-            return Ok(());
-        }
-    };
-    let Some(free) = capacity
-        .total
-        .zip(capacity.used)
-        .map(|(total, used)| total - used)
-    else {
-        println!("盘片未报出容量口径（CD 介质常见），跳过容量检查。");
+    let Some(free) = capacity.free else {
+        println!("未能读到盘片的可用容量，跳过容量检查。");
         return Ok(());
     };
     if needed_bytes + optiburn_engine::SESSION_OVERHEAD > free {
@@ -362,33 +351,33 @@ fn disc_status_text(status: DiscStatus) -> String {
     }
 }
 
-/// 面向人的容量数字：按 GB/MB/KB 取一位小数，数值与单位之间留一个空格，
-/// 与 GUI 的展示口径一致。
+/// 面向人的容量数字：按 GB/MB/KB 取一位小数，不足 1 KB 按字节，与 GUI 的
+/// 展示口径一致（数值与单位之间留一个空格）。
 fn bytes_text(bytes: u64) -> String {
+    const KB: u64 = 1024;
     const MB: u64 = 1024 * 1024;
     const GB: u64 = 1024 * 1024 * 1024;
     if bytes >= GB {
         format!("{:.1} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
         format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+        format!("{bytes} 字节")
     }
 }
 
-/// 盘片容量段：总容量与可用容量，读不到口径（CD 介质常见）时为空串。
-fn capacity_text(capacity: &optiburn_mmc::DiscCapacity) -> String {
-    capacity
-        .total
-        .zip(capacity.used)
-        .map(|(total, used)| {
-            format!(
-                "，总容量 {}，可用 {}",
-                bytes_text(total),
-                bytes_text(total - used)
-            )
-        })
-        .unwrap_or_default()
+/// 盘片容量段：总容量与可用容量，两个口径都读不到时为空串（整段省略）。
+fn capacity_text(capacity: &DiscCapacity) -> String {
+    match (capacity.total, capacity.free) {
+        (Some(total), Some(free)) => {
+            format!("，总容量 {}，可用 {}", bytes_text(total), bytes_text(free))
+        }
+        (Some(total), None) => format!("，总容量 {}", bytes_text(total)),
+        (None, Some(free)) => format!("，可用 {}", bytes_text(free)),
+        (None, None) => String::new(),
+    }
 }
 
 fn probe_command() -> Result<(), String> {
@@ -423,10 +412,7 @@ fn probe_command() -> Result<(), String> {
             Err(e) => format!("读盘片信息失败：{e}"),
         };
         // 容量是概览字段，读不到就整段省略，不与上面的错误口径混在一起。
-        let capacity = device
-            .read_format_capacities()
-            .map(|c| capacity_text(&c))
-            .unwrap_or_default();
+        let capacity = capacity_text(&device.read_disc_capacity());
         println!("{text} | {identity} | {disc}{capacity}");
     }
     Ok(())
@@ -488,33 +474,36 @@ mod tests {
 
     #[test]
     fn bytes_text_formats_human_units() {
-        assert_eq!(bytes_text(512), "0.5 KB");
+        // 不足 1 KB 按字节，与 GUI 的 human_bytes 同口径。
+        assert_eq!(bytes_text(512), "512 字节");
+        assert_eq!(bytes_text(1024), "1.0 KB");
         assert_eq!(bytes_text(150 * 1024 * 1024), "150.0 MB");
         // DVD+R 4.7 GB 盘的厂商口径（2295104 块 × 2048 字节）。
         assert_eq!(bytes_text(2295104 * 2048), "4.4 GB");
     }
 
     #[test]
-    fn capacity_text_omits_when_the_drive_reports_nothing() {
-        use optiburn_mmc::DiscCapacity;
+    fn capacity_text_shows_the_known_sides() {
         assert_eq!(
             capacity_text(&DiscCapacity {
-                total: Some(2295104 * 2048),
-                used: Some(100000 * 2048),
+                total: Some(359_847 * 2048),
+                free: Some(73_077 * 2048),
             }),
             format!(
                 "，总容量 {}，可用 {}",
-                bytes_text(2295104 * 2048),
-                bytes_text(2195104 * 2048)
+                bytes_text(359_847 * 2048),
+                bytes_text(73_077 * 2048)
             )
         );
-        // 任一口径缺失（CD 形态）整段省略。
+        // 只有总容量（已格式化介质的退回口径）时不显示可用容量。
         assert_eq!(
             capacity_text(&DiscCapacity {
-                total: None,
-                used: None,
+                total: Some(2295104 * 2048),
+                free: None,
             }),
-            ""
+            format!("，总容量 {}", bytes_text(2295104 * 2048))
         );
+        // 两个口径都没有时整段省略。
+        assert_eq!(capacity_text(&DiscCapacity::default()), "");
     }
 }
