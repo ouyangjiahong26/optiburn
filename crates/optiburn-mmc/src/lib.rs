@@ -106,10 +106,12 @@ pub struct DiscInformation {
     /// 它给 9，即 NWA 处的隐形轨道，读那里会落在空区），末区段定位不能用它，
     /// 读侧走 [`MmcDevice::read_toc_session_info`]。
     pub last_session_first_track: u8,
-    /// 响应字节 6：末区段里最后一条已写轨道的编号（MMC-5 6.24 的 Last Track Number
-    /// in Last Session）。容量探测的备用轨道号用它：盘上字节 5 指向未写入的开放区段
-    /// （实测见 [`DiscInformation::last_session_first_track`]），这个字节才是最后一条
-    /// 真写过的轨道。本机盘上没核对过它的取值，只作 `0xFF` 失败后的备用。
+    /// 响应字节 6：末区段里最后一条轨道的编号。按 MMC-5 6.24 与 T10 97-117r0
+    /// 10.1.7 的定义，这个字段把 NWA 处尚未写入的隐形轨道算在内，因此可追加盘的
+    /// “末区段”就是那条开放区段，字节 5 与字节 6 都指向它（实测 2026-10-10：
+    /// 盘上 8 条已写轨道时字节 5 给 9）。容量探测用它的理由与 0xFF 相同，都是问
+    /// 最后一条轨道（也就是开放的那条）的剩余块数。本机盘上只核对过字节 5，
+    /// 字节 6 的取值按规范，驱动器的实现差异未验证。
     pub last_session_last_track: u8,
 }
 
@@ -238,8 +240,10 @@ impl MmcDevice {
     /// （libburn 的 `mmc_read_track_info` 对 DVD-R 族就是这么传的），仍读不到就
     /// 退回 READ FORMAT CAPACITIES：类型 1 的最大可格式化容量同时是总容量与
     /// 可用容量（未格式化介质整盘待写），类型 2 的当前格式化容量只作总容量，
-    /// 不参与门禁（一次写介质上它是已写范围，不是剩余空间）。两条路都读不到
-    /// 时两个口径都是 None，由调用方决定跳过显示与门禁。
+    /// 不参与门禁（一次写介质上它是已写范围，不是剩余空间）。备用轨道号读不到
+    /// （0x51 失败或字段为 0，空白盘就是这样）时按轨道 1 再问一次，与 libburn
+    /// 对可覆写介质的取值一致，问不到就交给格式化容量那条路。两条路都读不到时
+    /// 两个口径都是 None，由调用方决定跳过显示与门禁。
     pub fn read_disc_capacity(&mut self) -> DiscCapacity {
         let track = self.read_track_information(0xFF).ok().or_else(|| {
             let fallback = self
@@ -827,10 +831,11 @@ mod tests {
     }
 
     #[test]
-    fn capacity_retries_with_the_last_written_track_when_ff_is_rejected() {
+    fn capacity_retries_with_the_last_track_when_ff_is_rejected() {
         // 顺序介质里 0xFF 无定义的型号（DVD-R 族、BD-R）：第一次 0x52 被拒绝，
-        // 读盘片信息拿末条已写轨道（字节 6），再用它问一次。夹具里盘上 8 条轨道，
-        // 字节 5（末区段首轨）是 9，字节 6（末条已写轨道）是 8。
+        // 读盘片信息拿末条轨道（字节 6），再用它问一次。夹具照实测的可追加 CD-R
+        // 形状：8 条已写轨道，末区段是那条开放区段，字节 5 与字节 6 都指向 NWA
+        // 处的隐形轨道 9。
         let mut track_reply = vec![0u8; write::TRACK_INFO_LEN];
         track_reply[8..12].copy_from_slice(&286_770u32.to_be_bytes());
         track_reply[12..16].copy_from_slice(&286_770u32.to_be_bytes());
@@ -841,7 +846,7 @@ mod tests {
         disc_reply[3] = 1;
         disc_reply[4] = 8;
         disc_reply[5] = 9;
-        disc_reply[6] = 8;
+        disc_reply[6] = 9;
 
         let (mut dev, log) = device_rejecting_track(track_reply, 0xFF, disc_reply);
         let capacity = dev.read_disc_capacity();
@@ -860,7 +865,32 @@ mod tests {
             .filter(|cdb| cdb[0] == 0x52)
             .map(|cdb| u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]))
             .collect();
-        assert_eq!(tracks, vec![0xFF, 8], "先问 0xFF，被拒后改问末条已写轨道");
+        assert_eq!(tracks, vec![0xFF, 9], "先问 0xFF，被拒后改问末条轨道");
+    }
+
+    #[test]
+    fn capacity_falls_back_to_track_one_without_disc_information() {
+        // 空白盘与可覆写介质：0x51 读不到（这里是空响应，效果同字节 6 为 0）时按
+        // 轨道 1 再问一次，与 libburn 对可覆写介质的取值一致。
+        let mut reply = vec![0u8; write::TRACK_INFO_LEN];
+        reply[8..12].copy_from_slice(&286_770u32.to_be_bytes());
+        reply[12..16].copy_from_slice(&286_770u32.to_be_bytes());
+        reply[16..20].copy_from_slice(&73_077u32.to_be_bytes());
+
+        let (mut dev, log) = device_rejecting_track(reply, 0xFF, Vec::new());
+        assert_eq!(
+            dev.read_disc_capacity().free,
+            Some(73_077 * 2048),
+            "轨道 1 的读数照用"
+        );
+
+        let tracks: Vec<u32> = log
+            .borrow()
+            .iter()
+            .filter(|cdb| cdb[0] == 0x52)
+            .map(|cdb| u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]))
+            .collect();
+        assert_eq!(tracks, vec![0xFF, 1], "读不到末条轨道号时按轨道 1");
     }
 
     #[test]
