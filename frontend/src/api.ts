@@ -2,6 +2,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import type {
   DeviceInfo,
   DiscEntry,
@@ -11,6 +13,9 @@ import type {
   JobProgress,
   VerifyReport,
 } from "./types";
+
+// updater 的返回类型经这里转出，页面继续不直接接触 @tauri-apps 的模块。
+export type { Update };
 
 export function probeDevices(): Promise<DeviceInfo[]> {
   return invoke("probe_devices");
@@ -117,4 +122,42 @@ export function speedOption(value: string): number | null {
     parsed > 0xffffffff
     ? null
     : parsed;
+}
+
+// 自更新入口是否可用：Windows NSIS 与 Linux AppImage 为真，deb 安装为假（ADR-0015）。
+export function canSelfUpdate(): Promise<boolean> {
+  return invoke("can_self_update");
+}
+
+// 向 endpoints 指向的 latest.json 要一次更新描述；没有新版本时得到 null。
+export function checkForUpdate(): Promise<Update | null> {
+  return check();
+}
+
+// 下载并就地安装更新。onProgress 在总量可知时收到 0 到 1 的小数，否则为 null。
+export async function installUpdate(
+  update: Update,
+  onProgress: (fraction: number | null) => void,
+): Promise<void> {
+  let total: number | null = null;
+  let received = 0;
+  await update.downloadAndInstall((event) => {
+    switch (event.event) {
+      case "Started":
+        total = event.data.contentLength ?? null;
+        break;
+      case "Progress":
+        received += event.data.chunkLength;
+        onProgress(total === null ? null : Math.min(received / total, 1));
+        break;
+      case "Finished":
+        onProgress(1);
+        break;
+    }
+  });
+}
+
+// 安装完成后重启进入新版本。
+export function relaunchApp(): Promise<void> {
+  return relaunch();
 }

@@ -6,6 +6,7 @@ mod clipboard;
 mod cmd;
 mod i18n;
 mod job;
+mod updater;
 
 use tauri::{Emitter, Manager};
 
@@ -18,6 +19,8 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(job::JobState::default())
         .invoke_handler(tauri::generate_handler![
             cmd::probe_devices,
@@ -31,6 +34,7 @@ pub fn run() {
             cmd::verify::start_verify,
             cmd::cancel_job,
             cmd::confirm_close,
+            updater::can_self_update,
         ])
         .on_window_event(|window, event| {
             // 有任务在跑时拦下关窗：由前端弹确认框，确认后走 confirm_close。

@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+**中文**
+
+图形前端补上更新能力：AppImage 嵌入更新信息并随 Release 发布 `.zsync`（AppImageUpdate 可增量更新，消除 AppImageHub 收录测试的 warning），应用内新增“检查更新”（Windows 安装包与 Linux AppImage 可就地更新，Ed25519 签名校验，deb 安装不显示入口）。CLI 无变化。
+
+### FEAT
+
+- **应用内检查更新**：侧栏底部新增入口，检查、确认、下载、重启闭环；更新源为 Release 的 `latest.json`，更新包经 Ed25519 签名校验。写盘任务进行中入口禁用，下载完成时任务未结束则不自动重启。仅 Windows NSIS 与 Linux AppImage 显示（deb 安装的文件归包管理器管）。决策见 ADR-0015。
+- **AppImage 嵌入式更新信息与 `.zsync`**：构建时经 `UPDATE_INFORMATION` 让 linuxdeploy 嵌入 `gh-releases-zsync` 更新信息并自动产出 `.zsync`，随 Release 发布，AppImageUpdate 用户从下个版本起可增量更新。
+
+**English**
+
+The GUI gains update capabilities: AppImages now embed update information and ship a `.zsync` alongside each release (AppImageUpdate users get delta updates; this also resolves the AppImageHub catalog warning), and an in-app "Check for updates" entry is added (in-place updates with Ed25519 signature verification for the Windows installer and the Linux AppImage; hidden for deb installs). No CLI changes.
+
+### FEAT
+
+- **In-app update checks**: a sidebar entry runs the check, confirm, download, relaunch loop; the update source is the release's `latest.json` and packages are verified against an Ed25519 signature. The entry is disabled while a burn/append task is running, and a finished download does not auto-relaunch until the task ends. Shown only for the Windows NSIS installer and the Linux AppImage (deb installs belong to the system package manager). See ADR-0015.
+- **Embedded AppImage update information and `.zsync`**: the build passes `UPDATE_INFORMATION` through to linuxdeploy, embedding a `gh-releases-zsync` string and producing a `.zsync` published with the release, enabling AppImageUpdate delta updates from the next release on.
+
 ## [0.1.3] - 2026-10-09
 
 **中文**

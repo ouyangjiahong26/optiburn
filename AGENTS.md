@@ -56,6 +56,9 @@ npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 #   npm --prefix frontend exec -- tauri build --no-bundle
 # 必须经 tauri CLI（或显式 --features tauri/custom-protocol）。裸 cargo build --release
 # 产出的是开发态二进制，窗口会去连 devUrl 报“Connection refused”。
+# 出安装包的构建还要求更新签名私钥（createUpdaterArtifacts，ADR-0015），本地是
+#   TAURI_SIGNING_PRIVATE_KEY=~/.tauri/optiburn-updater.key npm --prefix frontend exec -- tauri build
+# 私钥的备份责任在维护者，丢了它 updater 就再签不出可被旧版信任的更新包。
 ```
 
 硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real` 需要

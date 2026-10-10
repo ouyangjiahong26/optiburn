@@ -50,6 +50,31 @@ body {
   gap: var(--space-1);
 }
 
+/* 侧栏底部的版本与检查更新：顶到侧栏下沿，状态文案弱化。 */
+.updater {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.updater-version {
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.updater-status {
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.updater-button {
+  font-size: var(--text-sm);
+}
+
 .nav-item {
   display: flex;
   align-items: center;

@@ -23,6 +23,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "=2.12.1", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+# 应用内更新（ADR-0015）：updater 负责检查、下载与就地替换，process 只用它的 relaunch。
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 # 界面语言跟随系统：启动时读一次系统 locale，决定后端文案用中文还是英文。
 sys-locale = "0.3"
 serde = { version = "1", features = ["derive"] }
