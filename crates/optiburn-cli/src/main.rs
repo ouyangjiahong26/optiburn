@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow,
-    last_session_is_iso,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, NativeEngine, XorrisoEngine,
+    grow, last_session_is_iso,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 use optiburn_mmc::{DiscStatus, MmcDevice, MmcError, WriteBlock};
@@ -45,7 +45,7 @@ enum Command {
         /// 目标设备，例如 /dev/sr0 或 E:
         #[arg(long)]
         device: String,
-        /// 刻录引擎
+        /// 刻录引擎：xorriso（子进程，Linux 默认）或 native（原生 MMC，Windows 唯一可用的）
         #[arg(long, default_value = "xorriso")]
         engine: String,
         /// 写入倍速，缺省交给驱动器自选
@@ -152,14 +152,47 @@ fn build_image_command(
     Ok(())
 }
 
-/// 写盘失败的中文文案：归类走引擎里的共用文案，原始输出打到 stderr 备查。
+/// 写盘失败的中文文案：归类走引擎里的共用文案，缺工具与原生引擎的缺口走各自的分支。
 fn burn_error_text(error: &BurnError) -> String {
     if let BurnError::Failed(tail) = error {
         eprintln!("optiburn: 刻录失败原始输出：{tail}");
     }
     match error {
         BurnError::Failed(tail) => BurnFailure::classify(tail).user_text(tail),
+        // 不给用户看引擎里的英文串（“missing tool: …”），安装途径见共用文案。
+        BurnError::MissingTool(tool) => BurnError::missing_tool_user_text(tool),
+        BurnError::Mmc(MmcError::NotReady) => {
+            "盘未就绪：请确认已放入可写盘片且仓门已关闭。".to_string()
+        }
+        BurnError::Mmc(other) => format!("设备命令失败：{other}"),
+        BurnError::NativeGap(gap) => native_gap_text(gap).to_string(),
         other => other.to_string(),
+    }
+}
+
+/// 原生引擎的能力缺口文案（中文）。GUI 的英文镜像在 src-tauri 的同名函数里。
+fn native_gap_text(gap: &optiburn_engine::NativeGap) -> &'static str {
+    use optiburn_engine::NativeGap;
+    match gap {
+        NativeGap::WriteSpeed => {
+            "原生引擎暂不支持指定倍速：去掉 --speed，Linux 上也可以改用 --engine xorriso。"
+        }
+        NativeGap::EmptyImage => "镜像为空文件，没有可刻录的内容。",
+        NativeGap::ImageTooLarge => "镜像超出介质容量，请换更大的盘。",
+        NativeGap::ImageBeyondAddressRange => "镜像超出 2048 字节块的地址上限。",
+        NativeGap::UnsupportedProfile(_) => {
+            "这种介质暂不支持原生引擎，Linux 上可改用 --engine xorriso。"
+        }
+        NativeGap::FinalizedDisc => "盘已封口，无法再写入，请更换盘片。",
+    }
+}
+
+/// 读侧引擎错误的文案：缺工具走共用文案（安装途径在里面，别让英文串漏给用户），
+/// 其余保留动作前缀。
+fn read_error_text(action: &str, error: &BurnError) -> String {
+    match error {
+        BurnError::MissingTool(tool) => BurnError::missing_tool_user_text(tool),
+        other => format!("{action}失败：{other}"),
     }
 }
 
@@ -170,9 +203,11 @@ fn burn_command(
     speed: Option<u32>,
     close_disc: bool,
 ) -> Result<(), String> {
-    if engine != XorrisoEngine.name() {
-        return Err(format!("引擎 {engine} 尚未实现"));
-    }
+    let burner: Box<dyn BurnEngine> = match engine {
+        "native" => Box::new(NativeEngine),
+        "xorriso" => Box::new(XorrisoEngine),
+        other => return Err(format!("引擎 {other} 尚未实现")),
+    };
     ensure_burnable(device, false)?;
     let job = BurnJob {
         image: image.to_path_buf(),
@@ -184,7 +219,7 @@ fn burn_command(
 
     let mut progress = |fraction: f32| eprint!("\r{:>5.1}%", fraction * 100.0);
     // CLI 不提供取消入口，传一个永不置位的默认令牌。
-    let result = XorrisoEngine.burn(&job, &mut progress, &CancelToken::default());
+    let result = burner.burn(&job, &mut progress, &CancelToken::default());
     eprintln!();
     result.map_err(|e| burn_error_text(&e))
 }
@@ -249,7 +284,7 @@ fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> 
     // 追加 ISO 区段会改变盘在按最后一区段挂载的系统里的可见内容（ADR-0010）。
     if accept_appendable && info.status == DiscStatus::Appendable {
         let iso_readable =
-            last_session_is_iso(device).map_err(|e| format!("读取末区段格式失败：{e}"))?;
+            last_session_is_iso(device).map_err(|e| read_error_text("读取末区段格式", &e))?;
         if !iso_readable {
             return Err(
                 "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
@@ -341,5 +376,35 @@ mod tests {
         let err = burn_command(Path::new("/tmp/x.iso"), "/dev/sr0", "cdrdao", None, false)
             .expect_err("only xorriso exists in v0");
         assert_eq!(err, "引擎 cdrdao 尚未实现");
+    }
+
+    #[test]
+    fn missing_tool_failure_is_chinese_and_does_not_leak_the_engine_string() {
+        let text = burn_error_text(&BurnError::MissingTool("xorriso".into()));
+        assert_eq!(text, BurnError::missing_tool_user_text("xorriso"));
+        assert!(!text.contains("missing tool"), "{text}");
+    }
+
+    #[test]
+    fn append_preflight_maps_missing_tool_to_the_shared_text() {
+        let text = read_error_text("读取末区段格式", &BurnError::MissingTool("xorriso".into()));
+        assert_eq!(text, BurnError::missing_tool_user_text("xorriso"));
+        assert!(!text.contains("missing tool"), "{text}");
+        assert_eq!(
+            read_error_text("读取末区段格式", &BurnError::ReadFailed("boom".into())),
+            "读取末区段格式失败：boom"
+        );
+    }
+
+    #[test]
+    fn native_engine_names_and_gap_texts_are_pinned() {
+        assert_eq!(NativeEngine.name(), "native");
+        assert_eq!(XorrisoEngine.name(), "xorriso");
+        let text = burn_error_text(&BurnError::NativeGap(
+            optiburn_engine::NativeGap::WriteSpeed,
+        ));
+        assert!(text.contains("倍速"), "{text}");
+        let text = burn_error_text(&BurnError::Mmc(MmcError::NotReady));
+        assert!(text.contains("盘未就绪"), "{text}");
     }
 }

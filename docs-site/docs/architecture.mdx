@@ -19,20 +19,22 @@ Windows 能读的镜像，再把镜像写到盘上。本页说明各 crate 的�
 optiburn-cli              命令行：build-image / burn / append / probe
   optiburn-mastering        目录做成镜像文件（ISO 9660 + Joliet + UDF Bridge）
     hadris-cd               上游镜像写入器（MIT，纯 Rust）
-  optiburn-engine           镜像写到盘（v0：xorriso 子进程）
-  optiburn-mmc              MMC 命令编解码（v0：读侧三条）
+  optiburn-engine           镜像写到盘（xorriso 子进程与原生 MMC 引擎）
+  optiburn-mmc              MMC 命令编解码（读侧与写侧）
     optiburn-transport      SCSI 传输（Linux SG_IO / Windows SPTI）
 ```
 
 - `optiburn-transport`：全仓库唯一的硬件抽象点，`ScsiTransport` trait 只有一个方法
   `issue(cdb, dir, data, timeout)`。Linux 走 `SG_IO`，Windows 走 SPTI，光驱枚举也按平台
   收在这里。
-- `optiburn-mmc`：MMC 命令编解码。v0 只有读侧三条（`inquiry`、`test_unit_ready`、
-  `read_disc_information`），写侧在路线图上。
+- `optiburn-mmc`：MMC 命令编解码。读侧有 `inquiry`、`test_unit_ready`、
+  `read_disc_information`、`read_track_information`、`read_capacity`、`read_blocks`。
+  写侧有 `get_configuration`、`set_write_parameters`、`reserve_track`、`write_blocks`、
+  `synchronize_cache`、`close_session`。
 - `optiburn-mastering`：`build_image(source_dir, output, spec)`。profile 到文件系统的
   映射是 Windows 可读性的唯一落点。
-- `optiburn-engine`：`BurnEngine` trait 加 `XorrisoEngine`（`xorriso -as cdrecord`
-  子进程）。原生 MMC 引擎将接在同一个 trait 上。
+- `optiburn-engine`：`BurnEngine` trait 加两个引擎：`NativeEngine`（原生 MMC 写引擎，
+  ADR-0017）与 `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。
 - `optiburn-cli`：四个子命令的入口。
 
 图形前端在 `src-tauri/`（Tauri 2）与 `frontend/`（React 加 Vite 加 TypeScript），
@@ -45,7 +47,7 @@ optiburn-cli              命令行：build-image / burn / append / probe
   build_image 生成 .iso（ISO 9660 + Joliet + UDF Bridge）
   .iso 用于归档与校验，镜像本身与盘上字节一一对应
   .iso 交给 BurnJob，由 BurnEngine 写进光驱
-    v0 用 xorriso -as cdrecord，v0.5 换原生 MMC 写入
+    0.1.5 之前用 xorriso -as cdrecord，原生 MMC 写入已落地（ADR-0017）
 
 盘
   probe 读出设备标识与盘片状态（SG_IO / SPTI 加 READ DISC INFORMATION）
@@ -53,5 +55,7 @@ optiburn-cli              命令行：build-image / burn / append / probe
 
 ## 路线图
 
-原生 MMC 写入（不借助外部工具）是下一个里程碑：在 `optiburn-engine` 的同一个
-`BurnEngine` trait 上实现 `RESERVE TRACK`、`WRITE(10)` 与 `CLOSE TRACK`。
+原生 MMC 写入（不借助外部工具）已落地为 `NativeEngine`（ADR-0017）：在
+`optiburn-engine` 的同一个 `BurnEngine` trait 上自己发 `MODE SELECT`、`WRITE(10)` 与
+`CLOSE TRACK/SESSION`，已在 Windows 的 USB 光驱与一张 CD-R 上真机验证。后续是
+原生读盘（盘上浏览、复制、回读校验）与增长模式。

@@ -18,12 +18,12 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Wind
 | 命令 | 现状 |
 |---|---|
 | `optiburn build-image` | 可用。生成 ISO 9660 + Joliet + UDF Bridge 镜像，测试中与 xorriso 对拍验证。 |
-| `optiburn burn` | Linux 可用（Windows 已能构建并枚举光驱，未做真机验证）。默认多区段（盘保持可追加），`--close-disc` 才封盘。 |
-| `optiburn append` | Linux 可用（Windows 未做真机验证）。增长模式追加目录并合并已有区段，旧文件保持可见。 |
+| `optiburn burn` | Linux 可用（`xorriso` 或 `--engine native`），Windows 可用（`--engine native`，图形前端默认，2026-10-10 在 CD-R 上真机验证，DVD/BD 各族待介质）。默认多区段（盘保持可追加），`--close-disc` 才封盘。 |
+| `optiburn append` | Linux 可用（xorriso 增长模式）。Windows 暂不可用：没有可用的 xorriso 构建，原生引擎也还没有增长模式。追加目录并合并已有区段，旧文件保持可见。 |
 | `optiburn probe` | Linux（`/dev/sr*`）与 Windows（盘符）可用。找不到设备时报“未发现光驱”（退出码 0）。 |
-| `OptiBurn` 图形前端 | 0.1.1 新增（Tauri 2 + React）。四个页面对应四个子命令，刻录类任务可中止。设备页可展开盘上文件清单，支持拖动框选与 Ctrl、Shift 多选，选中后可一键复制到系统剪贴板供文件管理器粘贴（复制与挂载门禁目前只在 Linux 生效，Windows 未做真机验证）。追加页的待刻录文件可用文件选择框多选，或在文件管理器复制后按 Ctrl+V 粘贴。卷标自动沿用盘上现有值，刻录与追加两页都能回读盘片并与源逐文件对比，盘被系统挂载时写入会被拦下并提示卸载。Windows 安装包（NSIS，x64 与 arm64）与 Linux 安装包（AppImage 与 deb，x86_64 与 arm64）从 Release 页下载。AppImage 内嵌更新信息，可用 AppImageUpdate 增量更新，图形界面在 Windows 安装包与 AppImage 上可就地检查更新。 |
+| `OptiBurn` 图形前端 | 0.1.1 新增（Tauri 2 + React）。四个页面对应四个子命令，刻录类任务可中止。设备页可展开盘上文件清单，支持拖动框选与 Ctrl、Shift 多选，选中后可一键复制到系统剪贴板供文件管理器粘贴（复制与挂载门禁目前只在 Linux 生效）。Windows 上刻录走原生引擎（不需要外部工具），盘上浏览与回读校验仍需要 xorriso，那边没有可用的构建（见上）。追加页的待刻录文件可用文件选择框多选，或在文件管理器复制后按 Ctrl+V 粘贴。卷标自动沿用盘上现有值，刻录与追加两页都能回读盘片并与源逐文件对比，盘被系统挂载时写入会被拦下并提示卸载。Windows 安装包（NSIS，x64 与 arm64）与 Linux 安装包（AppImage 与 deb，x86_64 与 arm64）从 Release 页下载。AppImage 内嵌更新信息，可用 AppImageUpdate 增量更新，图形界面在 Windows 安装包与 AppImage 上可就地检查更新。 |
 
-原生 MMC 写入（不借助外部工具）是下一个里程碑，不属于 0.1.5。分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，介质与文件系统矩阵见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。
+原生 MMC 写入（不借助外部工具）已落地为 `--engine native` 与图形前端在 Windows 上的默认引擎（ADR-0017）；DVD/BD 各族与增长模式仍待后续。分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，介质与文件系统矩阵见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。
 
 ## 安装
 
@@ -35,8 +35,8 @@ cargo build --release
 ```
 
 - Rust 1.98.1（由 `rust-toolchain.toml` 固定）。
-- `xorriso` 在 `PATH` 上，只有 `burn` 需要（0.1.5 通过子进程调用）：Debian/Ubuntu 用 `sudo apt install xorriso`，MSYS2 用 `pacman -S xorriso`。
-- 图形前端：Windows 下载 `OptiBurn_0.1.5_x64-setup.exe`（或 arm64 版），Linux 下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。刻录仍要求 `xorriso` 在 `PATH` 上，与 CLI 相同。无网的 Windows 机器改用 x64 安装包的 `-offline` 版本：内嵌 WebView2 运行时（安装器约 210 MB），安装全程不需要联网。缺补丁的 Windows 7 上 WebView2 安装器会报 0x8007007F，先从 [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) 离线装 KB2533623 与 KB3063858 再安装（详见 ADR-0016 补记）。
+- `xorriso` 在 `PATH` 上：CLI 的默认刻录引擎（Linux）与图形前端的盘上浏览、复制、回读校验都用它，它也是测试里的参考实现。Debian/Ubuntu 用 `sudo apt install xorriso`。Windows 上没有可用的构建：MSYS2 的包（`pacman -S xorriso`）编译时未链 libcdio，只能操作镜像文件，碰不到光驱（2026-10-10 实测，证据见 ADR-0008 补记）。Windows 上刻录不需要外部工具：图形前端与 `--engine native` 走原生 MMC 引擎（ADR-0017）。
+- 图形前端：Windows 下载 `OptiBurn_0.1.5_x64-setup.exe`（或 arm64 版），Linux 下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。刻录在 Windows 上走原生引擎（不需要外部工具），Linux 上走 `xorriso`，盘上浏览与复制需要 `xorriso`，Windows 上没有可用的构建（见上）。无网的 Windows 机器改用 x64 安装包的 `-offline` 版本：内嵌 WebView2 运行时（安装器约 210 MB），安装全程不需要联网。缺补丁的 Windows 7 上 WebView2 安装器会报 0x8007007F，先从 [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) 离线装 KB2533623 与 KB3063858 再安装（详见 ADR-0016 补记）。
 - 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
 
 ## 用法
@@ -59,7 +59,7 @@ $ optiburn build-image docs -o docs.iso --profile dvd --volume-id OPTIBURN
 optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
-Windows 的设备名是盘符：`--device E:`。默认盘保持可追加（多区段），`--close-disc` 才封盘。刻录前置检查自动处理介质状态：等盘片就绪（20 秒内每 500 ms 重试），已封口的盘拒绝，可追加盘拒绝走镜像路径并提示改用 `append`，随机可写介质（DVD-RAM、BD-RE）直接放行。多区段说明见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。目前唯一的引擎是 `xorriso`（`--engine xorriso`，默认值），其它值报“未实现”错误。
+Windows 的设备名是盘符：`--device E:`。默认盘保持可追加（多区段），`--close-disc` 才封盘。刻录前置检查自动处理介质状态：等盘片就绪（20 秒内每 500 ms 重试），已封口的盘拒绝，可追加盘拒绝走镜像路径并提示改用 `append`，随机可写介质（DVD-RAM、BD-RE）直接放行。多区段说明见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。`--engine` 取 `xorriso`（默认值，需要 `PATH` 上有 `xorriso`）或 `native`（自己发 MMC 命令，Windows 上唯一可用），其它值报“未实现”错误。原生引擎在可追加盘上写新区段，拒绝已封口介质、不支持的 Profile、空镜像、放不下的镜像，暂不支持指定倍速（倍速留空）。
 
 ### 追加
 

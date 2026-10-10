@@ -2655,6 +2655,8 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 name = "optiburn-engine"
 version = "0.1.5"
 dependencies = [
+ "optiburn-mmc",
+ "optiburn-transport",
  "thiserror 2.0.21",
 ]
 

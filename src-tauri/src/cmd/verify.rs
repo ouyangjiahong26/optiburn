@@ -6,7 +6,9 @@ use optiburn_engine::{BurnError, CancelToken, compare_trees, extract_tree};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use super::{JobError, begin_job, fail_job, finish_job, stage_files, unique_temp_dir};
+use super::{
+    JobError, begin_job, engine_error_text, fail_job, finish_job, stage_files, unique_temp_dir,
+};
 use crate::i18n::{Lang, lang, pick};
 use crate::job::{JobKind, JobState};
 
@@ -94,17 +96,15 @@ fn run_verify(
     result
 }
 
-/// 抽取失败的映射：取消照实归为取消，其余按读取失败给当前语言的文案。
+/// 抽取失败的映射：取消照实归为取消，缺工具走共用文案，其余按读取失败给当前
+/// 语言的文案。
 fn read_error(lang: Lang, action_zh: &str, action_en: &str, error: BurnError) -> JobError {
     match error {
         BurnError::Cancelled => JobError::Cancelled {
             zh: "校验",
             en: "verification",
         },
-        other => match lang {
-            Lang::Zh => JobError::Input(format!("{action_zh}失败：{other}")),
-            Lang::En => JobError::Input(format!("{action_en} failed: {other}")),
-        },
+        other => JobError::Input(engine_error_text(lang, action_zh, action_en, &other)),
     }
 }
 
@@ -194,6 +194,31 @@ fn verify_message(lang: Lang, mode: VerifyMode, differences: &[String]) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_error_routes_missing_tool_to_the_shared_text() {
+        match read_error(
+            Lang::Zh,
+            "读取盘上内容",
+            "Reading the disc",
+            BurnError::MissingTool("xorriso".into()),
+        ) {
+            JobError::Input(message) => {
+                assert_eq!(message, BurnError::missing_tool_user_text("xorriso"))
+            }
+            _ => panic!("expected JobError::Input"),
+        }
+        // 其它读取失败保留动作前缀。
+        match read_error(
+            Lang::Zh,
+            "读取盘上内容",
+            "Reading the disc",
+            BurnError::ReadFailed("boom".into()),
+        ) {
+            JobError::Input(message) => assert_eq!(message, "读取盘上内容失败：boom"),
+            _ => panic!("expected JobError::Input"),
+        }
+    }
 
     #[test]
     fn verify_mode_and_message_wording() {

@@ -306,9 +306,7 @@ fn run_output(program: &str, args: &[OsString]) -> Result<(String, String), Burn
         .stdin(Stdio::null())
         .output()
         .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                BurnError::MissingTool(format!("{program} (sudo apt install {program})"))
-            }
+            std::io::ErrorKind::NotFound => BurnError::MissingTool(program.to_string()),
             _ => BurnError::Io(e),
         })?;
     if !output.status.success() {
@@ -357,6 +355,17 @@ Preparer Id  : XORRISO
         assert_eq!(parse_volume_id("Volume Id    :    \n"), None);
         assert_eq!(parse_volume_id("Volume Set Id: x\n"), None);
         assert_eq!(parse_volume_id(""), None);
+    }
+
+    #[test]
+    fn missing_binary_on_the_read_side_is_a_missing_tool_error() {
+        let err = run_output("optiburn-nonexistent-program", &[])
+            .expect_err("spawning a nonexistent program must fail");
+        // 载荷只有工具名，安装指引由调用方按系统给出。
+        assert!(
+            matches!(&err, BurnError::MissingTool(name) if name == "optiburn-nonexistent-program"),
+            "{err:?}"
+        );
     }
 
     #[test]
