@@ -19,7 +19,7 @@ cargo build --release
 ```
 
 - Rust 1.98.1（由 `rust-toolchain.toml` 固定，rustup 会自动装好）。
-- `xorriso` 在 `PATH` 上，只有 `burn` 需要（0.1.3 通过子进程调用）：Debian/Ubuntu 用
+- `xorriso` 在 `PATH` 上，只有 `burn` 需要（0.1.4 通过子进程调用）：Debian/Ubuntu 用
   `sudo apt install xorriso`，MSYS2 用 `pacman -S xorriso`。
 - 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
 
@@ -34,7 +34,7 @@ Linux 上用 `sudo usermod -aG cdrom "$USER"` 把自己加进 `cdrom` 组，注�
 
 ## 用图形界面安装（可选）
 
-- Windows：下载 `OptiBurn_0.1.3_x64-setup.exe`（或 arm64 版），双击安装。
+- Windows：下载 `OptiBurn_0.1.4_x64-setup.exe`（或 arm64 版），双击安装。
 - Linux：下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。
 
 安装包都在 [Releases](https://github.com/ouyangjiahong26/optiburn/releases) 页。
