@@ -261,6 +261,67 @@ pub fn toc_session_info_cdb() -> [u8; 10] {
     ]
 }
 
+/// READ TOC/PMA/ATIP（0x43）Format 0（轨道列表）。CDB 与 Format 1 同族，只有
+/// byte 2 的 Format 位不同（0 是轨道列表），byte 3 是起始轨道号（0 表示从第一条
+/// 起），bytes 7-8 是分配长度。MSF 位不置，因此响应里的地址是 LBA。
+pub fn toc_track_list_cdb() -> [u8; 10] {
+    [
+        0x43,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        (TRACK_LIST_LEN >> 8) as u8,
+        TRACK_LIST_LEN as u8,
+        0x00,
+    ]
+}
+
+/// 每张盘最多一百条轨道（MMC-5 的上限），响应缓冲按这个上限开。
+pub const TRACK_LIST_LEN: usize = 4 + 100 * 8;
+
+/// 轨道列表响应里的长度字段不含它自己那两个字节，因此有效范围是 `2 + length`。
+const TRACK_LIST_HEADER: usize = 4;
+
+/// 一条轨道：编号与起始 LBA。`is_lead_out` 是驱动器报的导出区（轨道号 0xAA），
+/// 它的起点在写入区之后，不是候选区段起点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackStart {
+    pub track: u8,
+    pub start_lba: u32,
+    pub is_lead_out: bool,
+}
+
+/// 从轨道列表响应取出每条轨道的编号与起始地址。
+///
+/// 解析规则（按 MMC-5 的响应布局，实测 CD-R 驱动器照此回填）：响应头两字节是
+/// TOC 数据长度（不含那两个字节本身），byte 2 与 byte 3 是首末轨道号，其后每条
+/// 轨道占 8 字节，byte 1 是控制与 ADR，byte 2 是轨道号，bytes 4-7 是大端地址。
+/// 读不到任何轨道时返回 `None`。
+pub fn parse_track_list(data: &[u8]) -> Option<Vec<TrackStart>> {
+    let length = u16::from_be_bytes([*data.first()?, *data.get(1)?]) as usize;
+    let end = (2 + length).min(data.len());
+    let mut tracks = Vec::new();
+    let mut offset = TRACK_LIST_HEADER;
+    while offset + 8 <= end {
+        let track = data[offset + 2];
+        tracks.push(TrackStart {
+            track,
+            start_lba: u32::from_be_bytes([
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]),
+            is_lead_out: track == 0xAA,
+        });
+        offset += 8;
+    }
+    (!tracks.is_empty()).then_some(tracks)
+}
+
 /// 从区段信息响应取末区段编号与起始地址。
 ///
 /// 解析规则（按 MMC-5 的响应布局，实测 CD-R 驱动器照此回填）：响应头两字节是
@@ -361,6 +422,70 @@ mod tests {
             toc_session_info_cdb(),
             [0x43, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x00]
         );
+    }
+
+    #[test]
+    fn toc_track_list_cdb_matches_the_format_zero_layout() {
+        // 与 Format 1 同族，只有 byte 2 的 Format 位不同（0 是轨道列表）与分配长度
+        // 不同（4 + 100 × 8 = 804 = 0x0324），MSF 位不置，地址按 LBA 回。
+        assert_eq!(
+            toc_track_list_cdb(),
+            [0x43, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x24, 0x00]
+        );
+    }
+
+    #[test]
+    fn track_list_parse_reads_the_hardware_shape() {
+        // 实测 9 区段的可追加 CD-R（2026-10-11）：data_len=82，首末轨道 1 与 9，
+        // 十条描述符（九条数据轨加驱动器报的导出区 0xAA）。
+        let mut response = vec![0u8; TRACK_LIST_LEN];
+        response[0] = 0;
+        response[1] = 82;
+        response[2] = 1;
+        response[3] = 9;
+        let measured: [(u8, u32); 10] = [
+            (1, 0),
+            (2, 14_722),
+            (3, 22_222),
+            (4, 150_093),
+            (5, 264_720),
+            (6, 265_170),
+            (7, 272_370),
+            (8, 279_570),
+            (9, 286_770),
+            (0xAA, 287_070),
+        ];
+        for (index, (track, lba)) in measured.iter().enumerate() {
+            let offset = 4 + index * 8;
+            response[offset + 1] = 0x14; // 控制与 ADR：数据轨
+            response[offset + 2] = *track;
+            response[offset + 4..offset + 8].copy_from_slice(&lba.to_be_bytes());
+        }
+
+        let tracks = parse_track_list(&response).expect("十条描述符都要解析出来");
+        assert_eq!(tracks.len(), 10);
+        assert_eq!(tracks[0].track, 1);
+        assert_eq!(tracks[0].start_lba, 0);
+        assert_eq!(tracks[8].start_lba, 286_770);
+        assert!(!tracks[8].is_lead_out);
+        assert_eq!(tracks[9].track, 0xAA);
+        assert_eq!(tracks[9].start_lba, 287_070);
+        assert!(tracks[9].is_lead_out, "导出区不是候选起点");
+    }
+
+    #[test]
+    fn track_list_parse_rejects_short_or_empty_responses() {
+        assert_eq!(parse_track_list(&[]), None);
+        assert_eq!(parse_track_list(&[0, 82, 1, 9]), None, "只有头没有描述符");
+        // 长度字段声称 82 字节但缓冲只有 12 字节：只解析装得下的那一条。
+        let mut response = vec![0u8; 12];
+        response[1] = 82;
+        response[6] = 7;
+        response[8..12].copy_from_slice(&1234u32.to_be_bytes());
+        let tracks = parse_track_list(&response).expect("装得下的一条要解析出来");
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].track, 7);
+        assert_eq!(tracks[0].start_lba, 1234);
     }
 
     #[test]

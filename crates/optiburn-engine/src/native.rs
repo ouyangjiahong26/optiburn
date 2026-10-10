@@ -114,7 +114,12 @@ pub(crate) fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
 pub(crate) fn grow_size_with_device(mmc: &mut MmcDevice, job: &GrowJob) -> Result<u64, BurnError> {
     wait_until_ready(mmc)?;
     let info = mmc.read_disc_information()?;
-    let (start, old) = growth_start(mmc, info.status, &CancelToken::default())?;
+    let (start, old) = growth_start(
+        mmc,
+        info.status,
+        &CancelToken::default(),
+        job.allow_damaged_last_session,
+    )?;
     let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
     Ok(plan.total_bytes())
 }
@@ -137,7 +142,7 @@ pub(crate) fn grow_with_device(
         .ok_or(BurnError::NativeGap(NativeGap::UnsupportedProfile(
             profile.0,
         )))?;
-    let (start, old) = growth_start(mmc, info.status, cancel)?;
+    let (start, old) = growth_start(mmc, info.status, cancel, job.allow_damaged_last_session)?;
     let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
     guard_grow_capacity(mmc, plan.total_bytes())?;
 
@@ -165,6 +170,7 @@ fn growth_start(
     mmc: &mut MmcDevice,
     status: DiscStatus,
     cancel: &CancelToken,
+    allow_damaged_last_session: bool,
 ) -> Result<(u32, Option<crate::grow::OldSession>), BurnError> {
     match status {
         DiscStatus::Empty => Ok((0, None)),
@@ -175,18 +181,59 @@ fn growth_start(
             let Some(session) = mmc.read_toc_session_info()? else {
                 return Err(BurnError::NoIsoSession);
             };
-            let old = {
-                let mut read = |lba: u32, out: &mut [u8]| {
-                    mmc.read_blocks(lba, out)?;
-                    Ok(())
-                };
-                crate::grow::read_old_session(&mut read, session.last_session_start, cancel)?
-            };
+            let old = read_graft_source(
+                mmc,
+                session.last_session_start,
+                cancel,
+                allow_damaged_last_session,
+            )?;
             Ok((start, Some(old)))
         }
         DiscStatus::Finalized => Err(BurnError::NativeGap(NativeGap::FinalizedDisc)),
         DiscStatus::Other(_) => Err(BurnError::NativeGap(NativeGap::GrowthOnRewritable)),
     }
+}
+
+/// 读出要嫁接的旧区段。末区段读得出来就是它；读不出来时按候选列表（轨道起点加
+/// 末区段起点，新到旧）回退，回退前要用户确认（ADR-0022）：被跳过区段里的文件
+/// 不会进新区段的目录树，等于从可见视图消失。
+///
+/// 全部候选都读不出来时返回**末区段**的错误，让文案与今天一致。
+fn read_graft_source(
+    mmc: &mut MmcDevice,
+    last_session_start: u32,
+    cancel: &CancelToken,
+    allow_damaged_last_session: bool,
+) -> Result<crate::grow::OldSession, BurnError> {
+    let read_session = |mmc: &mut MmcDevice, base: u32| {
+        let mut read = |lba: u32, out: &mut [u8]| {
+            mmc.read_blocks(lba, out)?;
+            Ok(())
+        };
+        crate::grow::read_old_session(&mut read, base, cancel)
+    };
+    let newest_error = match read_session(mmc, last_session_start) {
+        Ok(old) => return Ok(old),
+        Err(error) => error,
+    };
+    for (index, base) in crate::disc_read::session_candidates(mmc)?
+        .into_iter()
+        .enumerate()
+    {
+        if base == last_session_start {
+            continue;
+        }
+        if let Ok(old) = read_session(mmc, base) {
+            if !allow_damaged_last_session {
+                return Err(BurnError::DamagedLastSession {
+                    skipped: index,
+                    session_start: base,
+                });
+            }
+            return Ok(old);
+        }
+    }
+    Err(newest_error)
 }
 
 /// 增长会话的容量门禁（ADR-0019 的口径）：驱动器报得出可用容量就让新会话加上

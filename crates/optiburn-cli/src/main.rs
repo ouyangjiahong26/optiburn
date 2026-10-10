@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, NativeEngine, XorrisoEngine,
-    grow, grow_size, last_session_is_iso,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, IsoSessionState,
+    NativeEngine, SessionFallback, XorrisoEngine, grow, grow_size, iso_session_state,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 use optiburn_mmc::{DiscCapacity, DiscStatus, MmcDevice, MmcError, WriteBlock};
@@ -68,9 +68,13 @@ enum Command {
         /// 写入倍速，缺省交给驱动器自选
         #[arg(long)]
         speed: Option<u32>,
-        /// 写完封盘。默认保持可追加
+        /// 写完封盘。默认不封口，保留继续追加区段的能力
         #[arg(long)]
         close_disc: bool,
+        /// 允许在末区段损坏的盘上追加：回退到更早的可读区段，被跳过区段里的文件
+        /// 不再出现在盘上的可见目录里
+        #[arg(long)]
+        allow_damaged_last_session: bool,
     },
     /// 列出光驱与其中的盘片状态
     Probe,
@@ -115,7 +119,15 @@ fn main() -> ExitCode {
             volume_id,
             speed,
             close_disc,
-        } => append_command(&src, &device, &volume_id, speed, close_disc),
+            allow_damaged_last_session,
+        } => append_command(
+            &src,
+            &device,
+            &volume_id,
+            speed,
+            close_disc,
+            allow_damaged_last_session,
+        ),
         Command::Probe => probe_command(),
     };
 
@@ -247,14 +259,22 @@ fn append_command(
     volume_id: &str,
     speed: Option<u32>,
     close_disc: bool,
+    allow_damaged_last_session: bool,
 ) -> Result<(), String> {
-    ensure_burnable(device, true)?;
+    let damaged = ensure_burnable(device, true)?;
+    if let Some(fallback) = damaged {
+        if !allow_damaged_last_session {
+            return Err(damaged_session_text(fallback, false));
+        }
+        println!("{}", damaged_session_text(fallback, true));
+    }
     let job = GrowJob {
         src: src.to_path_buf(),
         device: device.to_string(),
         speed,
         volume_id: volume_id.to_string(),
         close_disc,
+        allow_damaged_last_session,
     };
     let needed = grow_size(&job).map_err(|e| burn_error_text(&e))?;
     ensure_fits(device, needed)?;
@@ -270,7 +290,10 @@ fn append_command(
 ///
 /// 镜像路径（`accept_appendable = false`）不接受可追加盘：单区段镜像不带前面
 /// 区段的目录树，写下去会把旧文件遮住。追加必须走 `append` 的增长模式。
-fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> {
+fn ensure_burnable(
+    device: &str,
+    accept_appendable: bool,
+) -> Result<Option<SessionFallback>, String> {
     // 挂载中的盘写不进去（引擎要独占打开设备），先拦下来并给出卸载指引。
     if let Some(point) = optiburn_transport::mounted_at(device) {
         return Err(format!(
@@ -299,23 +322,47 @@ fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> 
         }
         WriteBlock::Finalized => "盘已封口，无法再写入，请更换盘片。".to_string(),
     })?;
-    // 追加路径再过一道：末区段不是 ISO 9660 的盘（例如 Windows 的 UDF 盘）不能续写，
-    // 追加 ISO 区段会改变盘在按最后一区段挂载的系统里的可见内容（ADR-0010）。
+    // 追加路径再过一道：盘上有没有可用的 ISO 9660 会话（ADR-0010、ADR-0022）。
+    // 三态分流：末区段可用就放行；末区段损坏但更早区段可读时把回退信息交给调用方
+    // 去要确认；连更早区段都读不出来（纯 UDF 盘、空白盘）按今天的文案拒绝。
+    let mut damaged = None;
     if accept_appendable && info.status == DiscStatus::Appendable {
-        let iso_readable =
-            last_session_is_iso(device).map_err(|e| read_error_text("读取末区段格式", &e))?;
-        if !iso_readable {
-            return Err(
-                "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
-                    .to_string(),
-            );
+        match iso_session_state(device).map_err(|e| read_error_text("读取末区段格式", &e))? {
+            IsoSessionState::Usable => {}
+            IsoSessionState::Damaged(fallback) => damaged = Some(fallback),
+            IsoSessionState::Unusable => {
+                return Err(
+                    "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
+                        .to_string(),
+                );
+            }
         }
     }
     // 门禁放行后，可追加盘只剩追加路径，把区段数报给用户留个底。
     if info.status == DiscStatus::Appendable {
         println!("盘上已有 {} 个区段，将追加新区段。", info.sessions);
     }
-    Ok(())
+    Ok(damaged)
+}
+
+/// 末区段损坏、要回退到更早区段时的文案。`confirmed` 区分“要求确认”与“已确认，
+/// 说明跳过什么”两种用法，两处口径相同。
+fn damaged_session_text(fallback: SessionFallback, confirmed: bool) -> String {
+    let where_from = format!(
+        "第 {} 个候选区段（起点 {}，共 {} 个候选）",
+        fallback.ordinal, fallback.session_start, fallback.candidates
+    );
+    if confirmed {
+        format!(
+            "末区段损坏，已回退到{where_from}：被跳过的 {} 个候选里的文件不再出现在盘上的可见目录里（数据仍在盘上，但没有目录指向它们）。",
+            fallback.skipped
+        )
+    } else {
+        format!(
+            "盘上末区段损坏，续写要回退到{where_from}：被跳过的 {} 个候选里的文件将不再出现在盘上的可见目录里。确认可以接受时加 --allow-damaged-last-session 重试。",
+            fallback.skipped
+        )
+    }
 }
 
 /// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝，避免写到一半废一张盘

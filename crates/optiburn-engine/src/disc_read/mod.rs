@@ -14,9 +14,11 @@
 //! 没有 ISO 9660 的末区段再试 UDF（[`udf`] 模块，ADR-0021）：Windows 刻的纯 UDF
 //! 盘与 Bridge 盘的后半段都走那条路，两个都没有才是 [`BurnError::NoIsoSession`]。
 
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use hadris_iso::file::EntryType;
 use hadris_iso::joliet::JolietLevel;
@@ -29,7 +31,7 @@ use optiburn_mmc::{DiscStatus, MmcDevice, MmcError, SECTOR_BYTES, wait_until_rea
 
 use self::udf::UdfSource;
 use crate::readback::{DiscEntry, ReadBackend, safe_relative_path};
-use crate::{BurnError, CancelToken};
+use crate::{BurnError, CancelToken, IsoSessionState, SessionFallback};
 
 mod udf;
 
@@ -106,6 +108,16 @@ impl BlockSource for FileBlocks {
             .seek(SeekFrom::Start(u64::from(lba) * SECTOR_BYTES as u64))?;
         self.0.read_exact(out)?;
         Ok(())
+    }
+}
+
+/// 多个候选视图共享一台设备：逐个候选尝试时不能每个都拿走设备所有权（见
+/// [`open_readable_session`]）。单线程使用，`Rc<RefCell>` 就够。
+struct SharedBlocks(Rc<RefCell<Box<dyn BlockSource>>>);
+
+impl BlockSource for SharedBlocks {
+    fn read_blocks_at(&mut self, lba: u32, out: &mut [u8]) -> Result<(), BurnError> {
+        self.0.borrow_mut().read_blocks_at(lba, out)
     }
 }
 
@@ -230,9 +242,12 @@ pub(crate) enum DiscSession {
 /// 打开末区段的会话视图：先按 ISO 9660 开，只有“没有 ISO 9660”时才再试 UDF。
 /// Bridge 盘因此走 ISO 分支，与追加门禁的语义保持一致（那些盘续写 ISO 区段会
 /// 遮住原有内容，见 [`crate::readback::last_session_is_iso`]）。
+///
+/// 末区段损坏时按 [`open_readable_session`] 的候选回退；回退信息只在这一层丢掉，
+/// 需要告知用户的调用方走 [`ReadBackend::session_fallback`]。
 pub(crate) fn open_session(source: &Path, cancel: &CancelToken) -> Result<DiscSession, BurnError> {
-    match open_last_session(source, cancel) {
-        Ok(iso) => Ok(DiscSession::Iso(iso)),
+    match open_readable_session(source, cancel) {
+        Ok(opened) => Ok(DiscSession::Iso(opened.iso)),
         Err(BurnError::NoIsoSession) => match udf::open_udf_session(source, cancel) {
             Ok(volume) => Ok(DiscSession::Udf(volume)),
             Err(BurnError::NoIsoSession) => Err(BurnError::NoIsoSession),
@@ -254,13 +269,17 @@ impl ReadBackend for NativeRead {
         }
     }
 
-    fn last_session_is_iso(&self, source: &str) -> Result<bool, BurnError> {
-        // UDF 不进这个判断：门禁问的是“末区段是不是 ISO 9660”。
-        match open_last_session(Path::new(source), &CancelToken::default()) {
-            Ok(_) => Ok(true),
-            // 盘上没有 ISO 9660（空白盘、UDF 盘、音频轨）按“不是”回答，与 xorriso
-            // 路径识别兜底空镜像的口径一致，结构损坏等其它错误原样上抛。
-            Err(BurnError::NoIsoSession) => Ok(false),
+    fn iso_session_state(&self, source: &str) -> Result<IsoSessionState, BurnError> {
+        // UDF 不进这个判断：门禁问的是“盘上有没有可用的 ISO 9660 会话”。
+        match open_readable_session(Path::new(source), &CancelToken::default()) {
+            Ok(opened) => Ok(match opened.fallback {
+                Some(fallback) => IsoSessionState::Damaged(fallback),
+                None => IsoSessionState::Usable,
+            }),
+            // 没有可用的 ISO 9660 会话（空白盘、纯 UDF 盘、音频轨）按“不可用”
+            // 回答，与 xorriso 路径识别兜底空镜像的口径一致，结构损坏等其它错误
+            // 原样上抛。
+            Err(BurnError::NoIsoSession) => Ok(IsoSessionState::Unusable),
             Err(other) => Err(other),
         }
     }
@@ -347,12 +366,64 @@ fn extract_iso_paths(
     Ok(())
 }
 
-/// 打开末区段的 ISO 视图。盘上（或文件里）没有可读的 ISO 9660 时报
-/// [`BurnError::NoIsoSession`]。
-fn open_last_session(
-    source: &Path,
-    cancel: &CancelToken,
-) -> Result<IsoImage<SessionSource>, BurnError> {
+/// 候选区段起点，新到旧。设备路径用 READ TOC：Format 1 的末区段起点加 Format 0
+/// 的轨道起点（去掉驱动器报的导出区），去重后从新到旧。镜像文件只有一个起点 0。
+///
+/// 每个区段的首条轨道起点就是该区段起点，所以轨道列表是区段起点集合的超集；同一
+/// 区段里的后续轨道会被验证步骤淘汰（它们的起点加 16 块处没有 ISO 描述符区）。
+pub(crate) fn session_candidates(mmc: &mut MmcDevice) -> Result<Vec<u32>, BurnError> {
+    let mut candidates = Vec::new();
+    if let Some(session) = mmc.read_toc_session_info()? {
+        candidates.push(session.last_session_start);
+    }
+    // 保守开关：只认末区段，关掉候选回退（issue #40 的待决策 4）。读盘与追加共用
+    // 这一个枚举，置位后两边都退回改动前的行为，便于对照与止损。
+    if last_session_only() {
+        return Ok(candidates);
+    }
+    // 轨道列表读不到不算致命：正常盘上 Format 1 的起点就够，退回单个候选。
+    if let Ok(tracks) = mmc.read_toc_tracks() {
+        for track in tracks {
+            if !track.is_lead_out {
+                candidates.push(track.start_lba);
+            }
+        }
+    }
+    candidates.sort_unstable_by(|left, right| right.cmp(left));
+    candidates.dedup();
+    Ok(candidates)
+}
+
+/// `OPTIBURN_LAST_SESSION_ONLY` 置 1 时关掉候选回退（issue #40 的待决策 4）。
+fn last_session_only() -> bool {
+    last_session_only_value(std::env::var("OPTIBURN_LAST_SESSION_ONLY").ok().as_deref())
+}
+
+/// 开关的取值判定：空值、`0`、`off` 都算关。抽出来是为了能不碰进程环境测。
+fn last_session_only_value(value: Option<&str>) -> bool {
+    !matches!(value, None | Some("") | Some("0") | Some("off"))
+}
+
+/// 校验一个候选区段能不能用：整棵目录树都要走得通（每条记录能解析、目录数据
+/// 都读得到）。残片的常见形态就是目录结构写到一半，走不通即淘汰。
+///
+/// 按 issue #40 的决策只走目录树，不逐文件读一遍；设备路径上源长度未知，能读到
+/// 哪里由驱动器决定，树的遍历本身就会把越界读暴露成错误。
+fn validate_session(iso: &IsoImage<SessionSource>, cancel: &CancelToken) -> Result<(), BurnError> {
+    let root = iso.root_dir();
+    let joliet = is_joliet_root(&root.entry_type());
+    let mut entries = Vec::new();
+    walk_list(iso, root.dir_ref(), "", joliet, &mut entries, cancel)?;
+    Ok(())
+}
+
+/// 打开“最新一个通过验证的区段”。正常盘上就是 READ TOC Format 1 报的末区段；
+/// 末区段损坏（固件把残片登记成区段，或目录结构不完整）时按候选列表回退到最新的
+/// 可用区段。
+///
+/// 全部候选都不可用时返回**最新那个候选**的错误，让文案与今天一致（读盘报
+/// `NoIsoSession`，设备错误原样上抛）。
+fn open_readable_session(source: &Path, cancel: &CancelToken) -> Result<OpenedSession, BurnError> {
     match classify_source(source) {
         SourceKind::Image(path) => {
             let file = File::open(&path)?;
@@ -360,7 +431,12 @@ fn open_last_session(
             if len < SECTOR_BYTES as u64 * 17 {
                 return Err(BurnError::NoIsoSession);
             }
-            open_session_view(FileBlocks(file), 0, len, cancel)
+            let iso = open_session_view(FileBlocks(file), 0, len, cancel)?;
+            validate_session(&iso, cancel)?;
+            Ok(OpenedSession {
+                iso,
+                fallback: None,
+            })
         }
         SourceKind::Device(device) => {
             let transport = optiburn_transport::open(&device)
@@ -374,17 +450,56 @@ fn open_last_session(
             if info.status == DiscStatus::Empty {
                 return Err(BurnError::NoIsoSession);
             }
-            let Some(session) = mmc.read_toc_session_info()? else {
-                return Err(BurnError::NoIsoSession);
-            };
-            open_session_view(
-                DiscBlocks(mmc),
-                session.last_session_start,
-                u64::MAX,
-                cancel,
-            )
+            open_readable_session_on_device(mmc, cancel)
         }
     }
+}
+
+/// 设备分支的主体：候选枚举加逐个尝试。抽出来是为了能在没有光驱的机器上用假
+/// 传输层测（真机路径只有 [`open_transport_and_readable_session`] 那一层包装）。
+pub(crate) fn open_readable_session_on_device(
+    mmc: MmcDevice,
+    cancel: &CancelToken,
+) -> Result<OpenedSession, BurnError> {
+    let mut mmc = mmc;
+    let candidates = session_candidates(&mut mmc)?;
+    if candidates.is_empty() {
+        return Err(BurnError::NoIsoSession);
+    }
+    let total = candidates.len();
+    // 候选逐个尝试，设备只有一个：用共享块源让每个视图都能读同一台设备。
+    let shared = Rc::new(RefCell::new(
+        Box::new(DiscBlocks(mmc)) as Box<dyn BlockSource>
+    ));
+    let mut newest_error = None;
+    for (index, base) in candidates.iter().enumerate() {
+        let attempt = open_session_view(SharedBlocks(Rc::clone(&shared)), *base, u64::MAX, cancel)
+            .and_then(|iso| validate_session(&iso, cancel).map(|()| iso));
+        match attempt {
+            Ok(iso) => {
+                let fallback = (index > 0).then_some(SessionFallback {
+                    skipped: index,
+                    ordinal: total - index,
+                    candidates: total,
+                    session_start: *base,
+                });
+                return Ok(OpenedSession { iso, fallback });
+            }
+            Err(error) => {
+                if newest_error.is_none() {
+                    newest_error = Some(error);
+                }
+            }
+        }
+    }
+    Err(newest_error.unwrap_or(BurnError::NoIsoSession))
+}
+
+/// 打开可读区段的结果：视图加“是否回退过”的信息（回退过时调用方要告知用户，被
+/// 跳过区段里的文件不在这个视图里）。
+pub(crate) struct OpenedSession {
+    pub iso: IsoImage<SessionSource>,
+    pub fallback: Option<SessionFallback>,
 }
 
 /// 在起点 `base` 的区段上探测地址约定并打开 ISO 视图。`len_hint` 只在

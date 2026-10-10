@@ -13,7 +13,9 @@
 | 增长模式（Grow） | 追加刻录的方式：引擎读出盘上已有区段的目录树，把源目录内容并入后作为新区段提交，旧文件保持可见。对应 `GrowJob`、`optiburn_engine::grow`、CLI 的 `append`。Linux 走 xorriso，Windows 走原生嫁接式实现（ADR-0020）。 | 续刻、增量刻录、追加镜像 |
 | 嫁接式增长（Grafting） | 原生增长模式的写法：新区段只写目录结构与新文件数据，旧文件的数据块原地引用，既不重读也不重写。对应 `grow.rs` 的会话生成器。 | 合入式追加、增量合并 |
 | 增长会话（Growth Session） | 增长模式生成并写下的那一个新区段：ISO 9660 加 Joliet（不带 UDF 描述符），目录记录里的地址是盘级绝对地址。对应 `SessionPlan`。 | 追加区段、新区段镜像 |
-| 旧区段（Old Session） | 增长模式要嫁接的盘上末区段：引擎读出它的 Joliet 目录树（`OldSession`），新会话引用它里面文件的数据块。起点用 READ TOC Format 1 报的末区段起始地址。 | 旧会话、上一条区段、原区段 |
+| 候选区段（Session Candidate） | 回退时逐个尝试的区段起点：`READ TOC` 的轨道起点加末区段起点，去重后从新到旧。每个区段的首条轨道起点就是该区段起点。对应 `disc_read` 的 `session_candidates`。 | 备用区段、回退起点 |
+| 损坏末区段（Damaged Last Session） | 固件把中断刻录的残片登记成末区段，读它的卷描述符区或目录树失败。读盘与会话选择回退到最新的可用候选，追加要求用户确认（ADR-0022）。对应 `IsoSessionState::Damaged`、`SessionFallback`、`GrowJob::allow_damaged_last_session`。 | 坏区段、坏会话、残片区段 |
+| 旧区段（Old Session） | 增长模式要嫁接的盘上末区段：引擎读出它的 Joliet 目录树（`OldSession`），新会话引用它里面文件的数据块。起点用 READ TOC Format 1 报的末区段起始地址（损坏末区段时用回退后的候选）。 | 旧会话、上一条区段、原区段 |
 | 图形前端（GUI） | optiburn 的图形入口：`src-tauri` 的命令层加 `frontend` 的 React 页面，与 CLI 平级，共用同一批核心 crate。 | 界面、客户端、UI |
 | 更新信息（update information） | 嵌在 AppImage 里的更新定位串（`gh-releases-zync|…`），AppImageUpdate 据此找到新版本的 `.zsync` 做增量更新。 | 更新数据、更新字符串 |
 | 应用内更新（updater） | `tauri-plugin-updater` 驱动的检查、下载、就地替换通道：更新源是 Release 的 `latest.json`，更新包带 Ed25519 签名。 | 自动更新、自升级 |

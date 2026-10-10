@@ -46,6 +46,7 @@ export function startAppend(args: {
   volumeId: string;
   speed: number | null;
   closeDisc: boolean;
+  allowDamagedLastSession: boolean;
 }): Promise<void> {
   return invoke("start_append", args);
 }

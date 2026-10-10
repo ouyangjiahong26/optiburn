@@ -9,15 +9,15 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::{BurnError, CancelToken, TAIL_LINES, XORRISO};
+use crate::{BurnError, CancelToken, IsoSessionState, TAIL_LINES, XORRISO};
 
 use super::disc_read::NativeRead;
 use super::xorriso::run;
 
-/// 读侧后端：五个读盘能力的实现约定（[`BurnEngine`] 的读侧对偶，ADR-0018）。
+/// 读侧后端：读盘能力的实现约定（[`BurnEngine`] 的读侧对偶，ADR-0018）。
 pub(crate) trait ReadBackend {
     fn read_volume_id(&self, source: &str) -> Result<String, BurnError>;
-    fn last_session_is_iso(&self, source: &str) -> Result<bool, BurnError>;
+    fn iso_session_state(&self, source: &str) -> Result<IsoSessionState, BurnError>;
     fn list_tree(&self, source: &str) -> Result<Vec<DiscEntry>, BurnError>;
     fn extract_tree(
         &self,
@@ -61,9 +61,16 @@ impl ReadBackend for XorrisoRead {
             .ok_or_else(|| BurnError::ReadFailed("xorriso did not report a Volume Id".to_string()))
     }
 
-    fn last_session_is_iso(&self, device: &str) -> Result<bool, BurnError> {
+    /// Linux 侧只有“能不能按 ISO 9660 读”这一个判断，没有候选回退：xorriso 读不到
+    /// 就是读不到，因此损坏末区段这条盘在这里归 [`IsoSessionState::Unusable`]
+    /// （ADR-0022 的后果节记录了这条平台差异，Windows 侧才有回退）。
+    fn iso_session_state(&self, device: &str) -> Result<IsoSessionState, BurnError> {
         let (_, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
-        Ok(!is_blank_image_fallback(&stderr))
+        if is_blank_image_fallback(&stderr) {
+            Ok(IsoSessionState::Unusable)
+        } else {
+            Ok(IsoSessionState::Usable)
+        }
     }
 
     fn list_tree(&self, device: &str) -> Result<Vec<DiscEntry>, BurnError> {
@@ -121,13 +128,18 @@ pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
     read_backend().read_volume_id(device)
 }
 
-/// 盘上最后一个区段是否能作为 ISO 9660 读出。
+/// 盘上 ISO 9660 会话的可用状态，追加前门禁用它分流（ADR-0022）。
 ///
-/// 追加前门禁用它挡住“末区段不是 ISO 9660”的盘，例如 Windows 写入的 UDF 盘。
-/// 这类盘续写 ISO 区段后，按最后一区段挂载的系统（Windows）只会看到新内容，
-/// 原有文件被遮住（实测，见 ADR-0010）。
-pub fn last_session_is_iso(device: &str) -> Result<bool, BurnError> {
-    read_backend().last_session_is_iso(device)
+/// [`IsoSessionState::Unusable`] 挡的是“末区段不是 ISO 9660 且没有更早的可用会话”
+/// 的盘，例如 Windows 写入的纯 UDF 盘：这类盘续写 ISO 区段后，按最后一区段挂载的
+/// 系统（Windows）只会看到新内容，原有文件被遮住（实测，见 ADR-0010）。
+///
+/// [`IsoSessionState::Damaged`] 是末区段损坏（固件把残片登记成区段，或目录结构
+/// 不完整）但更早区段仍可读的盘：调用方必须把被跳过区段里的文件会从可见视图消失
+/// 这件事告知用户，得到确认后把 [`GrowJob::allow_damaged_last_session`] 置位再提交
+/// （ADR-0022）。Linux 的 xorriso 路径没有候选回退，这类盘在那边归 `Unusable`。
+pub fn iso_session_state(source: &str) -> Result<IsoSessionState, BurnError> {
+    read_backend().iso_session_state(source)
 }
 
 /// 把镜像或设备的目录树抽取到本地目录，供回读校验与复制使用（ADR-0010）。

@@ -27,7 +27,7 @@ mod xorriso;
 
 pub use native::NativeEngine;
 pub use readback::{
-    DiscEntry, extract_paths, extract_tree, last_session_is_iso, list_tree, read_volume_id,
+    DiscEntry, extract_paths, extract_tree, iso_session_state, list_tree, read_volume_id,
 };
 pub use verify::compare_trees;
 pub use xorriso::{BurnFailure, XorrisoEngine};
@@ -100,6 +100,36 @@ pub struct GrowJob {
     pub volume_id: String,
     /// 提交后把盘标记为不可追加（封盘）。
     pub close_disc: bool,
+    /// 允许在末区段损坏的盘上追加，回退到更早的可读区段（ADR-0022）。
+    ///
+    /// 置位前调用方必须把 [`SessionFallback`] 的内容告知用户：被跳过区段里的文件
+    /// 不在新会话的目录树里，等于从可见视图消失。没有这个授权时引擎按
+    /// [`BurnError::DamagedLastSession`] 拒绝。
+    pub allow_damaged_last_session: bool,
+}
+
+/// 末区段损坏时回退到更早区段的信息（读取与追加共用，ADR-0022）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionFallback {
+    /// 被跳过的候选个数（0 表示末区段本身可用）。
+    pub skipped: usize,
+    /// 选中区段在候选里的序号，从旧到新数，1 起。
+    pub ordinal: usize,
+    /// 参与枚举的候选总数。
+    pub candidates: usize,
+    /// 选中区段的起点（盘级块号）。
+    pub session_start: u32,
+}
+
+/// 盘上 ISO 9660 会话的可用状态，追加门禁据此分流（ADR-0022）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsoSessionState {
+    /// 末区段就是可读的 ISO 9660 会话。
+    Usable,
+    /// 末区段损坏，回退到更早的会话；追加会跳过被跳过区段里的文件，需要确认。
+    Damaged(SessionFallback),
+    /// 盘上没有被支持的 ISO 9660 会话（空白盘、纯 UDF 盘、音频盘）。
+    Unusable,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -131,6 +161,11 @@ pub enum BurnError {
     /// 盘上旧区段的形状不支持嫁接式增长（无 Joliet、启动记录、多 extent 文件等）。
     #[error("cannot grow this disc with the native engine: {0}")]
     GrowUnsupported(String),
+    /// 末区段损坏，回退到更早区段前需要用户确认（ADR-0022）。
+    #[error(
+        "the last session is damaged: skipped {skipped} candidates, the readable session starts at LBA {session_start}"
+    )]
+    DamagedLastSession { skipped: usize, session_start: u32 },
     /// 追加的目录与盘上已有内容冲突（同名文件对目录、命名空间内重名）。
     #[error("growth content conflicts with the disc: {0}")]
     GrowConflict(String),

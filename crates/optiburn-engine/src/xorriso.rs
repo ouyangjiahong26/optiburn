@@ -344,6 +344,7 @@ mod tests {
             speed: Some(8),
             volume_id: "OPTIBURN".to_string(),
             close_disc: false,
+            allow_damaged_last_session: false,
         };
         assert_eq!(
             grow_args(&job),
@@ -372,6 +373,7 @@ mod tests {
             speed: None,
             volume_id: "OPTIBURN".to_string(),
             close_disc: false,
+            allow_damaged_last_session: false,
         };
         assert!(!grow_args(&job).contains(&OsString::from("-speed")));
     }
@@ -386,6 +388,7 @@ mod tests {
             speed: Some(8),
             volume_id: "OPTIBURN".to_string(),
             close_disc: true,
+            allow_damaged_last_session: false,
         };
         assert_eq!(
             print_size_args(&job),
@@ -414,6 +417,7 @@ mod tests {
             speed: None,
             volume_id: "OPTIBURN".to_string(),
             close_disc: true,
+            allow_damaged_last_session: false,
         };
         assert_eq!(
             grow_args(&job),
@@ -495,6 +499,7 @@ mod tests {
             speed: None,
             volume_id: "PRINTSIZE".to_string(),
             close_disc: false,
+            allow_damaged_last_session: false,
         };
 
         let bytes = grow_size(&job).expect("print size must succeed");

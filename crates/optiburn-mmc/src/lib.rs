@@ -291,6 +291,16 @@ impl MmcDevice {
         Ok(write::parse_session_info(&data))
     }
 
+    /// READ TOC/PMA/ATIP（0x43）Format 0：轨道列表（编号与起始 LBA）。
+    ///
+    /// 跳过损坏的末区段（issue #40）要靠它枚举候选区段起点：每个区段的首条轨道
+    /// 起点就是该区段的起点，列表里还有驱动器报的导出区（轨道号 0xAA），它不是
+    /// 候选。读不到任何轨道时返回空列表，由调用方决定怎么办。
+    pub fn read_toc_tracks(&mut self) -> Result<Vec<write::TrackStart>, MmcError> {
+        let data = self.read_into(&write::toc_track_list_cdb(), write::TRACK_LIST_LEN)?;
+        Ok(write::parse_track_list(&data).unwrap_or_default())
+    }
+
     /// READ(10)（0x28）：从 `lba` 读一段数据，长度必须是整块。写侧命令的读侧对偶，
     /// 写盘后的回读校验与将来的原生读盘都用它。
     ///
@@ -812,6 +822,15 @@ mod tests {
             free_blocks: 73_077,
             track_blocks: 73_077,
         }
+    }
+
+    #[test]
+    fn read_toc_tracks_sends_the_format_zero_cdb_and_tolerates_empty_replies() {
+        let (mut dev, log) = device(vec![0u8; write::TRACK_LIST_LEN]);
+        let tracks = dev.read_toc_tracks().expect("空响应按空列表处理");
+        assert!(tracks.is_empty());
+        assert_eq!(log.borrow()[0][0..4], [0x43, 0x00, 0x00, 0x00]);
+        assert_eq!(log.borrow()[0][7..9], [0x03, 0x24]);
     }
 
     #[test]

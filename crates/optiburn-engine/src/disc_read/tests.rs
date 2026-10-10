@@ -21,11 +21,16 @@ impl BlockSource for MemoryBlocks {
 
 /// 临时目录守卫：建在系统临时目录，析构时删除。
 struct TempDir(PathBuf);
-
 impl TempDir {
     fn new(tag: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("optiburn-disc-read-{tag}-{}", std::process::id()));
+        // 同一进程里并行跑的测试会同时要夹具：只按进程号命名会互相删目录，
+        // 再叠一个自增序号。
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "optiburn-disc-read-{tag}-{}-{unique}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create temp dir");
         Self(path)
@@ -72,7 +77,10 @@ fn roundtrip_volume_id_list_and_extract() {
     let iso_text = iso.to_str().expect("utf-8 temp path").to_string();
     let backend = NativeRead;
 
-    assert!(backend.last_session_is_iso(&iso_text).unwrap());
+    assert!(matches!(
+        backend.iso_session_state(&iso_text).unwrap(),
+        IsoSessionState::Usable
+    ));
     assert_eq!(backend.read_volume_id(&iso_text).unwrap(), "ROUNDTRIP");
 
     // 列举：中文名原样、目录 size 0、文件 size 是内容长度。排序后整表比对，
@@ -195,15 +203,16 @@ fn non_iso_sources_report_no_session() {
         open_session_view(short, 0, u64::MAX, &token),
         Err(BurnError::ReadFailed(_))
     ));
-    // 临时文件版（走文件源分支）对 last_session_is_iso 报“不是”。
+    // 临时文件版（走文件源分支）对 iso_session_state 报不可用。
     let tmp = TempDir::new("noniso");
     let junk = tmp.path().join("junk.iso");
     std::fs::write(&junk, vec![0x55u8; SECTOR_BYTES * 3]).expect("write junk");
-    assert!(
-        !NativeRead
-            .last_session_is_iso(junk.to_str().unwrap())
-            .unwrap()
-    );
+    assert!(matches!(
+        NativeRead
+            .iso_session_state(junk.to_str().unwrap())
+            .unwrap(),
+        IsoSessionState::Unusable
+    ));
 }
 
 /// 手造一张“xorriso 增长模式”形状的区段：extent 全是盘级绝对地址、描述符区
@@ -377,6 +386,240 @@ fn write_dir_record(record: &mut [u8], extent: u32, size: u32, flags: u8, name: 
     record[32] = name.len() as u8;
     record[33..33 + name.len()].copy_from_slice(name);
 }
+/// 假光驱：盘片信息与两级 TOC 按脚本回，READ(10) 从合成盘取数据。区段候选枚举与
+/// 回退逻辑靠它测（真机路径只是多一层按路径打开设备）。
+struct ScriptedDisc {
+    disc: Vec<u8>,
+    /// READ TOC Format 1 报的末区段起点。
+    last_session_start: u32,
+    /// READ TOC Format 0 报的轨道（编号与起点），调用方按需要放导出区。
+    tracks: Vec<(u8, u32)>,
+}
+
+impl ScriptedDisc {
+    fn new(disc: Vec<u8>, last_session_start: u32, tracks: Vec<(u8, u32)>) -> Self {
+        Self {
+            disc,
+            last_session_start,
+            tracks,
+        }
+    }
+}
+
+impl optiburn_transport::ScsiTransport for ScriptedDisc {
+    fn issue(
+        &mut self,
+        cdb: &[u8],
+        dir: optiburn_transport::Direction,
+        data: &mut [u8],
+        _timeout: std::time::Duration,
+    ) -> Result<optiburn_transport::Completion, optiburn_transport::TransportError> {
+        let fail = |cdb: &[u8]| {
+            Err(optiburn_transport::TransportError::CommandFailed {
+                cdb: cdb.to_vec(),
+                scsi_status: 2,
+                sense: vec![0x70, 0x00, 0x05, 0x21, 0, 0, 0, 0x0a],
+            })
+        };
+        match cdb[0] {
+            0x00 => {}
+            // READ DISC INFORMATION：可追加，区段数与末轨号按轨道数凑一个可信值。
+            0x51 => {
+                if data.len() >= 7 {
+                    data[2] = 0b01;
+                    data[3] = 1;
+                    data[4] = self.tracks.len() as u8;
+                    data[5] = self.tracks.len() as u8 + 1;
+                    data[6] = self.tracks.len() as u8 + 1;
+                }
+            }
+            0x43 => match cdb[2] & 0x0F {
+                // Format 0：轨道列表（LBA 形态）。
+                0 => {
+                    let length = 2 + self.tracks.len() * 8;
+                    if data.len() >= 4 + self.tracks.len() * 8 {
+                        data[0] = (length >> 8) as u8;
+                        data[1] = length as u8;
+                        data[2] = self.tracks.first().map(|t| t.0).unwrap_or(1);
+                        data[3] = self.tracks.last().map(|t| t.0).unwrap_or(1);
+                        for (index, (track, lba)) in self.tracks.iter().enumerate() {
+                            let offset = 4 + index * 8;
+                            data[offset + 1] = 0x14;
+                            data[offset + 2] = *track;
+                            data[offset + 4..offset + 8].copy_from_slice(&lba.to_be_bytes());
+                        }
+                    }
+                }
+                // Format 1：区段信息。
+                1 => {
+                    if data.len() >= 12 {
+                        data[1] = 10;
+                        data[2] = 1;
+                        data[3] = self.tracks.len() as u8;
+                        data[8..12].copy_from_slice(&self.last_session_start.to_be_bytes());
+                    }
+                }
+                _ => return fail(cdb),
+            },
+            0x28 if dir == optiburn_transport::Direction::FromDevice => {
+                let lba = u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]) as usize;
+                let start = lba * SECTOR_BYTES;
+                let end = start + data.len();
+                match self.disc.get(start..end) {
+                    Some(bytes) => data.copy_from_slice(bytes),
+                    None => return fail(cdb),
+                }
+            }
+            _ => return fail(cdb),
+        }
+        Ok(optiburn_transport::Completion {
+            scsi_status: 0,
+            sense: Vec::new(),
+            residual: 0,
+        })
+    }
+
+    fn device_path(&self) -> &str {
+        "D:"
+    }
+}
+
+/// 造一张合成盘：`[0 到 base 的零] + 会话字节`，会话字节用生成器按 `base` 起点算。
+fn disc_with_session(base: u32, total_blocks: u32, session: &[u8]) -> Vec<u8> {
+    let mut disc = vec![0u8; total_blocks as usize * SECTOR_BYTES];
+    let start = base as usize * SECTOR_BYTES;
+    disc[start..start + session.len()].copy_from_slice(session);
+    disc
+}
+
+/// 用生成器造一个只含给定文件的会话（盘级绝对地址）。
+fn session_bytes(base: u32, volume_id: &str, files: &[(&str, &str)]) -> Vec<u8> {
+    let tmp = TempDir::new("candidate-session");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).expect("create source dir");
+    for (name, content) in files {
+        std::fs::write(src.join(name), content.as_bytes()).expect("write file");
+    }
+    let plan =
+        crate::grow::plan_session(None, &src, volume_id.to_string(), base).expect("plan a session");
+    let mut image = Vec::new();
+    plan.write_image(&mut image, &CancelToken::default())
+        .expect("write the session");
+    image
+}
+
+fn open_on_device(disc: ScriptedDisc) -> Result<OpenedSession, BurnError> {
+    let mmc = MmcDevice::new(Box::new(disc));
+    open_readable_session_on_device(mmc, &CancelToken::default())
+}
+
+#[test]
+fn candidates_come_from_the_track_list_newest_first() {
+    let disc = ScriptedDisc::new(
+        vec![0u8; 64 * SECTOR_BYTES],
+        3000,
+        vec![(1, 1000), (2, 2000), (3, 3000), (0xAA, 3200)],
+    );
+    let mut mmc = MmcDevice::new(Box::new(disc));
+    let candidates = session_candidates(&mut mmc).expect("candidates");
+    assert_eq!(
+        candidates,
+        vec![3000, 2000, 1000],
+        "新到旧、去重，导出区不参与"
+    );
+}
+
+#[test]
+fn last_session_only_switch_parses_its_values() {
+    assert!(!last_session_only_value(None), "默认关");
+    assert!(!last_session_only_value(Some("")));
+    assert!(!last_session_only_value(Some("0")));
+    assert!(!last_session_only_value(Some("off")));
+    assert!(last_session_only_value(Some("1")));
+    assert!(last_session_only_value(Some("yes")));
+}
+
+#[test]
+fn a_damaged_last_session_falls_back_to_the_previous_one() {
+    // 盘：[起点 1000 的完好会话][起点 2000 的残片]。残片的描述符区是零，读它报
+    // NoIsoSession；候选回退到 1000，并把回退信息报出来。
+    let good = session_bytes(1000, "GOODSESSION", &[("keep.txt", "kept")]);
+    let mut disc = disc_with_session(1000, 4096, &good);
+    // 残片：起点 2000 处放一段不是 ISO 描述符区的字节，目录结构写着它却读不出来。
+    let fragment_start = 2000 * SECTOR_BYTES;
+    disc[fragment_start..fragment_start + SECTOR_BYTES].fill(0x55);
+    let scripted = ScriptedDisc::new(disc, 2000, vec![(1, 1000), (2, 2000), (0xAA, 2100)]);
+
+    let opened = open_on_device(scripted).expect("回退到 1000 的会话");
+    let fallback = opened.fallback.expect("末区段损坏要报回退信息");
+    assert_eq!(fallback.skipped, 1);
+    assert_eq!(fallback.ordinal, 1);
+    assert_eq!(fallback.candidates, 2);
+    assert_eq!(fallback.session_start, 1000);
+
+    let root = opened.iso.root_dir();
+    let mut entries = Vec::new();
+    walk_list(
+        &opened.iso,
+        root.dir_ref(),
+        "",
+        is_joliet_root(&root.entry_type()),
+        &mut entries,
+        &CancelToken::default(),
+    )
+    .expect("walk the recovered session");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, "/keep.txt");
+}
+
+#[test]
+fn a_fragment_with_intact_descriptors_but_a_broken_tree_is_skipped() {
+    // 残片的描述符区完整（PVD 与 Joliet 都在），但根目录记录的 extent 指向盘外，
+    // 遍历时会读失败：候选验证必须淘汰它，而不是把坏树当成可用会话。
+    let good = session_bytes(1000, "GOODSESSION", &[("keep.txt", "kept")]);
+    let mut fragment = session_bytes(2000, "FRAGMENT", &[("lost.txt", "lost")]);
+    // 把根记录（PVD 偏移 158 起，Joliet SVD 偏移 156 起）的 extent 指到盘外。
+    for descriptor in [16usize, 17] {
+        let field = descriptor * SECTOR_BYTES + 158;
+        fragment[field..field + 4].copy_from_slice(&0x00FF_FFFFu32.to_le_bytes());
+        fragment[field + 4..field + 8].copy_from_slice(&0x00FF_FFFFu32.to_be_bytes());
+    }
+    let mut disc = disc_with_session(1000, 4096, &good);
+    let fragment_start = 2000 * SECTOR_BYTES;
+    disc[fragment_start..fragment_start + fragment.len()].copy_from_slice(&fragment);
+    let scripted = ScriptedDisc::new(disc, 2000, vec![(1, 1000), (2, 2000)]);
+
+    let opened = open_on_device(scripted).expect("跳过坏树，回退到 1000");
+    assert_eq!(opened.fallback.expect("要报回退").session_start, 1000);
+}
+
+#[test]
+fn all_candidates_invalid_still_reports_the_newest_error() {
+    // 只有一片残片：回退没有去处，报最新那个候选的错误（NoIsoSession），文案与
+    // 改动前一致。
+    let mut disc = vec![0u8; 4096 * SECTOR_BYTES];
+    let fragment_start = 2000 * SECTOR_BYTES;
+    disc[fragment_start..fragment_start + SECTOR_BYTES].fill(0x55);
+    let scripted = ScriptedDisc::new(disc, 2000, vec![(1, 2000)]);
+    let error = match open_on_device(scripted) {
+        Err(error) => error,
+        Ok(_) => panic!("没有可用候选时不该开出会话"),
+    };
+    assert!(matches!(error, BurnError::NoIsoSession), "{error:?}");
+}
+
+#[test]
+fn a_healthy_disc_reports_no_fallback() {
+    let good = session_bytes(150093, "HEALTHY", &[("a.txt", "alpha")]);
+    let scripted = ScriptedDisc::new(
+        disc_with_session(150093, 160000, &good),
+        150093,
+        vec![(1, 0), (2, 150093)],
+    );
+    let opened = open_on_device(scripted).expect("末区段可用");
+    assert!(opened.fallback.is_none(), "正常盘不该报回退");
+}
+
 #[cfg(test)]
 mod hardware_tests {
     //! 真机测试：需要光驱，用环境变量指定设备后手动跑（ADR-0018 的实测记录）。
@@ -397,7 +640,10 @@ mod hardware_tests {
             std::env::var("OPTIBURN_IMAGE").expect("set OPTIBURN_IMAGE to the burned .iso");
 
         assert_eq!(NativeRead.read_volume_id(&device).unwrap(), "NATIVETEST");
-        assert!(NativeRead.last_session_is_iso(&device).unwrap());
+        assert!(matches!(
+            NativeRead.iso_session_state(&device).unwrap(),
+            IsoSessionState::Usable
+        ));
         let entries = NativeRead.list_tree(&device).unwrap();
         assert!(!entries.is_empty(), "盘上应列得出文件: {entries:?}");
 

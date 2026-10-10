@@ -17,6 +17,8 @@ struct ScriptedDrive {
     nwa: u32,
     /// READ TOC Format 1 报的末区段起点（旧区段内容的位置）。
     last_session_start: u32,
+    /// READ TOC Format 0 报的轨道（编号与起点），候选枚举用它。
+    tracks: Vec<(u8, u32)>,
     /// 合成盘：READ(10) 从这里按块取数据，越界报命令失败。
     disc: Vec<u8>,
     log: Rc<RefCell<Vec<Vec<u8>>>>,
@@ -33,6 +35,7 @@ impl ScriptedDrive {
             free_blocks: 100_000,
             nwa: 0x2000,
             last_session_start: 0x1000,
+            tracks: vec![(1, 0), (2, 0x1000)],
             disc: Vec::new(),
             log: Rc::new(RefCell::new(Vec::new())),
             written: Rc::new(RefCell::new(Vec::new())),
@@ -86,18 +89,36 @@ impl ScsiTransport for ScriptedDrive {
                     data[16..20].copy_from_slice(&self.free_blocks.to_be_bytes());
                 }
             }
-            0x43 => {
-                // READ TOC Format 1：数据长度 10，首末会话编号 1 与 2，
-                // 描述符的字节 4-7（响应 8-11）是末区段起始地址。
-                if data.len() >= 12 {
-                    data[0] = 0;
-                    data[1] = 10;
-                    data[2] = 1;
-                    data[3] = 2;
-                    data[4] = 1;
-                    data[8..12].copy_from_slice(&self.last_session_start.to_be_bytes());
+            0x43 => match cdb[2] & 0x0F {
+                // Format 0：轨道列表（候选枚举用），起点由测试给定。
+                0 => {
+                    let length = 2 + self.tracks.len() * 8;
+                    if data.len() >= 4 + self.tracks.len() * 8 {
+                        data[0] = (length >> 8) as u8;
+                        data[1] = length as u8;
+                        data[2] = self.tracks.first().map(|t| t.0).unwrap_or(1);
+                        data[3] = self.tracks.last().map(|t| t.0).unwrap_or(1);
+                        for (index, (track, lba)) in self.tracks.iter().enumerate() {
+                            let offset = 4 + index * 8;
+                            data[offset + 1] = 0x14;
+                            data[offset + 2] = *track;
+                            data[offset + 4..offset + 8].copy_from_slice(&lba.to_be_bytes());
+                        }
+                    }
                 }
-            }
+                // Format 1：数据长度 10，首末会话编号 1 与 2，
+                // 描述符的字节 4-7（响应 8-11）是末区段起始地址。
+                _ => {
+                    if data.len() >= 12 {
+                        data[0] = 0;
+                        data[1] = 10;
+                        data[2] = 1;
+                        data[3] = 2;
+                        data[4] = 1;
+                        data[8..12].copy_from_slice(&self.last_session_start.to_be_bytes());
+                    }
+                }
+            },
             0x28 if dir == Direction::FromDevice => {
                 let lba = u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]) as usize;
                 let start = lba * SECTOR_BYTES;
@@ -388,21 +409,26 @@ fn grow_job(src: &Path) -> GrowJob {
         speed: None,
         volume_id: "GROWTV1".into(),
         close_disc: false,
+        allow_damaged_last_session: false,
     }
 }
 
 /// 跑一次增长写盘，返回命令顺序与假驱动器收到的写入载荷。
-fn run_grow(mut drive: ScriptedDrive, src: &Path) -> Result<(Vec<Vec<u8>>, Vec<u8>), BurnError> {
+fn run_grow(drive: ScriptedDrive, src: &Path) -> Result<(Vec<Vec<u8>>, Vec<u8>), BurnError> {
+    run_grow_job(drive, &grow_job(src))
+}
+
+/// 跑一次增长写盘，用调用方给的任务（需要 `allow_damaged_last_session` 这类非默认
+/// 取值时用这个）。
+fn run_grow_job(
+    mut drive: ScriptedDrive,
+    job: &GrowJob,
+) -> Result<(Vec<Vec<u8>>, Vec<u8>), BurnError> {
     let log = Rc::clone(&drive.log);
     let written = Rc::clone(&drive.written);
     drive.cancel_after_first_write = None;
     let mut mmc = MmcDevice::new(Box::new(drive));
-    let result = grow_with_device(
-        &mut mmc,
-        &grow_job(src),
-        &mut |_| {},
-        &CancelToken::default(),
-    );
+    let result = grow_with_device(&mut mmc, job, &mut |_| {}, &CancelToken::default());
     let cdbs = log.borrow().clone();
     result.map(|()| (cdbs, written.borrow().clone()))
 }
@@ -428,6 +454,94 @@ fn names(node: &crate::grow::DirNode) -> Vec<String> {
     out.extend(node.dirs.iter().map(|dir| dir.name.clone()));
     out.sort();
     out
+}
+
+#[test]
+fn grow_refuses_a_damaged_last_session_without_confirmation() {
+    // 盘：[起点 0x1000 的完好会话][起点 0x1800 的残片]，TOC 把残片报成末区段。
+    let tmp = TempDir::new("grow-damaged");
+    let old_src = tmp.path().join("old");
+    std::fs::create_dir_all(&old_src).expect("create old src");
+    std::fs::write(old_src.join("old.txt"), b"old content").expect("write old file");
+    let old_plan = crate::grow::plan_session(None, &old_src, "OLD".into(), 0x1000)
+        .expect("plan the old session");
+    let mut old_image = Vec::new();
+    old_plan
+        .write_image(&mut old_image, &CancelToken::default())
+        .expect("write the old session");
+    let mut disc = vec![0u8; 0x3000 * SECTOR_BYTES];
+    disc[0x1000 * SECTOR_BYTES..0x1000 * SECTOR_BYTES + old_image.len()]
+        .copy_from_slice(&old_image);
+    // 残片：0x1800 处放一段不是 ISO 描述符区的字节。
+    disc[0x1800 * SECTOR_BYTES..0x1801 * SECTOR_BYTES].fill(0x55);
+
+    let new_src = tmp.path().join("new");
+    std::fs::create_dir_all(&new_src).expect("create new src");
+    std::fs::write(new_src.join("new.txt"), b"new content").expect("write new file");
+
+    let mut drive = ScriptedDrive::new(CurrentProfile::CD_R, 0b01);
+    drive.disc = disc.clone();
+    drive.last_session_start = 0x1800;
+    drive.tracks = vec![(1, 0x1000), (2, 0x1800), (0xAA, 0x1900)];
+    let mut mmc = MmcDevice::new(Box::new(drive));
+    let error = grow_with_device(
+        &mut mmc,
+        &grow_job(&new_src),
+        &mut |_| {},
+        &CancelToken::default(),
+    )
+    .expect_err("没有确认就该拒绝");
+    assert!(
+        matches!(
+            error,
+            BurnError::DamagedLastSession {
+                skipped: 1,
+                session_start: 0x1000
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn grow_grafts_onto_the_previous_session_when_confirmed() {
+    // 与上一测试同一张盘，带上确认：嫁接源变成 0x1000 的完好会话，新区段仍写在
+    // NWA（0x2000），旧文件进新树、被跳过的残片不进。
+    let tmp = TempDir::new("grow-damaged-ok");
+    let old_src = tmp.path().join("old");
+    std::fs::create_dir_all(&old_src).expect("create old src");
+    std::fs::write(old_src.join("old.txt"), b"old content").expect("write old file");
+    let old_plan = crate::grow::plan_session(None, &old_src, "OLD".into(), 0x1000)
+        .expect("plan the old session");
+    let mut old_image = Vec::new();
+    old_plan
+        .write_image(&mut old_image, &CancelToken::default())
+        .expect("write the old session");
+    let mut disc = vec![0u8; 0x3000 * SECTOR_BYTES];
+    disc[0x1000 * SECTOR_BYTES..0x1000 * SECTOR_BYTES + old_image.len()]
+        .copy_from_slice(&old_image);
+    disc[0x1800 * SECTOR_BYTES..0x1801 * SECTOR_BYTES].fill(0x55);
+
+    let new_src = tmp.path().join("new");
+    std::fs::create_dir_all(&new_src).expect("create new src");
+    std::fs::write(new_src.join("new.txt"), b"new content").expect("write new file");
+
+    let mut drive = ScriptedDrive::new(CurrentProfile::CD_R, 0b01);
+    drive.disc = disc.clone();
+    drive.last_session_start = 0x1800;
+    drive.tracks = vec![(1, 0x1000), (2, 0x1800), (0xAA, 0x1900)];
+    let mut job = grow_job(&new_src);
+    job.allow_damaged_last_session = true;
+    let (_, written) = run_grow_job(drive, &job).expect("确认后应当写成功");
+
+    // 写下的字节拼到自己的起点上读回：旧文件仍在，新文件也在。
+    let mut grown = disc;
+    grown[0x2000 * SECTOR_BYTES..0x2000 * SECTOR_BYTES + written.len()].copy_from_slice(&written);
+    let session = read_session(grown, 0x2000);
+    assert_eq!(
+        names(&session.root),
+        vec!["new.txt".to_string(), "old.txt".to_string()]
+    );
 }
 
 #[test]

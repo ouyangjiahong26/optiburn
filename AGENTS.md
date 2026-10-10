@@ -27,7 +27,8 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
   ADR-0021），Windows 走原生、Linux 维持 xorriso。增长模式按平台分派：Windows 用原生
   嫁接式会话生成器（`grow.rs` 与 `grow/old_session.rs`，生成绝对地址的 ISO 9660 加
   Joliet 区段，旧文件数据块原地引用，ADR-0020），Linux 维持 xorriso。`grow_size` 是
-  增长模式的尺寸预演。
+  增长模式的尺寸预演。读侧的区段定位有候选回退：末区段损坏时按 `READ TOC` 的轨道
+  起点枚举候选、逐个验证后用最新的可用区段，追加要用户确认（ADR-0022）。
 - `optiburn-cli`：`optiburn build-image | burn | append | probe`。二进制名是 `optiburn`
   （`[[bin]] name`），不是 `optiburn-cli`。`burn` 默认多区段不封盘，追加刻录走
   `append`（Windows 原生增长模式，Linux xorriso 增长模式，ADR-0006 与 ADR-0020）。

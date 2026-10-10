@@ -70,7 +70,7 @@ optiburn-cli        命令行：build-image / burn / probe
 ### optiburn-mmc
 
 接口：`MmcDevice` 上的读侧命令 `inquiry`、`test_unit_ready`、`read_disc_information`、
-`read_track_information`、`read_toc_session_info`、`read_capacity`、`read_blocks`、
+`read_track_information`、`read_toc_session_info`、`read_toc_tracks`、`read_capacity`、`read_blocks`、
 `read_format_capacities` 与 `read_disc_capacity`，与写侧命令 `get_configuration`、
 `set_write_parameters`、`reserve_track`、`write_blocks`、`synchronize_cache`、
 `close_session`。返回 `Inquiry` / `DiscInformation` / `TrackInfo` / `SessionInfo` /
@@ -124,7 +124,7 @@ ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换
 解析、失败时从 stderr 尾部取摘要、区分工具缺失（`MissingTool`，载荷只有工具名，
 安装指引由 CLI 与 GUI 按系统给出，见 ADR-0004 补记）与其它 I/O 错误（`Io`）、
 原生写序列（起点取 NWA、写参数页、关区段）与块与块之间的取消检查、原生读侧的
-末区段定位（READ TOC Format 1）、两种区段地址约定的探测与 UDF 的三种定位约定
+区段候选枚举（READ TOC Format 0 与 1）、两种区段地址约定的探测、损坏末区段的回退与 UDF 的三种定位约定
 （ADR-0018、ADR-0021）、原生增长的会话布局（绝对地址、两套目录树、四张路径表，
 ADR-0020）。
 
@@ -170,7 +170,7 @@ ADR-0021。
 | `burn`（`--engine xorriso` 或 `native`） | 可用（xorriso 需要写设备权限，native 未在 Linux 真机验证） | 可用（`native`，GUI 默认，2026-10-10 在 CD-R 上真机验证，DVD/BD 各族待介质） |
 | `append`（xorriso 增长模式 / 原生增长模式） | 可用（xorriso），前置检查按盘片状态自动路由 | 可用（原生增长模式，ADR-0020）：唯一能取得的 xorriso 不含光驱访问（ADR-0008 补记），Windows 走原生会话生成器 |
 | `probe` | 可用（`/dev/sr*`） | 可用（枚举盘符，2026-10-10 在 USB 光驱上实测） |
-| 读盘（浏览、回读校验、卷标、末区段门禁） | 可用（xorriso） | 可用（`native`，GUI 默认，2026-10-10 在 CD-R 上真机验证，两种区段地址约定都实测读通。UDF 盘的读侧见 ADR-0021。复制到剪贴板仅 Linux，见 ADR-0012） |
+| 读盘（浏览、回读校验、卷标、末区段门禁） | 可用（xorriso） | 可用（`native`，GUI 默认，2026-10-10 在 CD-R 上真机验证，两种区段地址约定都实测读通。UDF 盘的读侧见 ADR-0021，损坏末区段的回退见 ADR-0022 且仅 Windows 侧有。复制到剪贴板仅 Linux，见 ADR-0012） |
 | 原生 MMC 传输 | 可用（`SG_IO`） | 可用（SPTI，2026-10-10 在 USB 光驱上实测） |
 
 GUI 的读盘功能（设备页浏览、回读校验、追加页卷标预填）在 Windows 走原生读盘
