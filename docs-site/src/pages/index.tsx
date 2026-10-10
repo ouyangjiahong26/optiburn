@@ -200,7 +200,7 @@ export default function Home(): React.JSX.Element {
                 <h3><Translate id="home.steps.install.title">装好工具</Translate></h3>
                 <p>
                   <Translate id="home.steps.install.description">
-                    cargo build 或下载安装包。刻录需要 PATH 上有 xorriso，写权限来自 cdrom 组。
+                    cargo build 或下载安装包。Linux 上刻录（默认引擎）需要 PATH 上有 xorriso，Windows 上走原生引擎；写权限来自 cdrom 组。
                   </Translate>
                 </p>
               </div>

@@ -3,7 +3,7 @@
 ## 环境
 
 - Rust 1.98.1（`rust-toolchain.toml` 已固定，rustup 会自动装）。
-- `xorriso`（跑镜像回读测试与 `burn` 需要）：`sudo apt install xorriso`。
+- `xorriso`（跑镜像回读测试需要，Linux 上 `burn` 默认也用它，Windows 上走原生引擎）：`sudo apt install xorriso`。
 - 交叉编译目标：`rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
   x86_64-pc-windows-msvc aarch64-pc-windows-msvc`。
 

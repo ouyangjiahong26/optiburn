@@ -53,3 +53,10 @@ Windows 上有两条访问光驱的路：
   `IDiscFormat2Data` 的事件回调线程模型。
 - 直接调 Windows 自带 `isoburn.exe`/`cdburn`：可用的参数面远小于 xorriso，且行为
   随 Windows 版本漂移，无法作为跨版本的可预期接口。
+
+## 补记：真机验证（2026-10-10）
+
+本文「Windows 路径只验证过编译」的现状已经变了：SPTI 通道在 Windows 的 USB 光驱
+（HL-DT-ST DVDRAM GP70N）上跑通了 probe 与原生 MMC 写引擎的完整写序列，写盘后
+READ(10) 读回与镜像逐字节一致（证据见 ADR-0017 补记）。`residual` 恒为 0 这条限制
+没有变。
