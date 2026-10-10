@@ -16,6 +16,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const INQUIRY_LEN: usize = 36;
 /// READ DISC INFORMATION 标准响应（Data Type 000b）的长度。
 const DISC_INFORMATION_LEN: usize = 34;
+/// READ FORMAT CAPACITIES 的请求长度：4 字节响应头加 3 个 8 字节容量描述符。
+/// 驱动器通常只报前两三个描述符，多请求的部分按协议零填充或计入 residual。
+const FORMAT_CAPACITIES_LEN: usize = 28;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MmcError {
@@ -70,6 +73,18 @@ pub struct DiscInformation {
     pub first_track: u8,
 }
 
+/// READ FORMAT CAPACITIES 解析出的盘片容量，字节口径（ADR-0017）。
+///
+/// 字段是 [`Option`]：描述符缺失时容量口径不可知。CD 介质普遍不报容量描述符，
+/// 此时上层显示“未知”并跳过容量门禁，而不是拒绝刻录。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiscCapacity {
+    /// 介质最大容量，来自描述符类型 0（最大可格式化容量）。
+    pub total: Option<u64>,
+    /// 已写入部分，来自描述符类型 1（当前已格式化容量）。差值即可用容量。
+    pub used: Option<u64>,
+}
+
 /// 一条盘驱动器通道，持有已经打开的 [`ScsiTransport`]。
 pub struct MmcDevice {
     transport: Box<dyn ScsiTransport>,
@@ -122,6 +137,36 @@ impl MmcDevice {
             sessions: data[4],
             first_track: data[3],
         })
+    }
+
+    /// READ FORMAT CAPACITIES（op 0x23）：介质总容量与已写入量（ADR-0017）。
+    ///
+    /// 响应是变长列表，驱动器可以少给：实机（HL-DT-ST GP70N）对 28 字节请求
+    /// 只回 12 字节并计 16 字节 residual。因此不走 [`Self::read_into`] 的满长
+    /// 判定，按实际返回长度解析，有效区间再由头部列表长度圈定。
+    pub fn read_format_capacities(&mut self) -> Result<DiscCapacity, MmcError> {
+        let cdb = [
+            0x23,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            (FORMAT_CAPACITIES_LEN >> 8) as u8,
+            FORMAT_CAPACITIES_LEN as u8,
+            0x00,
+        ];
+        let mut data = vec![0u8; FORMAT_CAPACITIES_LEN];
+        let completion =
+            self.transport
+                .issue(&cdb, Direction::FromDevice, &mut data, DEFAULT_TIMEOUT)?;
+        // residual 是“未传送的字节数”；Windows 的 SPTI 不回传 residual（恒为 0），
+        // 那里 data 按满长解释，多出的部分是零，不影响按列表长度圈出的解析。
+        let written =
+            FORMAT_CAPACITIES_LEN.saturating_sub(completion.residual.min(FORMAT_CAPACITIES_LEN));
+        data.truncate(written);
+        Ok(parse_format_capacities(&data))
     }
 
     /// 下发一条数据从设备发回主机的命令，并把“实际写入字节数 < 期望”当作错误。
@@ -192,6 +237,37 @@ fn decode_ascii(bytes: &[u8]) -> String {
         .rposition(|b| *b != b' ' && *b != 0)
         .map_or(0, |i| i + 1);
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+/// 解析 READ FORMAT CAPACITIES 响应。
+///
+/// 响应是 4 字节头加若干 8 字节描述符：头部字节 3 是描述符列表总字节数，
+/// 每个描述符里块数是大端 u32、描述符类型在字节 4 的高 2 位、块长在字节
+/// 5–7（大端）。类型 0 与类型 1 分别是最大容量与已写入量，其余类型是缺陷
+/// 索引与格式化参数，不参与容量口径。有效区间以头部声明为准并与实际响应
+/// 长度取小，超出请求被截断的描述符不读。
+fn parse_format_capacities(data: &[u8]) -> DiscCapacity {
+    let mut capacity = DiscCapacity {
+        total: None,
+        used: None,
+    };
+    if data.len() < 4 {
+        return capacity;
+    }
+    // 列表长度是 8 的倍数，防御性对齐避免越过响应边界。
+    let list = (data[3] as usize).min(data.len() - 4) & !7;
+    for offset in (4..4 + list).step_by(8) {
+        let descriptor = &data[offset..offset + 8];
+        let blocks =
+            u32::from_be_bytes([descriptor[0], descriptor[1], descriptor[2], descriptor[3]]) as u64;
+        let block_len = u32::from_be_bytes([0, descriptor[5], descriptor[6], descriptor[7]]) as u64;
+        match (descriptor[4] >> 6) & 0b11 {
+            0 => capacity.total = Some(blocks * block_len),
+            1 => capacity.used = Some(blocks * block_len),
+            _ => {}
+        }
+    }
+    capacity
 }
 
 #[cfg(test)]
@@ -299,6 +375,129 @@ mod tests {
             &[vec![
                 0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22, 0x00
             ]]
+        );
+    }
+
+    #[test]
+    fn read_format_capacities_cdb_is_golden() {
+        let (mut dev, cdbs) = device(vec![0u8; FORMAT_CAPACITIES_LEN]);
+        dev.read_format_capacities().unwrap();
+        assert_eq!(
+            cdbs.borrow().as_slice(),
+            &[vec![
+                0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1c, 0x00
+            ]]
+        );
+    }
+
+    /// 组一个 8 字节容量描述符：块数、描述符类型、块长。
+    fn descriptor(reply: &mut [u8], offset: usize, blocks: u32, kind: u8, block_len: u32) {
+        reply[offset..offset + 4].copy_from_slice(&blocks.to_be_bytes());
+        // 类型在高 2 位；低 6 位塞满脏位，解析必须只认高 2 位。
+        reply[offset + 4] = (kind << 6) | 0b0011_1111;
+        reply[offset + 5..offset + 8].copy_from_slice(&block_len.to_be_bytes()[1..]);
+    }
+
+    #[test]
+    fn read_format_capacities_decodes_both_descriptors() {
+        // DVD+R 4.7 GB 盘的典型形态：类型 0 是全盘容量，类型 1 是已写入量。
+        let mut reply = vec![0u8; FORMAT_CAPACITIES_LEN];
+        reply[3] = 16;
+        descriptor(&mut reply, 4, 2295104, 0, 2048);
+        descriptor(&mut reply, 12, 100000, 1, 2048);
+        let (mut dev, _) = device(reply);
+
+        assert_eq!(
+            dev.read_format_capacities().unwrap(),
+            DiscCapacity {
+                total: Some(2295104 * 2048),
+                used: Some(100000 * 2048),
+            }
+        );
+    }
+
+    #[test]
+    fn read_format_capacities_without_descriptors_reports_none() {
+        // CD 介质的典型形态：容量列表长度为 0，两个口径都读不到。
+        let (mut dev, _) = device(vec![0u8; FORMAT_CAPACITIES_LEN]);
+        assert_eq!(
+            dev.read_format_capacities().unwrap(),
+            DiscCapacity {
+                total: None,
+                used: None,
+            }
+        );
+    }
+
+    #[test]
+    fn read_format_capacities_keeps_missing_side_as_none() {
+        // 只有类型 1（已写入）没有类型 0：total 保持 None，上层据此跳过容量门禁。
+        let mut reply = vec![0u8; FORMAT_CAPACITIES_LEN];
+        reply[3] = 8;
+        descriptor(&mut reply, 4, 5000, 1, 2048);
+        let (mut dev, _) = device(reply);
+
+        assert_eq!(
+            dev.read_format_capacities().unwrap(),
+            DiscCapacity {
+                total: None,
+                used: Some(5000 * 2048),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_format_capacities_trusts_the_declared_list_length() {
+        // 头部声明 8 字节时，第二个描述符即使有数据也不读。
+        let mut data = vec![0u8; FORMAT_CAPACITIES_LEN];
+        data[3] = 8;
+        descriptor(&mut data, 4, 100, 0, 2048);
+        descriptor(&mut data, 12, 200, 1, 2048);
+        assert_eq!(
+            parse_format_capacities(&data),
+            DiscCapacity {
+                total: Some(100 * 2048),
+                used: None,
+            }
+        );
+        // 声明超出响应边界时按实际长度截断，不越界。
+        let mut overflow = vec![0u8; 12];
+        overflow[3] = 64;
+        descriptor(&mut overflow, 4, 100, 0, 2048);
+        assert_eq!(
+            parse_format_capacities(&overflow),
+            DiscCapacity {
+                total: Some(100 * 2048),
+                used: None,
+            }
+        );
+        assert_eq!(
+            parse_format_capacities(&[]),
+            DiscCapacity {
+                total: None,
+                used: None,
+            }
+        );
+    }
+
+    #[test]
+    fn read_format_capacities_tolerates_the_measured_short_response() {
+        // 实机形态（HL-DT-ST GP70N，CD-R 80 分钟）：对 28 字节请求只回 12 字节
+        // 并计 16 字节 residual，内容是头加一个描述符。该描述符类型位是 0，数值
+        // 257820 块却与盘总容量 359847 块对不上、恰等于 xorriso 读出的已写块数
+        // （readable 257820）：CD 家族介质没有格式化容量语义，驱动器把已写口径
+        // 填进了类型 0。单一描述符凑不齐 total 与 used，上层按“读不到容量”跳过
+        // 门禁，数字不进界面，这种怪癖数据不会被当成可用容量。
+        let reply = vec![
+            0x00, 0x00, 0x00, 0x08, 0x00, 0x03, 0xEF, 0x1C, 0x02, 0x00, 0x08, 0x00,
+        ];
+        let (mut dev, _) = device_with_residual(reply, 16);
+        assert_eq!(
+            dev.read_format_capacities().unwrap(),
+            DiscCapacity {
+                total: Some(257820 * 2048),
+                used: None,
+            }
         );
     }
 

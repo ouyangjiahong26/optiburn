@@ -131,7 +131,7 @@ pub async fn copy_disc_files(
 }
 
 /// 人类可读的字节数，口径与设备页一致（GB、MB、KB、字节/bytes）。
-fn human_bytes(lang: Lang, bytes: u64) -> String {
+pub(crate) fn human_bytes(lang: Lang, bytes: u64) -> String {
     const UNITS: [(&str, u64); 3] = [("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)];
     for (unit, scale) in UNITS {
         if bytes >= scale {

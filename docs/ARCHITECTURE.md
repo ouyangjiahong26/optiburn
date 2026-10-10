@@ -67,14 +67,18 @@ optiburn-cli        命令行：build-image / burn / probe
 
 ### optiburn-mmc
 
-接口：`MmcDevice::{inquiry, test_unit_ready, read_disc_information}` 三个读侧命令，
-返回 `Inquiry` / `DiscInformation` / `DiscStatus` 结构。
+接口：`MmcDevice::{inquiry, test_unit_ready, read_disc_information,
+read_format_capacities}` 四个读侧命令，返回 `Inquiry` / `DiscInformation` /
+`DiscStatus` / `DiscCapacity` 结构。
 
 隐藏：CDB 字节序与分配长度字段位置（`READ DISC INFORMATION` 的分配长度在 CDB 第
 7–8 字节）、响应里哪些位是盘片状态（字节 2 的低 2 位，同一字节还带 last-session 状态与
-erasable 标志）、尾部空格与 NUL 填充、短响应判定（用 `residual` 反推实际长度）。
+erasable 标志）、尾部空格与 NUL 填充、短响应判定（用 `residual` 反推实际长度；
+READ FORMAT CAPACITIES 是变长列表，按实际长度解析而不是按满长判定，实机验证见
+ADR-0017）。
 
-没有的东西：写侧命令。路线图落地前不留空壳类型。
+没有的东西：写侧命令。路线图落地前不留空壳类型。CD 介质的 ATIP 容量读取也还没有
+（format 字段布局有两种写法被实机证伪，见 ADR-0017）。
 
 ### optiburn-mastering
 
@@ -95,8 +99,10 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 接口：镜像刻录 `BurnEngine::{name, burn}`（输入 `BurnJob`：镜像、设备、倍速、是否
 多区段），追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘），
 进度都通过 `&mut dyn FnMut(f32)` 回调。另有回读侧的小工具 `read_volume_id`、
-`list_tree`、`extract_tree`、`extract_paths`、`last_session_is_iso` 与
-`compare_trees`（按文件名与内容单向对比，见 ADR-0010）。
+`list_tree`、`extract_tree`、`extract_paths`、`last_session_is_iso`、
+`grow_print_size`（增长模式预演，返回即将写入的新区段字节数，供写前容量门禁比较）
+与 `compare_trees`（按文件名与内容单向对比，见 ADR-0010）。容量门禁的区段开销
+余量共用常量 `SESSION_OVERHEAD`。
 
 隐藏：`xorriso -as cdrecord` 与增长模式（`-dev … -map <目录> / -commit`，见
 ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、stderr 上的百分比
@@ -110,9 +116,10 @@ I/O 错误（`Io`）。
 
 接口：四个子命令，其余全是实现细节。`burn` 与 `append` 先跑前置检查
 （`ensure_burnable`：挂载占用与末区段格式直接拒绝，等介质就绪，按盘片状态路由
-放行或拒绝，见 ADR-0006 与 ADR-0010）再进引擎。
-`probe` 在任何情况下都以 0 退出（没光驱不是错误）。真正失败（路径不存在、刻录退出
-码非零）退 1 并把原因写到 stderr。
+放行或拒绝，见 ADR-0006 与 ADR-0010），再过写前容量门禁（`ensure_fits`：待写入
+量加区段开销超过可用容量直接拒绝，读不到容量口径则跳过，见 ADR-0017），然后进
+引擎。`probe` 在任何情况下都以 0 退出（没光驱不是错误），行尾带盘片容量（读得到
+口径时）。真正失败（路径不存在、刻录退出码非零）退 1 并把原因写到 stderr。
 
 ## 路线图
 
@@ -122,8 +129,9 @@ I/O 错误（`Io`）。
   `WRITE(10)` 分块写数据（每块 32–64 扇区，按盘片类型调整）、`SYNCHRONIZE CACHE`、
   `CLOSE TRACK/SESSION`，全程用 `TEST UNIT READY` 加 `REQUEST SENSE` 处理驱动器繁忙。
   这一层只多学 `optiburn-mmc` 的写侧命令，不需要新 crate。
-- v0.6：`probe` 增加介质容量（`READ CAPACITY` / `GET CONFIGURATION`），
-  `build-image` 据此在写盘前就拒绝放不下的镜像。
+- v0.6：介质容量已落地（`READ FORMAT CAPACITIES`，`probe` 与 GUI 设备页/追加页
+  显示，写盘前容量门禁，见 ADR-0017）。CD 介质的 ATIP 容量读取仍缺（读不到口径
+  时显示未知并跳过门禁）。
 - 后续：BD-R 伪覆盖、Windows 上的 IMAPI2 校验（仅校验，不接管写入，
   见 ADR-0005）。多区段追加已由 `append`（xorriso 增长模式）覆盖，见 ADR-0006。
 

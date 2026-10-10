@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use optiburn_engine::{
     BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow,
-    last_session_is_iso, read_volume_id,
+    grow_print_size, last_session_is_iso, read_volume_id,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
@@ -30,6 +30,10 @@ pub struct DeviceInfo {
     /// status 为 "other" 时的原始状态位（随机可写介质）。
     status_bits: Option<u8>,
     sessions: Option<u8>,
+    /// 盘片总容量（字节）。CD 介质等读不到容量口径时为 null（ADR-0017）。
+    capacity_bytes: Option<u64>,
+    /// 可用容量（字节，总容量减已写入）。
+    free_bytes: Option<u64>,
     error: Option<String>,
 }
 
@@ -75,6 +79,11 @@ enum JobError {
     },
     /// 追加路径上末区段不是 ISO 9660（例如 UDF 盘），续写会遮住原有内容。
     NoIsoSession,
+    /// 待写入量超过盘上可用容量，写前容量门禁拒绝（ADR-0017）。
+    Capacity {
+        needed: u64,
+        free: u64,
+    },
     /// 待刻录列表或暂存阶段的输入问题，文案已由下层给出。
     Input(String),
     /// 用户中止了可取消的只读任务（复制、校验）。
@@ -151,6 +160,18 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
             "The last session on this disc is not ISO 9660 (e.g. a UDF disc written by Windows): appending an ISO session would leave systems that mount the last session seeing only the new content. This tool cannot append to such discs yet — use a blank disc instead.",
         )
         .into(),
+        JobError::Capacity { needed, free } => {
+            let needed = copy::human_bytes(lang, *needed);
+            let available = copy::human_bytes(lang, *free);
+            match lang {
+                Lang::Zh => format!(
+                    "这张盘放不下本次写入：待写入约 {needed}，盘上可用容量约 {available}。请减少待写内容或更换盘片。"
+                ),
+                Lang::En => format!(
+                    "The disc cannot hold this write: about {needed} to write, {available} free on the disc. Remove some files or use another disc."
+                ),
+            }
+        }
         JobError::Input(message) => message.clone(),
         JobError::Disc(MmcError::NotReady) => pick(
             lang,
@@ -234,6 +255,8 @@ fn probe_one(path: String) -> DeviceInfo {
         status: None,
         status_bits: None,
         sessions: None,
+        capacity_bytes: None,
+        free_bytes: None,
         error: None,
     };
     let transport = match optiburn_transport::open(&info.path) {
@@ -275,6 +298,18 @@ fn probe_one(path: String) -> DeviceInfo {
                 Lang::En => format!("Failed to read disc information: {e}"),
             });
         }
+    }
+    // 容量是概览字段，读不到保持 null 且不改写 error（盘片状态已在上面给出）。
+    // 两个口径要凑齐才显示：实机观察到 CD-R 驱动器会把已写块数填进最大容量的
+    // 描述符（ADR-0017），单一口径的数字不可信。
+    if let Ok(capacity) = device.read_format_capacities()
+        && let Some(free) = capacity
+            .total
+            .zip(capacity.used)
+            .map(|(total, used)| total - used)
+    {
+        info.capacity_bytes = capacity.total;
+        info.free_bytes = Some(free);
     }
     info
 }
@@ -336,6 +371,7 @@ fn gate_of(error: &JobError) -> Option<&'static str> {
         JobError::Gate(WriteBlock::Finalized) => Some("finalized"),
         JobError::Mounted { .. } => Some("mounted"),
         JobError::NoIsoSession => Some("noIsoSession"),
+        JobError::Capacity { .. } => Some("capacity"),
         _ => None,
     }
 }
@@ -672,7 +708,8 @@ struct DiscTask<'a> {
 /// 刻录/追加的阻塞主体：跑引擎，完成后读一次区段数放进完成消息。
 ///
 /// 写前门禁不在这里：追加要在暂存用户文件之前拿到拒绝结论，由调用方先跑
-/// [`check_write_gates`]。
+/// [`check_write_gates`]。容量门禁例外：追加的待写入量要等暂存目录就绪才能
+/// 预演，镜像刻录的待写入量就是镜像本身，两者都收在跑引擎之前。
 fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
     let mut progress = progress_emitter(task.app, task.kind);
     let result = if task.append {
@@ -683,6 +720,11 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             volume_id: task.volume_id.to_string(),
             close_disc: task.close_disc,
         };
+        let needed = grow_print_size(&job).map_err(|e| match lang() {
+            Lang::Zh => JobError::Input(format!("计算追加数据量失败：{e}")),
+            Lang::En => JobError::Input(format!("Failed to compute the append size: {e}")),
+        })?;
+        ensure_fits(task.device, needed)?;
         grow(&job, &mut progress, task.cancel)
     } else {
         // 与 CLI 相同：默认多区段，显式要求才封盘。
@@ -692,10 +734,55 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             speed: task.speed,
             multi: !task.close_disc,
         };
+        let needed = std::fs::metadata(task.path)
+            .map_err(|e| match lang() {
+                Lang::Zh => {
+                    JobError::Input(format!("读取镜像 {} 大小失败：{e}", task.path.display()))
+                }
+                Lang::En => {
+                    JobError::Input(format!("Failed to stat the image {}: {e}", task.path.display()))
+                }
+            })?
+            .len();
+        ensure_fits(task.device, needed)?;
         XorrisoEngine.burn(&job, &mut progress, task.cancel)
     };
     result.map_err(JobError::Burn)?;
     Ok(sessions_message(task.device))
+}
+
+/// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝（ADR-0017）。
+///
+/// 容量口径来自 READ FORMAT CAPACITIES（总容量减已写入），两个口径要凑齐。
+/// 读不到（CD 介质、驱动器不回该命令）时放行：门禁是尽力而为的预检，不该成为
+/// 新的故障点，真放不下由引擎写入失败兜底。区段开销余量与 CLI 共用
+/// [`optiburn_engine::SESSION_OVERHEAD`]。
+fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), JobError> {
+    let transport = optiburn_transport::open(device).map_err(|e| JobError::Open {
+        device: device.to_string(),
+        source: e,
+    })?;
+    let mut mmc = MmcDevice::new(transport);
+    let capacity = mmc.read_format_capacities();
+    // 查完立刻释放句柄：刻录引擎随后要以独占方式打开设备。
+    drop(mmc);
+    let free = match capacity {
+        Ok(capacity) => capacity
+            .total
+            .zip(capacity.used)
+            .map(|(total, used)| total - used),
+        Err(_) => None,
+    };
+    let Some(free) = free else {
+        return Ok(());
+    };
+    if needed_bytes + optiburn_engine::SESSION_OVERHEAD > free {
+        return Err(JobError::Capacity {
+            needed: needed_bytes,
+            free,
+        });
+    }
+    Ok(())
 }
 
 /// 写前门禁：挂载占用、盘片状态与末区段格式，全部通过才允许动设备。
@@ -863,6 +950,27 @@ mod tests {
             job_error_text(Lang::Zh, &JobError::NoIsoSession),
             "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
         );
+        assert_eq!(
+            job_error_text(
+                Lang::Zh,
+                &JobError::Capacity {
+                    needed: 4700372992,
+                    free: 4284481536,
+                }
+            ),
+            "这张盘放不下本次写入：待写入约 4.4 GB，盘上可用容量约 4.0 GB。请减少待写内容或更换盘片。"
+        );
+        assert_eq!(
+            job_error_text(
+                Lang::En,
+                &JobError::Capacity {
+                    needed: 4700372992,
+                    free: 4284481536,
+                }
+            ),
+            "The disc cannot hold this write: about 4.4 GB to write, 4.0 GB free on the disc. Remove some files or use another disc."
+        );
+        assert_eq!(gate_of(&JobError::Capacity { needed: 1, free: 1 }), Some("capacity"));
         assert_eq!(
             job_error_text(
                 Lang::Zh,

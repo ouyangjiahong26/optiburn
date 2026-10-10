@@ -36,3 +36,6 @@
 | 倍速（speed） | 写入速度相对基准（CD 150 KB/s、DVD 1.35 MB/s、BD 4.5 MB/s 的整数倍）。缺省时交给驱动器自选。 | 速度、速率 |
 | 卷标（volume id） | 写在卷描述符里的盘名，Windows 资源管理器显示的就是它。对应 `ImageSpec::volume_id`。 | 标签、盘标、volume label |
 | 回读校验（Verify） | 写完盘后把盘上最后一区段的目录树抽回本地，与源（追加的待刻录文件或刻录的镜像）按文件名与内容逐文件对比的动作。对应 `compare_trees`、`JobKind::Verify`、GUI 的“校验盘片”。 | 验证、核对、对拍 |
+| 盘片容量（DiscCapacity） | READ FORMAT CAPACITIES 报出的介质容量：总容量与已写入量两个口径，凑齐才可用。对应 `DiscCapacity`、`read_format_capacities`。 | 光盘大小、介质容量、容量信息 |
+| 可用容量（free） | 盘片容量里总容量减已写入量的差值，写前容量门禁的比较基准（ADR-0017）。 | 剩余空间、可用空间、自由空间 |
+| 预演（print size） | 增长模式提交前用 `xorriso -print_size` 算出即将写入的新区段大小（字节），与可用容量同口径。对应 `grow_print_size`。 | 大小估算、dry-run |

@@ -5,6 +5,7 @@ import { RefreshCw, X } from "lucide-react";
 import { discVolumeId, pasteFiles, pickFiles, speedOption, startAppend, startVerify } from "../api";
 import { useDeviceProbe, useGateNotice } from "../hooks";
 import { discStatusLabel } from "../discStatus";
+import { formatBytes } from "../format";
 import { t } from "../i18n";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { FormRow } from "../components/FormRow";
@@ -262,6 +263,27 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
               {t("Refresh", "刷新")}
             </button>
           </div>
+          {devices !== null &&
+            (() => {
+              // 选中盘的容量提示：读得到口径才显示（CD 介质常读不到）。数字来自
+              // 盘片查询而不是挂载视图，多区段盘不会被首区段的挂载容量误导。
+              const selected = devices.find((item) => item.path === device);
+              if (
+                selected === undefined ||
+                selected.capacityBytes === null ||
+                selected.freeBytes === null
+              ) {
+                return null;
+              }
+              return (
+                <p className="page-note">
+                  {t(
+                    `${formatBytes(selected.capacityBytes)} total, ${formatBytes(selected.freeBytes)} free on this disc.`,
+                    `所选盘片总容量 ${formatBytes(selected.capacityBytes)}，可用 ${formatBytes(selected.freeBytes)}。`,
+                  )}
+                </p>
+              );
+            })()}
         </FormRow>
         <FormRow label={t("Volume label", "卷标")} htmlFor="append-volume">
           <input

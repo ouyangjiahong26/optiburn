@@ -46,12 +46,11 @@ pub fn grow(
     run(XORRISO, &grow_args(job), progress, cancel)
 }
 
-/// 组装增长模式参数表。
+/// 组装增长模式的公共参数表：设备、倍速、卷标与目录映射。
 ///
-/// `-map 源目录 /` 把目录内容映射到盘根，与 `build-image` 的语义一致。不带
-/// `-eject`，写完保留盘在仓内供回读校验。增长模式的写进度同样以行内百分比出现在
-/// stderr（实测是粗粒度输出），复用同一解析。
-fn grow_args(job: &GrowJob) -> Vec<OsString> {
+/// [`grow_args`] 的提交与 [`print_size_args`] 的预演都从它出发，保证预演与实际
+/// 写入看到同一份输入，大小口径才一致。
+fn grow_base_args(job: &GrowJob) -> Vec<OsString> {
     let mut args = vec![OsString::from("-dev"), OsString::from(&job.device)];
     if let Some(speed) = job.speed {
         args.push(OsString::from("-speed"));
@@ -67,10 +66,28 @@ fn grow_args(job: &GrowJob) -> Vec<OsString> {
         job.src.as_os_str().to_os_string(),
         OsString::from("/"),
     ]);
+    args
+}
+
+/// 组装增长模式参数表。
+///
+/// `-map 源目录 /` 把目录内容映射到盘根，与 `build-image` 的语义一致。不带
+/// `-eject`，写完保留盘在仓内供回读校验。增长模式的写进度同样以行内百分比出现在
+/// stderr（实测是粗粒度输出），复用同一解析。
+fn grow_args(job: &GrowJob) -> Vec<OsString> {
+    let mut args = grow_base_args(job);
     if job.close_disc {
         args.extend([OsString::from("-close"), OsString::from("on")]);
     }
     args.push(OsString::from("-commit"));
+    args
+}
+
+/// 组装预演参数表：与 [`grow_args`] 同源，尾命令换成 `-print_size`，不携带
+/// `-close`（它只影响提交，预演不写入）。
+pub(crate) fn print_size_args(job: &GrowJob) -> Vec<OsString> {
+    let mut args = grow_base_args(job);
+    args.push(OsString::from("-print_size"));
     args
 }
 
@@ -329,6 +346,36 @@ mod tests {
             close_disc: false,
         };
         assert!(!grow_args(&job).contains(&OsString::from("-speed")));
+    }
+
+    #[test]
+    fn print_size_args_share_the_grow_table_without_close_or_commit() {
+        // 预演必须与实际提交看到同一份输入（设备、倍速、卷标、映射），只换尾命令；
+        // 封盘开关与预演无关，不携带。
+        let job = GrowJob {
+            src: PathBuf::from("/tmp/stage"),
+            device: "/dev/sr0".to_string(),
+            speed: Some(8),
+            volume_id: "OPTIBURN".to_string(),
+            close_disc: true,
+        };
+        assert_eq!(
+            print_size_args(&job),
+            os(&[
+                "-dev",
+                "/dev/sr0",
+                "-speed",
+                "8",
+                "-volid",
+                "OPTIBURN",
+                "-joliet",
+                "on",
+                "-map",
+                "/tmp/stage",
+                "/",
+                "-print_size"
+            ])
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ import { Copy, FileText, Folder, RefreshCw } from "lucide-react";
 import { copyDiscFiles, listDisc } from "../api";
 import { useDeviceProbe } from "../hooks";
 import { t } from "../i18n";
+import { formatBytes } from "../format";
 import type { DiscEntry, JobControls } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
 
@@ -13,20 +14,6 @@ type ListingState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | { kind: "ready"; entries: DiscEntry[] };
-
-// 按量级格式化大小，数值与单位之间留一个空格。
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  }
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${bytes} ${t("bytes", "字节")}`;
-}
 
 export function DevicesPage({
   locked,
@@ -245,6 +232,14 @@ export function DevicesPage({
                         ? "1 session"
                         : `${device.sessions} sessions`,
                       `${device.sessions} 个区段`,
+                    )}
+                  </span>
+                )}
+                {device.capacityBytes !== null && device.freeBytes !== null && (
+                  <span>
+                    {t(
+                      `${formatBytes(device.capacityBytes)} total, ${formatBytes(device.freeBytes)} free`,
+                      `总容量 ${formatBytes(device.capacityBytes)}，可用 ${formatBytes(device.freeBytes)}`,
                     )}
                   </span>
                 )}

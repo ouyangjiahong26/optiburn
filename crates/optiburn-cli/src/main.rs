@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{
     BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, XorrisoEngine, grow,
-    last_session_is_iso,
+    grow_print_size, last_session_is_iso,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 use optiburn_mmc::{DiscStatus, MmcDevice, MmcError, WriteBlock};
@@ -174,6 +174,10 @@ fn burn_command(
         return Err(format!("引擎 {engine} 尚未实现"));
     }
     ensure_burnable(device, false)?;
+    let image_bytes = std::fs::metadata(image)
+        .map_err(|e| format!("读取镜像 {} 大小失败：{e}", image.display()))?
+        .len();
+    ensure_fits(device, image_bytes)?;
     let job = BurnJob {
         image: image.to_path_buf(),
         device: device.to_string(),
@@ -204,6 +208,8 @@ fn append_command(
         volume_id: volume_id.to_string(),
         close_disc,
     };
+    let needed = grow_print_size(&job).map_err(|e| format!("计算追加数据量失败：{e}"))?;
+    ensure_fits(device, needed)?;
 
     println!("追加 {} 到 {}。", src.display(), device);
     let mut progress = |fraction: f32| eprint!("\r{:>5.1}%", fraction * 100.0);
@@ -264,6 +270,44 @@ fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> 
     Ok(())
 }
 
+/// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝，避免写到一半废一张盘
+/// （ADR-0017）。区段开销余量共用 [`optiburn_engine::SESSION_OVERHEAD`]。
+///
+/// 容量口径来自 READ FORMAT CAPACITIES（总容量减已写入）。读不到口径（典型是
+/// CD 介质与不回该命令的驱动器）时打印提示后放行：门禁是尽力而为的预检，不该
+/// 成为新的故障点，真放不下由引擎写入失败兜底。
+fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), String> {
+    let transport =
+        optiburn_transport::open(device).map_err(|e| format!("打开 {device} 失败：{e}"))?;
+    let mut mmc = MmcDevice::new(transport);
+    let capacity = mmc.read_format_capacities();
+    // 查完立刻释放句柄：刻录引擎随后要以独占方式打开设备。
+    drop(mmc);
+    let capacity = match capacity {
+        Ok(capacity) => capacity,
+        Err(e) => {
+            println!("未能读取盘片容量（{e}），跳过容量检查。");
+            return Ok(());
+        }
+    };
+    let Some(free) = capacity
+        .total
+        .zip(capacity.used)
+        .map(|(total, used)| total - used)
+    else {
+        println!("盘片未报出容量口径（CD 介质常见），跳过容量检查。");
+        return Ok(());
+    };
+    if needed_bytes + optiburn_engine::SESSION_OVERHEAD > free {
+        return Err(format!(
+            "这张盘放不下本次写入：待写入约 {}，盘上可用容量约 {}。请减少待写内容或更换盘片。",
+            bytes_text(needed_bytes),
+            bytes_text(free),
+        ));
+    }
+    Ok(())
+}
+
 /// 无 `-o` 时把源目录名当作镜像名，输出到当前目录。
 fn default_output(src: &Path) -> PathBuf {
     let stem = src
@@ -281,6 +325,35 @@ fn disc_status_text(status: DiscStatus) -> String {
         DiscStatus::Finalized => "已封口".to_string(),
         DiscStatus::Other(bits) => format!("随机可写（{bits}）"),
     }
+}
+
+/// 面向人的容量数字：按 GB/MB/KB 取一位小数，数值与单位之间留一个空格，
+/// 与 GUI 的展示口径一致。
+fn bytes_text(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    const GB: u64 = 1024 * 1024 * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    }
+}
+
+/// 盘片容量段：总容量与可用容量，读不到口径（CD 介质常见）时为空串。
+fn capacity_text(capacity: &optiburn_mmc::DiscCapacity) -> String {
+    capacity
+        .total
+        .zip(capacity.used)
+        .map(|(total, used)| {
+            format!(
+                "，总容量 {}，可用 {}",
+                bytes_text(total),
+                bytes_text(total - used)
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn probe_command() -> Result<(), String> {
@@ -314,7 +387,12 @@ fn probe_command() -> Result<(), String> {
             ),
             Err(e) => format!("读盘片信息失败：{e}"),
         };
-        println!("{text} | {identity} | {disc}");
+        // 容量是概览字段，读不到就整段省略，不与上面的错误口径混在一起。
+        let capacity = device
+            .read_format_capacities()
+            .map(|c| capacity_text(&c))
+            .unwrap_or_default();
+        println!("{text} | {identity} | {disc}{capacity}");
     }
     Ok(())
 }
@@ -341,5 +419,37 @@ mod tests {
         let err = burn_command(Path::new("/tmp/x.iso"), "/dev/sr0", "cdrdao", None, false)
             .expect_err("only xorriso exists in v0");
         assert_eq!(err, "引擎 cdrdao 尚未实现");
+    }
+
+    #[test]
+    fn bytes_text_formats_human_units() {
+        assert_eq!(bytes_text(512), "0.5 KB");
+        assert_eq!(bytes_text(150 * 1024 * 1024), "150.0 MB");
+        // DVD+R 4.7 GB 盘的厂商口径（2295104 块 × 2048 字节）。
+        assert_eq!(bytes_text(2295104 * 2048), "4.4 GB");
+    }
+
+    #[test]
+    fn capacity_text_omits_when_the_drive_reports_nothing() {
+        use optiburn_mmc::DiscCapacity;
+        assert_eq!(
+            capacity_text(&DiscCapacity {
+                total: Some(2295104 * 2048),
+                used: Some(100000 * 2048),
+            }),
+            format!(
+                "，总容量 {}，可用 {}",
+                bytes_text(2295104 * 2048),
+                bytes_text(2195104 * 2048)
+            )
+        );
+        // 任一口径缺失（CD 形态）整段省略。
+        assert_eq!(
+            capacity_text(&DiscCapacity {
+                total: None,
+                used: None,
+            }),
+            ""
+        );
     }
 }
