@@ -31,7 +31,7 @@ const CHUNK_BLOCKS: u64 = optiburn_mmc::MAX_READ_BLOCKS as u64;
 /// 描述符区扫描的上限：正常镜像 16 起三四扇区内就有终止符，超过这个数按坏盘处理。
 const MAX_DESCRIPTOR_SECTORS: u32 = 16;
 
-/// 区段在盘上的地址空间约定。
+/// 区段在盘上的地址约定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AddressMode {
     /// 区段相对：源内块号一律加区段起点。自家原生引擎写的区段。
@@ -324,7 +324,7 @@ fn open_last_session(
     }
 }
 
-/// 在起点 `base` 的区段上探测地址空间约定并打开 ISO 视图。`len_hint` 只在
+/// 在起点 `base` 的区段上探测地址约定并打开 ISO 视图。`len_hint` 只在
 /// 调用方已知源长度时给出（镜像文件），设备路径的长度从 PVD 的卷空间大小取。
 fn open_session_view<B: BlockSource + 'static>(
     mut blocks: B,
@@ -406,7 +406,7 @@ fn scan_descriptors(read: &mut BlockRead, base: u32) -> Result<Option<SessionLay
     }))
 }
 
-/// 探测区段的地址空间约定：读根目录 extent 所在块，看它的首条目录记录（“.”）
+/// 探测区段的地址约定：读根目录 extent 所在块，看它的首条目录记录（“.”）
 /// 是否自引用。相对约定的记录里写的是相对块号（等于 E），绝对约定里写的是盘上
 /// LBA（同样等于 E，因为两种约定下这个字段都指向根目录自身所在的源内块）。
 /// 判定用“读到的块号 == 记录声称的块号”，按相对、绝对的顺序尝试。相对候选的

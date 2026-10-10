@@ -19,7 +19,7 @@
    包住原有实现，`NativeRead` 是新路径。五个公开函数改成薄分派，规则与刻录引擎
    相同：Windows 走原生（那边 xorriso 走不通），Linux 维持 xorriso（原生读侧还没
    在 Linux 真机验证过）。这是“哪条路走得通”的平台差异，不是设备语义差异。
-2. 末区段定位用 READ TOC Format 1（会话信息）的末区段起始地址。libburn 取同一
+2. 末区段定位用 READ TOC Format 1（区段信息）的末区段起始地址。libburn 取同一
    份（`MMC_GET_MSINFO`），CDB 逐字节对齐。可追加盘上 READ DISC INFORMATION 的
    字节 5（末区段首轨）指向开放区段的隐形轨道，读那里落在空区，不能用（实测见
    补记）。
@@ -62,7 +62,7 @@
 - 尚未支持，记为缺口：Rock Ridge 名的显式优先策略（当前按 hadris 的 best_choice，
   与“Joliet 优先”的实际差异只在两者同存且都有效时的名字来源）、UDF 盘的读侧
   （Windows 写的纯 UDF 盘仍报 NoIsoSession）、原生增长模式（合并目录树后续做）、
-  非 CD 介质上会话信息的假值风险（MMC-5 6.26.3.3.3 允许驱动器对非 CD 回 track 1、
+  非 CD 介质上区段信息的假值风险（MMC-5 6.26.3.3.3 允许驱动器对非 CD 回 track 1、
   LBA 0 的无用假值，实测的 CD-R 驱动器回真值，DVD/BD 未验证，遇假值会静默定位到
   首个区段）、写侧位移补丁（自家刻的区段是区段相对约定，标准读取器按
   “末区段起点加偏移”读 extent 会读错位，Windows 挂载视图要等换盘才看到新区段

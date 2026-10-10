@@ -183,8 +183,8 @@ impl MmcDevice {
         write::parse_track_information(&data).ok_or(MmcError::MalformedResponse)
     }
 
-    /// READ TOC/PMA/ATIP（0x43）Format 1：会话信息，末区段起始地址在唯一一条
-    /// 会话描述符里。读侧用它定位末区段（[`DiscInformation::last_session_first_track`]
+    /// READ TOC/PMA/ATIP（0x43）Format 1：区段信息，末区段起始地址在唯一一条
+    /// 区段描述符里。读侧用它定位末区段（[`DiscInformation::last_session_first_track`]
     /// 为什么不能用见那里的说明）。盘上没有已完结区段（空白盘）时数据不足一条
     /// 描述符，返回 `Ok(None)`，与命令失败区分开。
     pub fn read_toc_session_info(&mut self) -> Result<Option<SessionInfo>, MmcError> {

@@ -217,12 +217,12 @@ pub fn parse_track_information(response: &[u8]) -> Option<TrackInfo> {
     })
 }
 
-/// READ TOC Format 1（会话信息）的响应长度：4 字节头加一条 8 字节描述符。
+/// READ TOC Format 1（区段信息）的响应长度：4 字节头加一条 8 字节描述符。
 /// Format 1 只回一条描述符（末个可读区段的，MMC-5 6.26.3.3），不是每个已完结
 /// 区段一条，8 区段的盘实测数据长度仍是 10。取 12 字节覆盖头加整条描述符。
 pub const SESSION_INFO_LEN: usize = 12;
 
-/// 会话信息（READ TOC Format 1 那条会话描述符的关键字段）。
+/// 区段信息（READ TOC Format 1 那条区段描述符的关键字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionInfo {
     /// 首个已完结区段的编号（响应字节 2）。
@@ -237,7 +237,7 @@ pub struct SessionInfo {
     pub last_session_start: u32,
 }
 
-/// READ TOC/PMA/ATIP（0x43）Format 1（会话信息）。CDB 对齐 libburn 的
+/// READ TOC/PMA/ATIP（0x43）Format 1（区段信息）。CDB 对齐 libburn 的
 /// `MMC_GET_MSINFO` 同一布局（format 1、MSF 位 0），alloc length 给 12 字节
 /// （libburn 的 `mmc_read_multi_session_c1` 把模板里的 16 覆写成 0x000C，
 /// 实测 12 字节申请下驱动器只回 10 字节，描述符照常完整）。
@@ -256,7 +256,7 @@ pub fn toc_session_info_cdb() -> [u8; 10] {
     ]
 }
 
-/// 从会话信息响应取末区段编号与起始地址。
+/// 从区段信息响应取末区段编号与起始地址。
 ///
 /// 解析规则（按 MMC-5 的响应布局，实测 CD-R 驱动器照此回填）：响应头两字节是
 /// 数据长度（不含长度字段自身，单条描述符时为 10），字节 2 与 3 是首末会话编号，
