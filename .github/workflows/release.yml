@@ -99,8 +99,11 @@ jobs:
         run: npm ci
         working-directory: frontend
       # NSIS 打包走 tauri CLI：先编前端，再编译 src-tauri 并出安装包。
+      # 私钥给 createUpdaterArtifacts 签更新包（ADR-0015）。
       - name: 构建 NSIS 安装包
         run: npm --prefix frontend exec -- tauri build --target ${{ matrix.target }} --bundles nsis
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       # 便携版 zip（改名后的单个主程序）供 Scoop 这类直接解压的渠道使用。
       - name: 打包便携版
         shell: pwsh
@@ -115,6 +118,7 @@ jobs:
         run: |
           mkdir bundles
           Copy-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" bundles/
+          Copy-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe.sig" bundles/
           Copy-Item "optiburn-gui-${{ matrix.target }}-portable.zip" bundles/
       - uses: actions/upload-artifact@v7
         with:
@@ -135,9 +139,12 @@ jobs:
             # AppImageHub 的收录实测（跑在更老的 LTS）与老发行版用户都跑不起来。
             # x86_64 用 22.04 构建，glibc 要求降到 2.35。
             os: ubuntu-22.04
+            # 资产名里的架构段：x86_64 的 AppImage/deb 沿用 amd64（tauri-bundler 命名）。
+            asset_arch: amd64
           - arch: aarch64
             target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+            asset_arch: aarch64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -161,14 +168,23 @@ jobs:
         run: npm ci
         working-directory: frontend
       # AppImage 与 deb 打包走 tauri CLI：先编前端（beforeBuildCommand），再编译 src-tauri 并出两种包。
+      # UPDATE_INFORMATION 经 tauri-bundler 的环境透传到达 linuxdeploy：嵌入更新信息并产出
+      # .zsync（AppImageUpdate 增量更新用，ADR-0015）。私钥给 createUpdaterArtifacts 签更新包。
       - name: 构建 AppImage 与 deb
         run: npm --prefix frontend exec -- tauri build --target ${{ matrix.target }} --bundles appimage,deb
-      # 两个 glob 分属 appimage/ 与 deb/，upload-artifact 按最小公共祖先保留相对路径，
-      # 会带出子目录；release job 的 dist/* 与 sha256sum 只吃顶层文件，先拍平再传。
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          UPDATE_INFORMATION: "gh-releases-zsync|ouyangjiahong26|optiburn|latest|OptiBurn_*_${{ matrix.asset_arch }}.AppImage.zsync"
+      # 四个 glob 同属 bundle/appimage/ 与 deb/，upload-artifact 按最小公共祖先保留相对路径，
+      # 会带出子目录，release job 的 dist/* 与 sha256sum 只吃顶层文件，先拍平再传。
+      # .zsync 不在 OUTPUT 同目录：linuxdeploy 把它写到自身工作目录（实测落在 src-tauri/），
+      # glob 不中 cp 会直接报错，缺 zsync 不会被静默放过。
       - name: Stage bundles
         run: |
           mkdir -p bundles
           cp src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage bundles/
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig bundles/
+          cp src-tauri/*.AppImage.zsync bundles/
           cp src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb bundles/
       - uses: actions/upload-artifact@v7
         with:
@@ -190,11 +206,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Checksums
-        run: |
-          cd dist
-          sha256sum -- * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
       # 发布说明直接取 CHANGELOG 里对应的小节，避免 Release 页与仓库文档两处维护。
       - name: 生成发布说明
         run: |
@@ -209,6 +220,20 @@ jobs:
             exit 1
           fi
           cat release-notes.md
+      # tauri build 只产出签名产物（.sig），不生成 latest.json。updater 的更新源由这里
+      # 从各平台产物合成（ADR-0015），放在校验和之前，让清单覆盖除 .zsync 外的全部资产。
+      - name: 合成 latest.json
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash packaging/merge-updater-json.sh dist dist/latest.json "${GITHUB_REF_NAME#v}" release-notes.md
+      - name: Checksums
+        run: |
+          # .zsync 是给 AppImageUpdate 的增量元数据，不是让人手工核对的产物，不进清单。
+          cd dist
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' ! -name '*.zsync' -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

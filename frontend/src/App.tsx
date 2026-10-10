@@ -7,6 +7,7 @@ import type { ActiveJob, JobKind, JobResult } from "./types";
 import { t } from "./i18n";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ProgressBar } from "./components/ProgressBar";
+import { UpdaterSection } from "./components/UpdaterSection";
 import { AppendPage } from "./pages/AppendPage";
 import { BuildPage } from "./pages/BuildPage";
 import { BurnPage } from "./pages/BurnPage";
@@ -127,6 +128,8 @@ export function App() {
             </button>
           ))}
         </nav>
+        {/* 检查更新固定在侧栏底部，不可就地更新的安装形态（Linux deb）组件自返回 null。 */}
+        <UpdaterSection locked={locked} />
       </aside>
       <main className="content">
         {job !== null && (

@@ -39,6 +39,15 @@
       "nsis": {
         "languages": ["English", "SimpChinese"]
       }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJEOTVCMDE2QzhBQ0EwODgKUldTSW9LeklGckNWTFVTQ2VhUmdGQW5UZWRtaEhMNVVrNmoyUCtMTFQ3eTR6K0JVLzFYUVA3YkkK",
+      "endpoints": [
+        "https://github.com/ouyangjiahong26/optiburn/releases/latest/download/latest.json"
+      ]
     }
   }
 }
