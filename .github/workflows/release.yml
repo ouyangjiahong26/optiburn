@@ -112,7 +112,7 @@ jobs:
           mkdir bundles
           Copy-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe" bundles/
           Copy-Item "src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe.sig" bundles/
-      # 离线安装包只做 x64：内嵌 WebView2 Standalone（约 127 MB），给无网与 Windows 7
+      # 离线安装包只做 x64：内嵌 WebView2 Standalone（安装器约 210 MB），给无网与 Windows 7
       # 机器（ADR-0016）。arm64 的 Win7 不存在，按需再加。
       - name: 构建 NSIS 离线安装包
         if: matrix.arch == 'x64'
