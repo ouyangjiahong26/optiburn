@@ -197,7 +197,9 @@ export function DevicesPage({
         <div className="empty-state">{t("No optical drives found", "未发现光驱")}</div>
       ) : (
         <ul className="device-list">
-          {devices.map((device) => (
+          {devices.map((device) => {
+            const capacity = capacityLabel(device.capacityBytes, device.freeBytes);
+            return (
             <li
               key={device.path}
               className={`device-card${openDevice === device.path ? " expanded" : ""}`}
@@ -235,9 +237,7 @@ export function DevicesPage({
                     )}
                   </span>
                 )}
-                {capacityLabel(device.capacityBytes, device.freeBytes) !== null && (
-                  <span>{capacityLabel(device.capacityBytes, device.freeBytes)}</span>
-                )}
+                {capacity !== null && <span>{capacity}</span>}
               </div>
               {device.error !== null && (
                 <p className="device-error">{device.error}</p>
@@ -328,7 +328,8 @@ export function DevicesPage({
                 </div>
               )}
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>

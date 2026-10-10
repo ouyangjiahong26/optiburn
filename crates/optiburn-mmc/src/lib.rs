@@ -119,8 +119,8 @@ pub struct DiscInformation {
 pub struct FormatCapacity {
     /// 未格式化介质可格式化到的最大容量（描述符类型 1）。
     pub max_formattable: Option<u64>,
-    /// 已格式化介质的当前格式化容量（描述符类型 2）。可覆写介质上它同时是
-    /// 可用容量口径，一次写介质（CD-R 等）上它是已写成型的范围，不是剩余空间。
+    /// 已格式化介质的当前格式化容量（描述符类型 2）。只作总容量退回，不参与
+    /// 可用容量口径（一次写介质上它是已写成型的范围，不是剩余空间）。
     pub formatted: Option<u64>,
 }
 

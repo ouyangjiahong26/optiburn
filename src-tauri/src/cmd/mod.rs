@@ -802,9 +802,13 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             volume_id: task.volume_id.to_string(),
             close_disc: task.close_disc,
         };
-        let needed = grow_print_size(&job).map_err(|e| match lang() {
-            Lang::Zh => JobError::Input(format!("计算追加数据量失败：{e}")),
-            Lang::En => JobError::Input(format!("Failed to compute the append size: {e}")),
+        let needed = grow_print_size(&job).map_err(|e| {
+            JobError::Input(engine_error_text(
+                lang(),
+                "计算追加数据量",
+                "Computing the append size",
+                &e,
+            ))
         })?;
         ensure_fits(task.device, needed)?;
         grow(&job, &mut progress, task.cancel)
