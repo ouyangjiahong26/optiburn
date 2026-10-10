@@ -7,6 +7,12 @@ repository.workspace = true
 description = "Burning engines for optiburn — native MMC engine and xorriso subprocess engine"
 
 [dependencies]
+# 读侧解析用（ADR-0018）：只要读能力，写侧归 mastering。
+hadris-iso = { version = "2.5", default-features = false, features = ["std", "sync", "read", "joliet"] }
 optiburn-mmc = { path = "../optiburn-mmc" }
 optiburn-transport = { path = "../optiburn-transport" }
 thiserror.workspace = true
+
+[dev-dependencies]
+# 读侧往返测试要用 mastering 造镜像。
+optiburn-mastering = { path = "../optiburn-mastering" }

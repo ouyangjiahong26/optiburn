@@ -184,8 +184,10 @@ pub const TRACK_INFO_LEN: usize = 32;
 pub struct TrackInfo {
     /// 轨道起始地址（响应字节 8-11）。
     pub start_lba: u32,
-    /// 下一个可写地址（响应字节 12-15）。追加新区段从它开始写。
+    /// 下一个可写地址（响应字节 12-15）。追加刻录的起点在它后面（中间是链接块）。
     pub next_writable_address: u32,
+    /// 轨道大小（响应字节 24-27，2048 字节块计）。诊断与末区段起点兜底用。
+    pub track_blocks: u32,
 }
 
 /// READ TRACK INFORMATION（0x52）：Track 位置位，轨道号按大端 32 位放在字节 2-5。
@@ -202,13 +204,75 @@ pub fn track_info_cdb(track: u32) -> [u8; 10] {
     cdb
 }
 
-/// 从 READ TRACK INFORMATION 的响应取起始地址与 NWA。
+/// 从 READ TRACK INFORMATION 的响应取起始地址、NWA 与轨道大小。
 pub fn parse_track_information(response: &[u8]) -> Option<TrackInfo> {
     let start = response.get(8..12)?;
     let nwa = response.get(12..16)?;
+    let size = response.get(24..28)?;
     Some(TrackInfo {
         start_lba: u32::from_be_bytes([start[0], start[1], start[2], start[3]]),
         next_writable_address: u32::from_be_bytes([nwa[0], nwa[1], nwa[2], nwa[3]]),
+        track_blocks: u32::from_be_bytes([size[0], size[1], size[2], size[3]]),
+    })
+}
+
+/// READ TOC Format 1（会话信息）的响应长度：4 字节头加一条 8 字节描述符。
+/// 盘上有几个已完结区段就回几条描述符，末区段的信息在最后一条里，只取
+/// 12 字节就够（头 4 字节加末条描述符的前 8 字节），多分配的空间是零。
+pub const SESSION_INFO_LEN: usize = 12;
+
+/// 会话信息（READ TOC Format 1 最后一条会话描述符的关键字段）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionInfo {
+    /// 首个已完结区段的编号（响应字节 2）。
+    pub first_session: u8,
+    /// 末个已完结区段的编号（响应字节 3）。
+    pub last_session: u8,
+    /// 末区段的起始地址（末条描述符的字节 4-7）。CD 与 DVD/BD 都填 LBA
+    /// （MMC-5 6.26.3.2：CD 用 MSF 是 Format 0 的规则，Format 1 一律 LBA）。
+    pub last_session_start: u32,
+}
+
+/// READ TOC/PMA/ATIP（0x43）Format 1（会话信息）。CDB 对齐 libburn 的
+/// `MMC_GET_MSINFO`，alloc length 给 12 字节（libburn 给 16，实测 12 字节
+/// 驱动器只回 10 字节，末条描述符照常完整）。
+pub fn toc_session_info_cdb() -> [u8; 10] {
+    [
+        0x43,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        SESSION_INFO_LEN as u8,
+        0x00,
+    ]
+}
+
+/// 从会话信息响应取末区段编号与起始地址。
+///
+/// 解析规则（按 MMC-5 的响应布局，实测 CD-R 驱动器照此回填）：响应头两字节是
+/// 数据长度（不含长度字段自身，单条描述符时为 10），字节 2 与 3 是首末会话编号，
+/// 描述符跟在头后面，其字节 2 是末区段首轨号、字节 4-7 是末区段起始 LBA。
+/// Format 1 只回一条描述符（末个可读区段的），8 区段的盘实测数据长度仍是 10。
+/// 盘上没有已完结区段（空白盘）时数据长度不足，返回 `None`。
+pub fn parse_session_info(response: &[u8]) -> Option<SessionInfo> {
+    let data_len = u16::from_be_bytes([*response.first()?, *response.get(1)?]);
+    if data_len < 10 {
+        return None;
+    }
+    let descriptor = response.get(4..12)?;
+    Some(SessionInfo {
+        first_session: *response.get(2)?,
+        last_session: *response.get(3)?,
+        last_session_start: u32::from_be_bytes([
+            descriptor[4],
+            descriptor[5],
+            descriptor[6],
+            descriptor[7],
+        ]),
     })
 }
 
@@ -276,6 +340,39 @@ mod tests {
         assert_eq!(
             close_session_cdb(),
             [0x5B, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn toc_session_info_cdb_matches_libburn() {
+        // libburn 的 MMC_GET_MSINFO 同一布局（format 1、MSF 位 0），alloc length
+        // 我们给 12（头 4 加一条描述符 8）。
+        assert_eq!(
+            toc_session_info_cdb(),
+            [0x43, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x00]
+        );
+    }
+
+    #[test]
+    fn session_info_parse_reads_the_hardware_shape() {
+        // 实测 8 区段可追加 CD-R（2026-10-10）：data_len=10，描述符给末区段首轨 8、
+        // 起始 LBA 279570（0x0004_4412）。首末会话编号是 1 与 7（驱动器对末个
+        // 已完结区段的口径，比 DI 的区段数少 1，开放区段不计入）。
+        let reply = [
+            0x00, 0x0A, 0x01, 0x07, 0x00, 0x14, 0x08, 0x00, 0x00, 0x04, 0x44, 0x12,
+        ];
+        assert_eq!(
+            parse_session_info(&reply),
+            Some(SessionInfo {
+                first_session: 1,
+                last_session: 7,
+                last_session_start: 279_570,
+            })
+        );
+        // 空白盘：数据长度不足一条描述符（实测未拿到，按 MMC-5 的长度字段语义推）。
+        assert_eq!(
+            parse_session_info(&[0x00, 0x04, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0]),
+            None
         );
     }
 

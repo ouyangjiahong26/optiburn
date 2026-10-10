@@ -57,5 +57,7 @@ optiburn-cli              命令行：build-image / burn / append / probe
 
 原生 MMC 写入（不借助外部工具）已落地为 `NativeEngine`（ADR-0017）：在
 `optiburn-engine` 的同一个 `BurnEngine` trait 上自己发 `MODE SELECT`、`WRITE(10)` 与
-`CLOSE TRACK/SESSION`，已在 Windows 的 USB 光驱与一张 CD-R 上真机验证。后续是
-原生读盘（盘上浏览、复制、回读校验）与增长模式。
+`CLOSE TRACK/SESSION`，已在 Windows 的 USB 光驱与一张 CD-R 上真机验证。原生读盘也已落地
+（ADR-0018）：`ReadBackend` 接缝上的 `NativeRead` 用 MMC 读块加 ISO 9660 解析读出
+末区段（卷标、目录树、抽取），两种区段地址约定自动探测，已在同一台 USB 光驱上
+验证，Windows 上刻录与读盘都不需要外部工具。后续是增长模式。

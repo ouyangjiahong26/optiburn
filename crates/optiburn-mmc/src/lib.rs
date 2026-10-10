@@ -13,7 +13,7 @@ use optiburn_transport::{Direction, ScsiTransport, TransportError};
 
 mod write;
 
-pub use write::{CurrentProfile, MAX_WRITE_BLOCKS, MediaKind, TrackInfo};
+pub use write::{CurrentProfile, MAX_WRITE_BLOCKS, MediaKind, SessionInfo, TrackInfo};
 
 /// 数据扇区的字节数。写侧与镜像都按这个块长对齐（ISO 9660 的逻辑块）。
 pub const SECTOR_BYTES: usize = 2048;
@@ -96,8 +96,13 @@ pub struct DiscInformation {
     /// 区段数（响应字节 4 的低 8 位，高 8 位在字节 9，实际盘片不会超过 99）。
     pub sessions: u8,
     /// 响应字节 3：盘上首轨号（第一个轨道的编号，通常为 1）。
-    /// “最后一个区段的首轨号”在字节 5，本结构不解析。
     pub first_track: u8,
+    /// 响应字节 5：末区段的首轨号。
+    ///
+    /// 可追加盘上它指向尚未写入的开放区段（实测 2026-10-10，CD-R：盘上 8 条轨道，
+    /// 它给 9，即 NWA 处的隐形轨道，读那里会落在空区），所以读侧只用它做兜底，
+    /// 末区段定位的主路径是 [`MmcDevice::read_toc_session_info`]。
+    pub last_session_first_track: u8,
 }
 
 /// 一条盘驱动器通道，持有已经打开的 [`ScsiTransport`]。
@@ -151,6 +156,7 @@ impl MmcDevice {
             status: DiscStatus::from_bits(data[2]),
             sessions: data[4],
             first_track: data[3],
+            last_session_first_track: data[5],
         })
     }
 
@@ -175,6 +181,14 @@ impl MmcDevice {
     pub fn read_track_information(&mut self, track: u32) -> Result<TrackInfo, MmcError> {
         let data = self.read_into(&write::track_info_cdb(track), write::TRACK_INFO_LEN)?;
         write::parse_track_information(&data).ok_or(MmcError::MalformedResponse)
+    }
+
+    /// READ TOC/PMA/ATIP（0x43）Format 1：会话信息，末区段起始地址在最后一条会话
+    /// 描述符里。读侧用它定位末区段（[`DiscInformation::last_session_first_track`]
+    /// 在可追加盘上指向开放区段的兜底见那里的说明）。
+    pub fn read_toc_session_info(&mut self) -> Result<SessionInfo, MmcError> {
+        let data = self.read_into(&write::toc_session_info_cdb(), write::SESSION_INFO_LEN)?;
+        write::parse_session_info(&data).ok_or(MmcError::MalformedResponse)
     }
 
     /// READ(10)（0x28）：从 `lba` 读一段数据，长度必须是整块。写侧命令的读侧对偶，
@@ -478,6 +492,7 @@ mod tests {
             reply[2] = bits | (0b10 << 2) | 0b0001_0000;
             reply[3] = 2;
             reply[4] = 3;
+            reply[5] = 7;
             let (mut dev, _) = device(reply);
 
             assert_eq!(
@@ -486,6 +501,7 @@ mod tests {
                     status: expected,
                     sessions: 3,
                     first_track: 2,
+                    last_session_first_track: 7,
                 }
             );
         }
@@ -549,6 +565,7 @@ mod tests {
             status,
             sessions: 3,
             first_track: 1,
+            last_session_first_track: 3,
         };
         assert_eq!(approve_write(&info(DiscStatus::Empty), false), Ok(()));
         assert_eq!(approve_write(&info(DiscStatus::Appendable), true), Ok(()));
@@ -691,15 +708,48 @@ mod tests {
         let mut reply = vec![0u8; write::TRACK_INFO_LEN];
         reply[8..12].copy_from_slice(&0x0001_2345u32.to_be_bytes());
         reply[12..16].copy_from_slice(&0x0001_2400u32.to_be_bytes());
+        reply[24..28].copy_from_slice(&81u32.to_be_bytes());
         let (mut dev, cdbs) = device(reply);
 
         let info = dev.read_track_information(0xFF).unwrap();
         assert_eq!(info.start_lba, 0x0001_2345);
         assert_eq!(info.next_writable_address, 0x0001_2400);
+        assert_eq!(info.track_blocks, 81);
         assert_eq!(
             cdbs.borrow().as_slice(),
             &[vec![
                 0x52, 0x01, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x20, 0x00
+            ]]
+        );
+    }
+
+    #[test]
+    fn read_toc_session_info_cdb_and_parse_are_golden() {
+        // 实测形状（8 区段 CD-R）：data_len=10，描述符末区段首轨 8、起始 279570。
+        let mut reply = vec![0u8; write::SESSION_INFO_LEN];
+        reply[0] = 0x00;
+        reply[1] = 0x0A;
+        reply[2] = 0x01;
+        reply[3] = 0x07;
+        reply[4] = 0x00;
+        reply[5] = 0x14;
+        reply[6] = 0x08;
+        reply[8..12].copy_from_slice(&279_570u32.to_be_bytes());
+        let (mut dev, cdbs) = device(reply);
+
+        let info = dev.read_toc_session_info().unwrap();
+        assert_eq!(
+            info,
+            write::SessionInfo {
+                first_session: 1,
+                last_session: 7,
+                last_session_start: 279_570,
+            }
+        );
+        assert_eq!(
+            cdbs.borrow().as_slice(),
+            &[vec![
+                0x43, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x00
             ]]
         );
     }
