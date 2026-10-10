@@ -135,8 +135,11 @@ Windows 仍走 xorriso，而 Windows 上没有能访问光驱的 xorriso 构建�
   两个追加文件的 md5 与本地源文件一致，旧文件（ARCHITECTURE.md 8376 字节、
   WINDOWS-COMPAT.md 5768 字节）的 md5 与原生读侧抽出的字节逐个相等。Windows 只按
   末区段起点加偏移把 extent 当盘上块号读，这条是绝对地址约定在目标平台上的直接证据。
-  托盘需要手动推回：这台 GP70N 忽略 SCSI 的 Load 命令（`START STOP UNIT` 的
-  LoEj=1/Start=0、Immed 变体、`PREVENT ALLOW MEDIUM REMOVAL` 都试过）。
+  托盘弹出后需要手动推回：软件弹出发的是 `START STOP UNIT`（0x1B）的 LoEj=1 与
+  Start=1 组合（实测能把托盘弹出），之后按 LoEj=1 与 Start=0 的组合、它的 Immed
+  变体、以及 `PREVENT ALLOW MEDIUM REMOVAL` 都发过，托盘没有收回，最终由人推回。
+  这台 GP70N 的装盘行为为什么忽略这些命令没有查到根因，两种位组合的语义差异也没在
+  本机核对过，这里只记事实，不写成“驱动器忽略 SCSI 的 Load 命令”这样的结论。
 
 ## 补记：与当初实施计划的偏离
 

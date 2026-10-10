@@ -113,7 +113,7 @@ NoIsoSession”。
 ## 被否决的方案
 
 - 自己写 UDF 解析器：卷描述符序列、分区、ICB、分配描述符、文件标识描述符与
-  Unicode 名字解码是一整套规范，`hadris-udf` 已经在依赖树里且能读 `udf_only()`
+  Unicode 名字解码是一整套标准，`hadris-udf` 已经在依赖树里且能读 `udf_only()`
   产物，自写只有维护成本。
 - 在 ISO 读失败时一律改报 UDF 错误：纯 ISO 盘、空白盘、音频盘都没有卷识别序列，
   报 `UnsupportedUdf` 会让“空白盘”这类正常情形变成故障。按卷识别序列的有无分流。
