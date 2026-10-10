@@ -18,30 +18,37 @@ GP70N）可做真机验证，ADR-0008 当年“本机没有可验证环境”的
    写参数页字段对齐 libburn 的同名实现（xorriso 的写后端），逐条有黄金断言。
 2. `optiburn-engine` 增加 `NativeEngine`，接在 `BurnEngine` 同一个接缝上，名字
    `native`。写序列按当前 Profile 分组（分组照抄 libburn 在写参数页上的分支）：
-   - CD-R / CD-RW：MODE SELECT 设 TAO 与数据轨 control，RESERVE TRACK，写，
-     SYNCHRONIZE CACHE，关区段。
+   - CD-R / CD-RW：MODE SELECT 设 TAO 与数据轨 control，写，SYNCHRONIZE CACHE，
+     关区段。
    - DVD-R / DVD-RW 顺序记录 / DVD-R DL：MODE SELECT 设增量写（BUFE、LS_V、固定包、
-     轨道模式 5、link 与 packet size 16），RESERVE TRACK，写，关区段。
-   - DVD+R[W]、DVD-RAM、BD-R[E]：不设写参数、不预留，写完按需关区段。
+     轨道模式 5、link 与 packet size 16），写，关区段。
+   - DVD+R[W]、BD-R：不设写参数，写完关区段；DVD-RAM、BD-RE 是随机可写介质，
+     不设写参数，也没有区段可关。
    - 其余 Profile（含受限覆盖 DVD-RW）拒绝并给出明确文案，不猜写序列。
+   - 起点：空盘从 LBA 0，可追加盘从 NWA（READ TRACK INFORMATION 取），随机可写
+     介质从 0 覆写。
 3. 引擎选择按平台分：GUI 在 Windows 上走 `native`（那边没有可用的 xorriso），
-   Linux 维持 `xorriso`（原生引擎还没在 Linux 真机验证过）；CLI 的 `--engine` 接受
+   Linux 维持 `xorriso`（原生引擎还没在 Linux 真机验证过）。CLI 的 `--engine` 接受
    `xorriso` 与 `native`，默认仍是 `xorriso`。平台分支只有这一处，理由写在函数注释
    里：这是“哪条路走得通”的差异，不是设备语义差异。
-4. 能力缺口做成结构化的 `NativeGap`（倍速、空镜像、容量、未知 Profile、可追加盘、
+4. 能力缺口做成结构化的 `NativeGap`（倍速、空镜像、容量、块地址上限、未知 Profile、
    已封口），CLI 与 GUI 各给母语文案，不复用 xorriso 的 stderr 分类。
-5. Windows 的读盘仍是 xorriso（ADR-0012），本决策不动读侧；原生 ISO 9660 读取
+5. Windows 的读盘仍是 xorriso（ADR-0012），本决策不动读侧。原生 ISO 9660 读取
    （hadris-iso 自带 read 模块，可复用）留待后续。
 
 ## 后果
 
 - 写侧真机状态：完整序列（MODE SELECT、WRITE(10)、SYNCHRONIZE CACHE、
   CLOSE TRACK/SESSION）与写后读回对拍已在 CD-R 上通过（2026-10-10，见下节）。
-  验证覆盖的是 CD-R 一族；DVD 各族只有替身传输层的端到端测试，等有对应介质再补。
+  验证覆盖的是 CD-R 一族。DVD 各族只有替身传输层的端到端测试，等有对应介质再补。
 - 可追加盘按 NWA 写新区段，覆写旧区段的策略仍在调用方的门禁里（CLI/GUI 对镜像写入
-  一律拒绝可追加盘，ADR-0006/0010）。增长模式（合并既有区段）与倍速参数
-  （SET CD SPEED/STREAMING，单位未核对）尚未支持，界面给明确文案而不是静默忽略。
-- 写入被中止时盘上留下未完成的轨道，与 xorriso 被中止时相同，走同一套“已中止”文案；
+  一律拒绝可追加盘，ADR-0006/0010），引擎层不拦、按地址往后写。
+- 尚未支持，界面给明确文案而不是静默忽略：增长模式（合并既有区段）、倍速参数
+  （SET CD SPEED/STREAMING，单位未核对）。路线图里点到但还没做的两处也记在这里：
+  写命令失败后的忙等与重试（TEST UNIT READY 加 REQUEST SENSE 那一路，当前只有写前与
+  关区段后的就绪轮询，命令失败的 sense 原样上抛），以及按介质类型调整单条 WRITE 的
+  块数（当前固定 32 块，只有 CD-R 上的一档实测）。这两项都要有对应介质才能验证。
+- 写入被中止时盘上留下未完成的轨道，与 xorriso 被中止时相同，走同一套“已中止”文案。
   实测这种未关轨道的盘后续仍可继续写（NWA 跳过它），驱动器不计入区段数。
 - MODE SELECT 的 multi 位承接“不封盘”默认，与 `--close-disc` 同义。
 - 读侧分块上限（32 块）与 CD 容量预检的跳过原因是平台与介质事实，都写在代码注释里，
@@ -76,4 +83,4 @@ GP70N）可做真机验证，ADR-0008 当年“本机没有可验证环境”的
   4. 可追加 CD-R 上 READ CAPACITY 报的是末区段卷空间（257819），与盘级写地址
      （NWA，实测 264720 起）不在同一地址空间，容量预检因此只对非 CD 介质生效。
 - 系统侧的挂载视图要等换盘（弹出再放入）才刷新到新区段，这是多区段 CD 的常规
-  行为，与写盘无关；字节级验证走上面的读回对拍。
+  行为，与写盘无关。字节级验证走上面的读回对拍。

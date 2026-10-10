@@ -787,7 +787,7 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
 }
 
 /// 刻录引擎的选择：Windows 上没有可用的 xorriso（MSYS2 的构建没有光驱访问，
-/// 见 ADR-0008 补记），刻录只能走原生引擎；Linux 维持 xorriso，原生引擎在那边
+/// 见 ADR-0008 补记），刻录只能走原生引擎。Linux 维持 xorriso，原生引擎在那边
 /// 还没有真机验证过（ADR-0017）。追加（增长模式）只有 xorriso 一条路。
 fn burn_engine() -> Box<dyn BurnEngine> {
     if cfg!(windows) {

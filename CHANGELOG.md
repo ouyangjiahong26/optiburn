@@ -11,8 +11,8 @@
 
 ### FEAT
 
-- **原生 MMC 写引擎（ADR-0017）**：`optiburn-engine` 新增 `NativeEngine`，自己发 MMC 命令（MODE SELECT 写参数页、WRITE(10)、SYNCHRONIZE CACHE、CLOSE TRACK/SESSION，起点取 NWA），不依赖任何外部程序；`optiburn-mmc` 增加整套写侧命令与 READ(10)、READ TRACK INFORMATION（逐条黄金 CDB 测试）。CLI 新增 `--engine native`（默认仍是 xorriso），GUI 在 Windows 上默认走原生引擎。在 Windows 的 USB 光驱与一张 CD-R 上真机验证：写 81 块的新区段后用 READ(10) 读回，与镜像逐字节一致。可追加盘按 NWA 写新区段、不覆写已有内容；已封口盘、未知 Profile、空镜像与放不下的镜像给出明确文案拒绝；倍速参数尚未支持。DVD/BD 各族与增长模式留待后续。
-- **真机验证落进代码与文档**：`inspect_real_media`（只读侦察）与 `native_burn_and_read_back_real`（写盘 + 读回对拍）两个 `--ignored` 真机测试；磁盘、平台表与 ADR 同步更新。
+- **原生 MMC 写引擎（ADR-0017）**：`optiburn-engine` 新增 `NativeEngine`，自己发 MMC 命令（MODE SELECT 写参数页、WRITE(10)、SYNCHRONIZE CACHE、CLOSE TRACK/SESSION，起点取 NWA），不依赖任何外部程序。`optiburn-mmc` 增加整套写侧命令与 READ(10)、READ TRACK INFORMATION（逐条黄金 CDB 测试）。CLI 新增 `--engine native`（默认仍是 xorriso），GUI 在 Windows 上默认走原生引擎。在 Windows 的 USB 光驱与一张 CD-R 上真机验证：写 81 块的新区段后用 READ(10) 读回，与镜像逐字节一致。可追加盘按 NWA 写新区段、不覆写已有内容。已封口盘、未知 Profile、空镜像与放不下的镜像给出明确文案拒绝。倍速参数尚未支持。DVD/BD 各族与增长模式留待后续。
+- **真机验证落进代码与文档**：`inspect_real_media`（只读侦察）与 `native_burn_and_read_back_real`（写盘 + 读回对拍）两个 `--ignored` 真机测试。磁盘、平台表与 ADR 同步更新。
 
 ### FIX
 

@@ -54,11 +54,11 @@ libisofs 或任何 GPL 代码。
 ## 补记：缺工具文案分层（2026-10-10）
 
 首次在 Windows 上跑图形前端时暴露：`MissingTool` 的载荷里编着
-`(sudo apt install xorriso)`，只适用于 Debian 系的提示被原样透给 Windows 用户；读盘
+`(sudo apt install xorriso)`，只适用于 Debian 系的提示被原样透给 Windows 用户。读盘
 路径（设备页浏览、复制、回读校验）又没有像刻录路径那样映射这个错误，界面报出
 “读取盘片失败：missing tool: xorriso (sudo apt install xorriso)”。
 
-改为：`MissingTool` 只带工具名；中文说明收在
+改为：`MissingTool` 只带工具名。中文说明收在
 `BurnError::missing_tool_user_text`（CLI 与 GUI 共用一份，口径不漂移），GUI 的英文
 镜像在 `src-tauri/src/cmd/mod.rs` 的 `missing_tool_text`，GUI 里的引擎错误统一过
 `engine_error_text`，缺工具压过动作前缀。CLI 刻录、GUI 刻录、GUI 读盘、GUI 校验

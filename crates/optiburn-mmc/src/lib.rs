@@ -1,7 +1,7 @@
 //! MMC 命令层：把读侧与写侧的 MMC 命令编码成 CDB，并把响应解析成结构化数据。
 //!
 //! 依赖 [`optiburn_transport::ScsiTransport`] 这一个硬件接缝，因此可以在没有光驱的
-//! 机器上用替身完整测试。读侧有 INQUIRY、TEST UNIT READY、READ DISC INFORMATION；
+//! 机器上用替身完整测试。读侧有 INQUIRY、TEST UNIT READY、READ DISC INFORMATION。
 //! 写侧（GET CONFIGURATION、MODE SELECT 写参数页、RESERVE TRACK、WRITE(10)、
 //! SYNCHRONIZE CACHE、CLOSE TRACK/SESSION）在 [`write`] 模块里，服务原生 MMC 引擎
 //! （ADR-0017）。
@@ -49,8 +49,10 @@ pub enum MmcError {
     ShortResponse { got: usize, need: usize },
     #[error("device response too short to parse")]
     MalformedResponse,
-    #[error("write of {len} bytes is not a whole number of 2048-byte blocks")]
-    MisalignedWrite { len: usize },
+    #[error("{len} bytes is not a whole number of 2048-byte blocks")]
+    MisalignedBlocks { len: usize },
+    #[error("{blocks} blocks exceed the transfer limit of {max} blocks per command")]
+    TooManyBlocks { blocks: usize, max: usize },
     #[error("device not ready within timeout")]
     NotReady,
 }
@@ -183,7 +185,7 @@ impl MmcDevice {
     /// ERROR_INVALID_PARAMETER 拒绝（2026-10-10）。
     pub fn read_blocks(&mut self, lba: u32, data: &mut [u8]) -> Result<(), MmcError> {
         if !data.len().is_multiple_of(SECTOR_BYTES) {
-            return Err(MmcError::MisalignedWrite { len: data.len() });
+            return Err(MmcError::MisalignedBlocks { len: data.len() });
         }
         let mut offset = 0usize;
         let mut next = lba;
@@ -225,13 +227,20 @@ impl MmcDevice {
         Ok(())
     }
 
-    /// WRITE(10)（0x2A）：从 `lba` 起写入一段数据。长度必须是整块。
+    /// WRITE(10)（0x2A）：从 `lba` 起写入一段数据。长度必须是整块，块数上限
+    /// [`MAX_WRITE_BLOCKS`]（超出的调用方自己拆成多条）。
     pub fn write_blocks(&mut self, lba: u32, data: &mut [u8]) -> Result<(), MmcError> {
-        if !data.len().is_multiple_of(SECTOR_BYTES) || data.len() / SECTOR_BYTES > MAX_WRITE_BLOCKS
-        {
-            return Err(MmcError::MisalignedWrite { len: data.len() });
+        if !data.len().is_multiple_of(SECTOR_BYTES) {
+            return Err(MmcError::MisalignedBlocks { len: data.len() });
         }
-        let cdb = write::write_10_cdb(lba, (data.len() / SECTOR_BYTES) as u16);
+        let blocks = data.len() / SECTOR_BYTES;
+        if blocks > MAX_WRITE_BLOCKS {
+            return Err(MmcError::TooManyBlocks {
+                blocks,
+                max: MAX_WRITE_BLOCKS,
+            });
+        }
+        let cdb = write::write_10_cdb(lba, blocks as u16);
         self.transport
             .issue(&cdb, Direction::ToDevice, data, WRITE_TIMEOUT)?;
         Ok(())
@@ -636,7 +645,7 @@ mod tests {
         let (mut dev, cdbs, writes) = device_capturing(Vec::new());
 
         assert!(
-            !dev.set_write_parameters(MediaKind::NoWriteParameters, true)
+            !dev.set_write_parameters(MediaKind::PlusOrBdR, true)
                 .unwrap()
         );
         assert!(cdbs.borrow().is_empty());
@@ -650,12 +659,15 @@ mod tests {
         let mut odd = vec![0u8; SECTOR_BYTES + 1];
         assert!(matches!(
             dev.write_blocks(0, &mut odd),
-            Err(MmcError::MisalignedWrite { len }) if len == SECTOR_BYTES + 1
+            Err(MmcError::MisalignedBlocks { len }) if len == SECTOR_BYTES + 1
         ));
         let mut huge = vec![0u8; (MAX_WRITE_BLOCKS + 1) * SECTOR_BYTES];
         assert!(matches!(
             dev.write_blocks(0, &mut huge),
-            Err(MmcError::MisalignedWrite { .. })
+            Err(MmcError::TooManyBlocks {
+                blocks,
+                max: MAX_WRITE_BLOCKS
+            }) if blocks == MAX_WRITE_BLOCKS + 1
         ));
     }
 
@@ -734,7 +746,7 @@ mod tests {
         let mut odd = vec![0u8; SECTOR_BYTES - 1];
         assert!(matches!(
             dev.read_blocks(0, &mut odd),
-            Err(MmcError::MisalignedWrite { .. })
+            Err(MmcError::MisalignedBlocks { .. })
         ));
     }
 }

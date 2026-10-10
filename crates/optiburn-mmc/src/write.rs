@@ -34,15 +34,14 @@ impl CurrentProfile {
         match self.0 {
             Self::CD_R | Self::CD_RW => Some(MediaKind::Cd),
             Self::DVD_R | Self::DVD_RW_SEQUENTIAL | Self::DVD_R_DL => Some(MediaKind::DvdMinus),
-            // libburn 对这组不写写参数页：写类型由驱动器默认（+R 族的顺序写、
-            // DVD-RAM/BD-RE 的随机写）。
-            Self::DVD_RAM
-            | Self::DVD_PLUS_R
+            // +R 族与 BD-R 不写写参数页（写类型由驱动器默认），但区段结构照走，
+            // 写完仍要关区段。DVD-RAM 与 BD-RE 是随机可写介质，没有区段可关。
+            Self::DVD_PLUS_R
             | Self::DVD_PLUS_RW
             | Self::DVD_PLUS_R_DL
             | Self::BD_R_SRM
-            | Self::BD_R_RRM
-            | Self::BD_RE => Some(MediaKind::NoWriteParameters),
+            | Self::BD_R_RRM => Some(MediaKind::PlusOrBdR),
+            Self::DVD_RAM | Self::BD_RE => Some(MediaKind::RandomWritable),
             _ => None,
         }
     }
@@ -51,27 +50,30 @@ impl CurrentProfile {
 /// 写序列按介质分组。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKind {
-    /// CD-R / CD-RW：MODE SELECT 设 TAO，RESERVE TRACK，写，关区段。
+    /// CD-R / CD-RW：MODE SELECT 设 TAO，写，关区段。
     Cd,
-    /// DVD-R / DVD-RW 顺序记录 / DVD-R DL：MODE SELECT 设增量写，RESERVE TRACK，写，关区段。
+    /// DVD-R / DVD-RW 顺序记录 / DVD-R DL：MODE SELECT 设增量写，写，关区段。
     DvdMinus,
-    /// DVD+R[W] / DVD-RAM / BD-R[E]：不设写参数，写，关区段。
-    NoWriteParameters,
+    /// DVD+R[W] / DVD+R DL / BD-R：不设写参数，写，关区段。
+    PlusOrBdR,
+    /// DVD-RAM / BD-RE：随机可写，不设写参数，也不关区段。
+    RandomWritable,
 }
 
 impl MediaKind {
-    /// 这组介质写完是否需要关区段。随机可写的 DVD-RAM 与 BD-RE 不写区段结构，
-    /// 关区段无从谈起；写参数页的 multi 位决定其余介质的封盘与否。
+    /// 这组介质写完是否需要关区段。随机可写介质（DVD-RAM、BD-RE）以块为单位覆写，
+    /// 没有区段结构可关。写参数页的 multi 位决定其余介质的封盘与否。
     pub fn needs_close_session(self) -> bool {
-        !matches!(self, Self::NoWriteParameters)
+        !matches!(self, Self::RandomWritable)
     }
 
-    /// 写参数页的写类型：CD 用 TAO（1），DVD-R 族用增量写（0）。
+    /// 写参数页的写类型：CD 用 TAO（1），DVD-R 族用增量写（0），
+    /// +R 族与随机可写介质不发参数页。
     fn write_type(self) -> Option<u8> {
         match self {
             Self::Cd => Some(0x01),
             Self::DvdMinus => Some(0x00),
-            Self::NoWriteParameters => None,
+            Self::PlusOrBdR | Self::RandomWritable => None,
         }
     }
 }
@@ -128,7 +130,7 @@ pub fn synchronize_cache_cdb() -> [u8; 10] {
 }
 
 /// CLOSE TRACK/SESSION（0x5B）：关闭当前区段（Close Function = 0b010，放在字节 2 的
-/// 低三位，与 libburn 的 `mmc_close` 一致；写成移位后的 0x04 会被驱动器以
+/// 低三位，与 libburn 的 `mmc_close` 一致，写成移位后的 0x04 会被驱动器以
 /// INVALID FIELD IN CDB 拒绝，2026-10-10 实测）。
 /// 不置 IMMED，等驱动器把 lead-out 写完再返回。
 pub fn close_session_cdb() -> [u8; 10] {
@@ -165,7 +167,7 @@ pub fn write_params_payload(kind: MediaKind, multi: bool) -> Option<Vec<u8>> {
             page[5] = 16;
             page[13] = 16;
         }
-        MediaKind::NoWriteParameters => return None,
+        MediaKind::PlusOrBdR | MediaKind::RandomWritable => return None,
     }
     Some(payload)
 }
@@ -302,13 +304,21 @@ mod tests {
 
     #[test]
     fn profiles_without_write_parameters_have_no_page() {
+        // +R 族与 BD-R：不发参数页，但区段结构照走，写完要关区段。
         for code in [
             CurrentProfile::DVD_PLUS_R,
-            CurrentProfile::DVD_RAM,
-            CurrentProfile::BD_RE,
+            CurrentProfile::BD_R_SRM,
+            CurrentProfile::BD_R_RRM,
         ] {
             let kind = CurrentProfile(code).media_kind().expect("known profile");
-            assert_eq!(kind, MediaKind::NoWriteParameters);
+            assert_eq!(kind, MediaKind::PlusOrBdR);
+            assert!(write_params_payload(kind, true).is_none());
+            assert!(kind.needs_close_session());
+        }
+        // 随机可写介质：不发参数页，也没有区段可关。
+        for code in [CurrentProfile::DVD_RAM, CurrentProfile::BD_RE] {
+            let kind = CurrentProfile(code).media_kind().expect("known profile");
+            assert_eq!(kind, MediaKind::RandomWritable);
             assert!(write_params_payload(kind, true).is_none());
             assert!(!kind.needs_close_session());
         }

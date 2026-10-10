@@ -1,27 +1,31 @@
 //! 原生 MMC 写引擎：自己发 MMC 命令把镜像写到盘上，不依赖外部程序（ADR-0017）。
 //!
-//! 写序列按当前 Profile 分组（[`MediaKind`]）：顺序介质（CD-R、DVD-R 族）先设写
-//! 参数页、预留轨道，再写数据；随机可写与 +R 族（DVD-RAM、BD-RE、DVD+R[W]）不设
-//! 写参数、不预留，写完按需关区段。介质族之外的 Profile 一律拒绝，不猜写序列。
+//! 写序列按当前 Profile 分组（[`MediaKind`]）：空盘从 LBA 0 写，可追加盘从 NWA
+//! 往后写新区段，随机可写介质从 0 覆写。CD 与 DVD-R 族先设写参数页，+R 族与
+//! 随机可写介质不发参数页。写完冲刷缓存，除随机可写介质外关区段。介质族之外的
+//! Profile 一律拒绝，不猜写序列。
 //!
-//! 已知缺口（ADR-0017 记录）：只写空白与随机可写介质，可追加盘需要增长模式合并
-//! 既有区段，尚未实现；倍速参数尚未支持（需要 SET CD SPEED/STREAMING，未在真机
-//! 上核对过单位）；关区段之后的封盘由 MODE SELECT 的 multi 位决定，与 xorriso 的
-//! `--close-disc` 同义。
+//! 已知缺口（ADR-0017 记录）：增长模式（把既有区段的目录树并进新会话）未实现，
+//! 可追加盘只写新区段、旧会话的内容在新会话里不可见（调用方门禁负责拦）。
+//! 倍速参数尚未支持（需要 SET CD SPEED/STREAMING，未在真机上核对过单位）。
+//! 写失败后的重试与忙等（路线图里的 REQUEST SENSE 一路）未实现，只有写前与关区段
+//! 后的就绪轮询。单条 WRITE 固定 32 块，未按介质类型调整。关区段之后的封盘由
+//! MODE SELECT 的 multi 位决定，与 xorriso 的 `--close-disc` 同义。
 
 use std::fs::File;
 use std::io::Read;
 use std::time::Duration;
 
 use optiburn_mmc::{
-    DiscStatus, MediaKind, MmcDevice, MmcError, SECTOR_BYTES, WriteBlock, approve_write,
-    wait_until_ready, wait_until_ready_for,
+    DiscStatus, MediaKind, MmcDevice, MmcError, SECTOR_BYTES, wait_until_ready,
+    wait_until_ready_for,
 };
 
 use crate::{BurnEngine, BurnError, BurnJob, CancelToken, NativeGap};
 
 /// 单条 WRITE(10) 携带的块数：32 块（64 KiB）。同步写、没有缓冲队列，
-/// 块小一点让取消与进度的粒度都细一些，慢速介质也来得及落盘。
+/// 块小一点让取消与进度的粒度都细一些，慢速介质也来得及落盘。实测过这一档
+/// （CD-R 写 81 块分三条命令），更大的块与按介质调整留待有对应介质时验证。
 const CHUNK_BLOCKS: usize = 32;
 
 /// 关区段之后驱动器还要忙一阵（写 lead-out、更新 TOC），给它的就绪时限。
@@ -89,11 +93,9 @@ fn preflight(mmc: &mut MmcDevice) -> Result<(MediaKind, DiscStatus), BurnError> 
     // 已封口是物理上写不了，引擎自己拦。可追加盘不在引擎层拒绝：门禁在调用方
     // （ADR-0006/0010，镜像写入遮住旧区段的那道），引擎按 NWA 往后写新区段，
     // 不覆写任何已经写过的位置。
-    approve_write(&info, true).map_err(|block| match block {
-        WriteBlock::Finalized => BurnError::NativeGap(NativeGap::FinalizedDisc),
-        // accept_appendable 为真时不会走到这里，留着是为了穷尽枚举。
-        WriteBlock::NeedGrowMode => BurnError::NativeGap(NativeGap::FinalizedDisc),
-    })?;
+    if info.status == DiscStatus::Finalized {
+        return Err(BurnError::NativeGap(NativeGap::FinalizedDisc));
+    }
     let profile = mmc.get_configuration()?;
     let kind = profile
         .media_kind()
@@ -103,7 +105,7 @@ fn preflight(mmc: &mut MmcDevice) -> Result<(MediaKind, DiscStatus), BurnError> 
     Ok((kind, info.status))
 }
 
-/// 写入的起始块：空盘从 0 开始；可追加盘接在 NWA（下一个可写地址）后面写新区段；
+/// 写入的起始块：空盘从 0 开始，可追加盘接在 NWA（下一个可写地址）后面写新区段，
 /// 随机可写介质（DVD-RAM、BD-RE）从 0 开始顺序覆写。
 ///
 /// NWA 必须问驱动器（READ TRACK INFORMATION），不能自己按镜像大小推算：区段之间
