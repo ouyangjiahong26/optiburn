@@ -606,6 +606,27 @@ fn directory_beyond_the_addressable_blocks_is_refused() {
 }
 
 #[test]
+fn relative_convention_overflow_is_refused_too() {
+    // 区段相对约定下映射是 wrapping_add，若先映射再查长度，extent 接近 32 位上限时
+    // 会回绕成盘内的小 LBA，护栏失效。夹具按相对约定放在非零起点上钉住这条分支。
+    const BASE: u32 = 1000;
+    let session = crafted_session(0, Some(u32::MAX), &[]);
+    let mut disc = vec![0u8; (BASE as usize + 32) * SECTOR_BYTES];
+    let start = BASE as usize * SECTOR_BYTES;
+    disc[start..start + session.len()].copy_from_slice(&session);
+
+    let mut blocks = MemoryBlocks(disc);
+    let mut read = |lba: u32, out: &mut [u8]| blocks.read_blocks_at(lba, out);
+    let error = read_old_session(&mut read, BASE, &CancelToken::default())
+        .expect_err("a wrapping extent must be refused");
+    assert!(
+        matches!(&error, BurnError::ReadFailed(detail)
+            if detail.contains("beyond the addressable blocks")),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn crafted_session_without_iso_reports_no_session() {
     let mut blocks = MemoryBlocks(vec![0u8; 64 * SECTOR_BYTES]);
     let mut read = |lba: u32, out: &mut [u8]| blocks.read_blocks_at(lba, out);
