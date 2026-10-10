@@ -10,6 +10,9 @@
 //! （libisofs 的 ms_block 语义，镜像内所有引用都按区段起点位移过）。两种约定的
 //! 描述符区（逻辑块 16 起）都物理落在区段起点加偏移，差异只在数据 extent 的解释。
 //! 读侧按“根目录首记录是否自引用”探测属于哪种，见 [`probe_address_mode`]。
+//!
+//! 没有 ISO 9660 的末区段再试 UDF（[`udf`] 模块，ADR-0021）：Windows 刻的纯 UDF
+//! 盘与 Bridge 盘的后半段都走那条路，两个都没有才是 [`BurnError::NoIsoSession`]。
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -21,10 +24,14 @@ use hadris_iso::sync::IsoImage;
 use hadris_iso::sync::directory::DirectoryRef;
 use hadris_iso::sync::read::DirEntry;
 use hadris_iso::sync::volume::VolumeDescriptor;
+use hadris_udf::UdfVolume;
 use optiburn_mmc::{DiscStatus, MmcDevice, MmcError, SECTOR_BYTES, wait_until_ready};
 
+use self::udf::UdfSource;
 use crate::readback::{DiscEntry, ReadBackend, safe_relative_path};
 use crate::{BurnError, CancelToken};
+
+mod udf;
 
 /// 一次填补内部缓冲的块数，与 MMC 读侧的单命令上限对齐（64 KiB）。
 const CHUNK_BLOCKS: u64 = optiburn_mmc::MAX_READ_BLOCKS as u64;
@@ -33,7 +40,7 @@ const MAX_DESCRIPTOR_SECTORS: u32 = 16;
 
 /// 区段在盘上的地址约定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AddressMode {
+pub(crate) enum AddressMode {
     /// 区段相对：源内块号一律加区段起点。自家原生引擎写的区段。
     SessionRelative,
     /// 盘级绝对：源内块号原样作盘上 LBA（xorriso 增长模式的区段）。描述符区例外，
@@ -41,9 +48,25 @@ enum AddressMode {
     DiscAbsolute { desc_len: u32 },
 }
 
+/// 区段的源内块号到盘上 LBA 的映射。描述符区（逻辑块 16 起，长度 `desc_len`）
+/// 在两种约定下都在区段起点加偏移，绝对约定下批量读取也不能跨过这条边界
+/// （映射在那里不连续）。
+pub(crate) fn mapped_lba(mode: AddressMode, base: u32, block: u32) -> u32 {
+    match mode {
+        AddressMode::SessionRelative => base.wrapping_add(block),
+        AddressMode::DiscAbsolute { desc_len } => {
+            if u64::from(block) < 16 + u64::from(desc_len) {
+                base.wrapping_add(block)
+            } else {
+                block
+            }
+        }
+    }
+}
+
 /// 末区段的 ISO 视图字节源：把源内块号按 [`AddressMode`] 映射到盘上 LBA，
 /// 实现 std 的 Read 与 Seek 喂给 hadris 的 [`IsoImage`]。
-struct SessionSource {
+pub(crate) struct SessionSource {
     blocks: Box<dyn BlockSource>,
     base: u32,
     mode: AddressMode,
@@ -56,12 +79,13 @@ struct SessionSource {
 }
 
 /// 按盘上 LBA 读整块的底层源。设备与镜像文件各一个实现，测试另有内存实现。
-trait BlockSource {
+pub(crate) trait BlockSource {
     fn read_blocks_at(&mut self, lba: u32, out: &mut [u8]) -> Result<(), BurnError>;
 }
 
-/// 探测阶段的按块读取：借用块源发的闭包，扫描与地址判定都用它。
-type BlockRead<'a> = dyn FnMut(u32, &mut [u8]) -> Result<(), BurnError> + 'a;
+/// 探测阶段的按块读取：借用块源发的闭包，扫描与地址判定都用它。增长模式读旧
+/// 区段（[`crate::grow`]）也用它，所以是 crate 可见。
+pub(crate) type BlockRead<'a> = dyn FnMut(u32, &mut [u8]) -> Result<(), BurnError> + 'a;
 
 /// 光驱：READ(10) 读块（超长自动按 32 块拆，见 mmc 层）。
 struct DiscBlocks(MmcDevice);
@@ -107,16 +131,7 @@ impl SessionSource {
 
     /// 源内块号到盘上 LBA 的映射。
     fn disc_lba(&self, block: u32) -> u32 {
-        match self.mode {
-            AddressMode::SessionRelative => self.base.wrapping_add(block),
-            AddressMode::DiscAbsolute { desc_len } => {
-                if u64::from(block) < 16 + u64::from(desc_len) {
-                    self.base.wrapping_add(block)
-                } else {
-                    block
-                }
-            }
-        }
+        mapped_lba(self.mode, self.base, block)
     }
 
     /// 保证内部缓冲覆盖 `block`，尽量一次读满 64 KiB，顺序读时每块只发一条命令。
@@ -206,17 +221,41 @@ fn classify_source(source: &Path) -> SourceKind {
     }
 }
 
+/// 末区段的会话视图：ISO 9660 或 UDF。读侧四个入口共用（ADR-0018、ADR-0021）。
+pub(crate) enum DiscSession {
+    Iso(IsoImage<SessionSource>),
+    Udf(UdfVolume<UdfSource>),
+}
+
+/// 打开末区段的会话视图：先按 ISO 9660 开，只有“没有 ISO 9660”时才再试 UDF。
+/// Bridge 盘因此走 ISO 分支，与追加门禁的语义保持一致（那些盘续写 ISO 区段会
+/// 遮住原有内容，见 [`crate::readback::last_session_is_iso`]）。
+pub(crate) fn open_session(source: &Path, cancel: &CancelToken) -> Result<DiscSession, BurnError> {
+    match open_last_session(source, cancel) {
+        Ok(iso) => Ok(DiscSession::Iso(iso)),
+        Err(BurnError::NoIsoSession) => match udf::open_udf_session(source, cancel) {
+            Ok(volume) => Ok(DiscSession::Udf(volume)),
+            Err(BurnError::NoIsoSession) => Err(BurnError::NoIsoSession),
+            Err(other) => Err(other),
+        },
+        Err(other) => Err(other),
+    }
+}
+
 /// 原生读侧后端：接在 [`ReadBackend`] 接缝上（ADR-0018）。
 pub(crate) struct NativeRead;
 
 impl ReadBackend for NativeRead {
     fn read_volume_id(&self, source: &str) -> Result<String, BurnError> {
         let cancel = CancelToken::default();
-        let iso = open_last_session(Path::new(source), &cancel)?;
-        volume_id(&iso, &cancel)
+        match open_session(Path::new(source), &cancel)? {
+            DiscSession::Iso(iso) => volume_id(&iso, &cancel),
+            DiscSession::Udf(volume) => udf::volume_id(&volume),
+        }
     }
 
     fn last_session_is_iso(&self, source: &str) -> Result<bool, BurnError> {
+        // UDF 不进这个判断：门禁问的是“末区段是不是 ISO 9660”。
         match open_last_session(Path::new(source), &CancelToken::default()) {
             Ok(_) => Ok(true),
             // 盘上没有 ISO 9660（空白盘、UDF 盘、音频轨）按“不是”回答，与 xorriso
@@ -228,12 +267,10 @@ impl ReadBackend for NativeRead {
 
     fn list_tree(&self, source: &str) -> Result<Vec<DiscEntry>, BurnError> {
         let cancel = CancelToken::default();
-        let iso = open_last_session(Path::new(source), &cancel)?;
-        let root = iso.root_dir();
-        let joliet = is_joliet_root(&root.entry_type());
-        let mut entries = Vec::new();
-        walk_list(&iso, root.dir_ref(), "", joliet, &mut entries, &cancel)?;
-        Ok(entries)
+        match open_session(Path::new(source), &cancel)? {
+            DiscSession::Iso(iso) => list_iso_tree(&iso, &cancel),
+            DiscSession::Udf(volume) => udf::list_tree(&volume, &cancel),
+        }
     }
 
     fn extract_tree(
@@ -242,10 +279,14 @@ impl ReadBackend for NativeRead {
         dest: &Path,
         cancel: &CancelToken,
     ) -> Result<(), BurnError> {
-        let iso = open_last_session(source, cancel)?;
-        let root = iso.root_dir();
-        let joliet = is_joliet_root(&root.entry_type());
-        extract_dir(&iso, root.dir_ref(), joliet, dest, cancel)
+        match open_session(source, cancel)? {
+            DiscSession::Iso(iso) => {
+                let root = iso.root_dir();
+                let joliet = is_joliet_root(&root.entry_type());
+                extract_dir(&iso, root.dir_ref(), joliet, dest, cancel)
+            }
+            DiscSession::Udf(volume) => udf::extract_tree(&volume, dest, cancel),
+        }
     }
 
     fn extract_paths(
@@ -255,33 +296,55 @@ impl ReadBackend for NativeRead {
         dest: &Path,
         cancel: &CancelToken,
     ) -> Result<(), BurnError> {
-        let iso = open_last_session(Path::new(source), cancel)?;
-        let joliet = is_joliet_root(&iso.root_dir().entry_type());
-        for path in paths {
-            // 先过安全过滤再碰盘：不安全路径没有必要读盘，也避免中途才发现要拒绝。
-            let target = dest.join(safe_relative_path(path)?);
-            // find_path 的逐段匹配覆盖三种命名空间（RRIP 精确、Joliet 解码后比较、
-            // 平面名忽略大小写）。
-            let Some(entry) = iso.find_path(path).map_err(|e| hadris_error(e, cancel))? else {
-                return Err(BurnError::ReadFailed(format!(
-                    "path not found on the disc: {path}"
-                )));
-            };
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            if entry.is_directory() {
-                let dir = entry
-                    .as_dir_ref(&iso)
-                    .map_err(|e| hadris_error(e, cancel))?;
-                extract_dir(&iso, dir, joliet, &target, cancel)?;
-            } else {
-                let data = iso.read_file(&entry).map_err(|e| hadris_error(e, cancel))?;
-                std::fs::write(&target, &data)?;
-            }
+        match open_session(Path::new(source), cancel)? {
+            DiscSession::Iso(iso) => extract_iso_paths(&iso, paths, dest, cancel),
+            DiscSession::Udf(volume) => udf::extract_paths(&volume, paths, dest, cancel),
         }
-        Ok(())
     }
+}
+
+/// ISO 分支的列举。
+fn list_iso_tree(
+    iso: &IsoImage<SessionSource>,
+    cancel: &CancelToken,
+) -> Result<Vec<DiscEntry>, BurnError> {
+    let root = iso.root_dir();
+    let joliet = is_joliet_root(&root.entry_type());
+    let mut entries = Vec::new();
+    walk_list(iso, root.dir_ref(), "", joliet, &mut entries, cancel)?;
+    Ok(entries)
+}
+
+/// ISO 分支的按路径抽取（UDF 分支在 [`udf::extract_paths`]）。
+fn extract_iso_paths(
+    iso: &IsoImage<SessionSource>,
+    paths: &[String],
+    dest: &Path,
+    cancel: &CancelToken,
+) -> Result<(), BurnError> {
+    let joliet = is_joliet_root(&iso.root_dir().entry_type());
+    for path in paths {
+        // 先过安全过滤再碰盘：不安全路径没有必要读盘，也避免中途才发现要拒绝。
+        let target = dest.join(safe_relative_path(path)?);
+        // find_path 的逐段匹配覆盖三种命名空间（RRIP 精确、Joliet 解码后比较、
+        // 平面名忽略大小写）。
+        let Some(entry) = iso.find_path(path).map_err(|e| hadris_error(e, cancel))? else {
+            return Err(BurnError::ReadFailed(format!(
+                "path not found on the disc: {path}"
+            )));
+        };
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if entry.is_directory() {
+            let dir = entry.as_dir_ref(iso).map_err(|e| hadris_error(e, cancel))?;
+            extract_dir(iso, dir, joliet, &target, cancel)?;
+        } else {
+            let data = iso.read_file(&entry).map_err(|e| hadris_error(e, cancel))?;
+            std::fs::write(&target, &data)?;
+        }
+    }
+    Ok(())
 }
 
 /// 打开末区段的 ISO 视图。盘上（或文件里）没有可读的 ISO 9660 时报
@@ -326,7 +389,7 @@ fn open_last_session(
 
 /// 在起点 `base` 的区段上探测地址约定并打开 ISO 视图。`len_hint` 只在
 /// 调用方已知源长度时给出（镜像文件），设备路径的长度从 PVD 的卷空间大小取。
-fn open_session_view<B: BlockSource + 'static>(
+pub(crate) fn open_session_view<B: BlockSource + 'static>(
     mut blocks: B,
     base: u32,
     len_hint: u64,
@@ -411,8 +474,8 @@ fn scan_descriptors(read: &mut BlockRead, base: u32) -> Result<Option<SessionLay
 /// LBA（同样等于 E，因为两种约定下这个字段都指向根目录自身所在的源内块）。
 /// 判定用“读到的块号 == 记录声称的块号”，按相对、绝对的顺序尝试。相对候选的
 /// 读取失败（绝对约定的盘上 base+E 可能越过可读范围，驱动器报错）不算结论，
-/// 换绝对候选再判。
-fn probe_address_mode(
+/// 换绝对候选再判。增长模式读旧区段时也用它（[`crate::grow`]）。
+pub(crate) fn probe_address_mode(
     read: &mut BlockRead,
     base: u32,
     root_extent: u32,
@@ -493,7 +556,7 @@ fn decode_utf16_be(bytes: &[u8]) -> String {
 
 /// 根是否 Joliet 命名空间（hadris 的 best_choice 在有 RRIP 的主命名空间时优先
 /// 选它，RRIP 名与 Joliet 名都能保留大小写与中文，两者取一即可）。
-fn is_joliet_root(entry_type: &EntryType) -> bool {
+pub(crate) fn is_joliet_root(entry_type: &EntryType) -> bool {
     matches!(entry_type, EntryType::Joliet { .. })
 }
 
@@ -525,8 +588,9 @@ fn is_self_reference(entry: &DirEntry) -> bool {
     name.len() == 1 && matches!(name[0], 0 | 1)
 }
 
-/// 深度优先列目录树，顺序即目录记录顺序（xorriso 的 -find 也是树序）。
-fn walk_list(
+/// 深度优先列目录树，顺序即目录记录顺序（xorriso 的 -find 也是树序）。增长模式的
+/// 测试也用它读回生成的会话（[`crate::grow`]）。
+pub(crate) fn walk_list(
     iso: &IsoImage<SessionSource>,
     dir: DirectoryRef,
     prefix: &str,

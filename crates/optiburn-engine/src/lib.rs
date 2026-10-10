@@ -10,12 +10,16 @@
 //! 除写盘外还有读侧：读盘上卷标、列目录树、抽取到本地，以及本地目录树的内容
 //! 对比（回读校验，见 ADR-0010）。读侧同样有两个后端（xorriso 子进程与原生
 //! MMC 加 ISO 9660 解析，ADR-0018），Windows 走原生、Linux 维持 xorriso。
+//!
+//! 增长模式（`append`/追加页）同样分平台：Windows 用原生引擎读旧区段、生成
+//! 绝对地址约定的新区段（ADR-0020），Linux 维持 xorriso 的增长模式。
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod disc_read;
+mod grow;
 mod native;
 mod readback;
 mod verify;
@@ -23,17 +27,44 @@ mod xorriso;
 
 pub use native::NativeEngine;
 pub use readback::{
-    DiscEntry, extract_paths, extract_tree, grow_print_size, last_session_is_iso, list_tree,
-    read_volume_id,
+    DiscEntry, extract_paths, extract_tree, last_session_is_iso, list_tree, read_volume_id,
 };
 pub use verify::compare_trees;
-pub use xorriso::{BurnFailure, XorrisoEngine, grow};
+pub use xorriso::{BurnFailure, XorrisoEngine};
+
+/// 把目录追加到盘上（增长模式）：读出盘上末区段的目录树，把源目录并进去后作为
+/// 新区段提交。
+///
+/// Windows 走原生引擎（自己读旧区段、生成新区段，见 ADR-0020），Linux 维持
+/// xorriso 增长模式（ADR-0006）。分派规则与写侧、读侧同理由：哪条路在平台上
+/// 走得通，不是设备语义差异。
+pub fn grow(
+    job: &GrowJob,
+    progress: &mut dyn FnMut(f32),
+    cancel: &CancelToken,
+) -> Result<(), BurnError> {
+    if cfg!(windows) {
+        native::grow(job, progress, cancel)
+    } else {
+        xorriso::grow(job, progress, cancel)
+    }
+}
+
+/// 追加会话的尺寸预演：返回即将写入的新区段字节数，供调用方的写前容量门禁
+/// （ADR-0019）。不写盘，但会读盘片状态与旧区段目录树。
+pub fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
+    if cfg!(windows) {
+        native::grow_size(job)
+    } else {
+        xorriso::grow_size(job)
+    }
+}
 
 /// 依赖的可执行文件名。
 pub(crate) const XORRISO: &str = "xorriso";
 /// 子进程失败时保留多少行 stderr 作为摘要。
 pub(crate) const TAIL_LINES: usize = 10;
-/// 容量门禁的区段开销余量（ADR-0019）：待写入量（[`grow_print_size`] 的预演块数
+/// 容量门禁的区段开销余量（ADR-0019）：待写入量（[`grow_size`] 的预演字节数
 /// 或镜像大小）只算数据区，不含区段 lead-in/lead-out 与链接区。CD 每区段最大约
 /// 15 MB，DVD/BD 约 2 MB，取覆盖最坏情形的 16 MB。CLI 与 GUI 的写前容量门禁
 /// 共用这一个常量，避免两端口径漂移。
@@ -94,6 +125,18 @@ pub enum BurnError {
     /// 原生引擎做不到这次请求，原因见 [`NativeGap`]，文案由 CLI 与 GUI 分别给出。
     #[error("native engine gap: {0}")]
     NativeGap(NativeGap),
+    /// 盘上剩余空间放不下待写入的新区段（原生增长模式的门禁，ADR-0020）。
+    #[error("not enough space for the new session: needs {needed} bytes, {free} free")]
+    NotEnoughSpace { needed: u64, free: u64 },
+    /// 盘上旧区段的形状不支持嫁接式增长（无 Joliet、启动记录、多 extent 文件等）。
+    #[error("cannot grow this disc with the native engine: {0}")]
+    GrowUnsupported(String),
+    /// 追加的目录与盘上已有内容冲突（同名文件对目录、命名空间内重名）。
+    #[error("growth content conflicts with the disc: {0}")]
+    GrowConflict(String),
+    /// 盘上最后一区段是 UDF，但用了 hadris-udf 读不了的结构（VAT、元数据分区等）。
+    #[error("unsupported UDF structure: {0}")]
+    UnsupportedUdf(String),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -113,6 +156,10 @@ pub enum NativeGap {
     UnsupportedProfile(u16),
     #[error("the disc is finalized")]
     FinalizedDisc,
+    #[error("growing a rewritable disc is not supported by the native engine")]
+    GrowthOnRewritable,
+    #[error("the source directory is empty")]
+    EmptyGrowSource,
 }
 
 impl BurnError {

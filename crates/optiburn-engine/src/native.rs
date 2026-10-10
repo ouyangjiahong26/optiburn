@@ -5,8 +5,10 @@
 //! 随机可写介质不发参数页。写完冲刷缓存，除随机可写介质外关区段。介质族之外的
 //! Profile 一律拒绝，不猜写序列。
 //!
-//! 已知缺口（ADR-0017 记录）：增长模式（把既有区段的目录树并进新会话）未实现，
-//! 可追加盘只写新区段、旧会话的内容在新会话里不可见（调用方门禁负责拦）。
+//! 增长模式（[`grow`]）在可追加盘上读出旧区段的目录树，把源目录嫁接上去后生成
+//! 新区段（绝对地址约定见 [`crate::grow`]，决策见 ADR-0020）。随机可写介质不
+//! 支持增长：那类盘可以直接整体覆写。
+//!
 //! 倍速参数尚未支持（需要 SET CD SPEED/STREAMING，未在真机上核对过单位）。
 //! 写失败后的重试与忙等（路线图里的 REQUEST SENSE 一路）未实现，只有写前与关区段
 //! 后的就绪轮询。单条 WRITE 固定 32 块，未按介质类型调整。关区段之后的封盘由
@@ -14,14 +16,15 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use optiburn_mmc::{
     DiscStatus, MediaKind, MmcDevice, MmcError, SECTOR_BYTES, wait_until_ready,
     wait_until_ready_for,
 };
 
-use crate::{BurnEngine, BurnError, BurnJob, CancelToken, NativeGap};
+use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, NativeGap, SESSION_OVERHEAD};
 
 /// 单条 WRITE(10) 携带的块数：32 块（64 KiB）。同步写、没有缓冲队列，
 /// 块小一点让取消与进度的粒度都细一些，慢速介质也来得及落盘。实测过这一档
@@ -74,7 +77,7 @@ pub(crate) fn burn_with_device(
     // CD 的 TAO 与 DVD 的增量写都不发。实测（2026-10-10，可追加 CD-R）照搬预留会被
     // 驱动器以 ILLEGAL REQUEST/INVALID FIELD IN CDB 拒绝。DAO 路径要用时在 mmc 里
     // 已经有现成的命令。
-    write_image(mmc, job, blocks, start, progress, cancel)?;
+    write_image(mmc, &job.image, blocks, start, progress, cancel)?;
 
     mmc.synchronize_cache()?;
     if kind.needs_close_session() {
@@ -83,6 +86,157 @@ pub(crate) fn burn_with_device(
     }
     progress(1.0);
     Ok(())
+}
+
+/// 增长模式的入口：打开设备后交给 [`grow_with_device`]，与 [`NativeEngine::burn`]
+/// 同一条规则处理设备打开失败。
+pub(crate) fn grow(
+    job: &GrowJob,
+    progress: &mut dyn FnMut(f32),
+    cancel: &CancelToken,
+) -> Result<(), BurnError> {
+    let transport = optiburn_transport::open(&job.device)
+        .map_err(|e| BurnError::Mmc(MmcError::Transport(e)))?;
+    let mut mmc = MmcDevice::new(transport);
+    grow_with_device(&mut mmc, job, progress, cancel)
+}
+
+/// 增长会话的尺寸预演：只打开设备读盘片状态与旧区段模型，算出盘上要写多少字节
+/// （CLI 与 GUI 的写前容量门禁用，ADR-0019）。
+pub(crate) fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
+    let transport = optiburn_transport::open(&job.device)
+        .map_err(|e| BurnError::Mmc(MmcError::Transport(e)))?;
+    let mut mmc = MmcDevice::new(transport);
+    grow_size_with_device(&mut mmc, job)
+}
+
+/// 预演主体：从一台已打开的设备开始，与 [`grow_with_device`] 共用状态路由。
+pub(crate) fn grow_size_with_device(mmc: &mut MmcDevice, job: &GrowJob) -> Result<u64, BurnError> {
+    wait_until_ready(mmc)?;
+    let info = mmc.read_disc_information()?;
+    let (start, old) = growth_start(mmc, info.status, &CancelToken::default())?;
+    let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
+    Ok(plan.total_bytes())
+}
+
+/// 写盘主体：从一台已打开的设备开始，方便测试喂替身传输层跑完整个序列。
+pub(crate) fn grow_with_device(
+    mmc: &mut MmcDevice,
+    job: &GrowJob,
+    progress: &mut dyn FnMut(f32),
+    cancel: &CancelToken,
+) -> Result<(), BurnError> {
+    if job.speed.is_some() {
+        return Err(BurnError::NativeGap(NativeGap::WriteSpeed));
+    }
+    wait_until_ready(mmc)?;
+    let info = mmc.read_disc_information()?;
+    let profile = mmc.get_configuration()?;
+    let kind = profile
+        .media_kind()
+        .ok_or(BurnError::NativeGap(NativeGap::UnsupportedProfile(
+            profile.0,
+        )))?;
+    let (start, old) = growth_start(mmc, info.status, cancel)?;
+    let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
+    guard_grow_capacity(mmc, plan.total_bytes())?;
+
+    mmc.set_write_parameters(kind, !job.close_disc)?;
+    // 会话镜像先落到本地临时文件再按块写盘：生成要按源文件随机读，边生成边下发
+    // 会把写命令之间的间隔拉长，慢速介质上更容易写坏。
+    let staging = StagingImage::create(&plan, cancel)?;
+    write_image(mmc, staging.path(), staging.blocks, start, progress, cancel)?;
+
+    mmc.synchronize_cache()?;
+    if kind.needs_close_session() {
+        mmc.close_session()?;
+        wait_until_ready_for(mmc, CLOSE_SETTLE_DEADLINE)?;
+    }
+    progress(1.0);
+    Ok(())
+}
+
+/// 增长模式的写前路由：返回新区段的起点与旧区段模型。空盘从 0 起写第一区段；
+/// 可追加盘接在 NWA（下一个可写地址）后面写，旧区段则从 READ TOC Format 1 报的
+/// 末区段起点读（NWA 指向旧区段之后的位置，不能用来定位旧区段的内容）；封口盘与
+/// 随机可写介质（DVD-RAM、BD-RE）拒绝。末区段不是 ISO 9660 时读旧区段会报
+/// `NoIsoSession`，调用方门禁先拦住这类盘，这里是兜底。
+fn growth_start(
+    mmc: &mut MmcDevice,
+    status: DiscStatus,
+    cancel: &CancelToken,
+) -> Result<(u32, Option<crate::grow::OldSession>), BurnError> {
+    match status {
+        DiscStatus::Empty => Ok((0, None)),
+        DiscStatus::Appendable => {
+            let start = mmc
+                .read_track_information(LAST_TRACK)?
+                .next_writable_address;
+            let Some(session) = mmc.read_toc_session_info()? else {
+                return Err(BurnError::NoIsoSession);
+            };
+            let old = {
+                let mut read = |lba: u32, out: &mut [u8]| {
+                    mmc.read_blocks(lba, out)?;
+                    Ok(())
+                };
+                crate::grow::read_old_session(&mut read, session.last_session_start, cancel)?
+            };
+            Ok((start, Some(old)))
+        }
+        DiscStatus::Finalized => Err(BurnError::NativeGap(NativeGap::FinalizedDisc)),
+        DiscStatus::Other(_) => Err(BurnError::NativeGap(NativeGap::GrowthOnRewritable)),
+    }
+}
+
+/// 增长会话的容量门禁（ADR-0019 的口径）：驱动器报得出可用容量就让新会话加上
+/// 区段开销必须放得下。口径与调用方的写前门禁同源（[`MmcDevice::read_disc_capacity`]），
+/// 读不到时跳过，让驱动器的写错误兜底。
+fn guard_grow_capacity(mmc: &mut MmcDevice, needed: u64) -> Result<(), BurnError> {
+    let Some(free) = mmc.read_disc_capacity().free else {
+        return Ok(());
+    };
+    if needed + SESSION_OVERHEAD > free {
+        return Err(BurnError::NotEnoughSpace { needed, free });
+    }
+    Ok(())
+}
+
+/// 增长会话的临时镜像：生成完的文件在所有返回路径上都被删掉。
+struct StagingImage {
+    path: PathBuf,
+    blocks: u64,
+}
+
+impl StagingImage {
+    fn create(plan: &crate::grow::SessionPlan, cancel: &CancelToken) -> Result<Self, BurnError> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let path =
+            std::env::temp_dir().join(format!("optiburn-grow-{}-{nanos}.iso", std::process::id()));
+        let staging = Self {
+            path,
+            blocks: plan.total_bytes().div_ceil(SECTOR_BYTES as u64),
+        };
+        {
+            let mut file = File::create(&staging.path)?;
+            plan.write_image(&mut file, cancel)?;
+            file.sync_all()?;
+        }
+        Ok(staging)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for StagingImage {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// 写前检查：介质就绪、盘片可写、Profile 在支持列表里。返回介质族与盘片状态
@@ -161,15 +315,16 @@ fn guard_capacity(
 }
 
 /// 写数据：分块读镜像、整块下发，块与块之间检查取消。`start` 是第一个数据块的地址。
+/// 刻录（镜像文件）与增长（临时生成的会话镜像）共用这一条写序列。
 fn write_image(
     mmc: &mut MmcDevice,
-    job: &BurnJob,
+    image: &Path,
     blocks: u64,
     start: u32,
     progress: &mut dyn FnMut(f32),
     cancel: &CancelToken,
 ) -> Result<(), BurnError> {
-    let mut file = File::open(&job.image)?;
+    let mut file = File::open(image)?;
     let mut buffer = vec![0u8; CHUNK_BLOCKS * SECTOR_BYTES];
     let mut lba = start;
     let mut written = 0u64;
@@ -208,430 +363,7 @@ fn fill_buffer(file: &mut File, buffer: &mut [u8]) -> Result<usize, BurnError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use optiburn_mmc::CurrentProfile;
-    use optiburn_transport::{Completion, Direction, ScsiTransport, TransportError};
-    use std::cell::RefCell;
-    use std::path::PathBuf;
-    use std::rc::Rc;
-    use std::time::Duration;
-
-    /// 应答脚本化的假驱动器：按 opcode 回固定响应，记录命令顺序与写入载荷。
-    struct ScriptedDrive {
-        profile: u16,
-        disc_status: u8,
-        capacity: Option<u32>,
-        log: Rc<RefCell<Vec<Vec<u8>>>>,
-        written: Rc<RefCell<Vec<u8>>>,
-        cancel_after_first_write: Option<CancelToken>,
-    }
-
-    impl ScriptedDrive {
-        fn new(profile: u16, disc_status: u8) -> Self {
-            Self {
-                profile,
-                disc_status,
-                capacity: Some(0x10_0000),
-                log: Rc::new(RefCell::new(Vec::new())),
-                written: Rc::new(RefCell::new(Vec::new())),
-                cancel_after_first_write: None,
-            }
-        }
-    }
-
-    impl ScsiTransport for ScriptedDrive {
-        fn issue(
-            &mut self,
-            cdb: &[u8],
-            dir: Direction,
-            data: &mut [u8],
-            _timeout: Duration,
-        ) -> Result<Completion, TransportError> {
-            self.log.borrow_mut().push(cdb.to_vec());
-            match cdb[0] {
-                0x51 => {
-                    // READ DISC INFORMATION：状态位在字节 2 的低两位。
-                    if data.len() >= 34 {
-                        data[2] = self.disc_status & 0b11;
-                        data[3] = 1;
-                        data[4] = 1;
-                    }
-                }
-                0x46 => {
-                    if data.len() >= 8 {
-                        data[6] = (self.profile >> 8) as u8;
-                        data[7] = self.profile as u8;
-                    }
-                }
-                0x25 => match self.capacity {
-                    Some(last_lba) => {
-                        data[..4].copy_from_slice(&last_lba.to_be_bytes());
-                        data[4..8].copy_from_slice(&2048u32.to_be_bytes());
-                    }
-                    None => {
-                        return Err(TransportError::CommandFailed {
-                            cdb: cdb.to_vec(),
-                            scsi_status: 2,
-                            sense: vec![0x70, 0x00, 0x05, 0x20],
-                        });
-                    }
-                },
-                0x52 => {
-                    // READ TRACK INFORMATION：起始地址 8-11，NWA 12-15。
-                    if data.len() >= 16 {
-                        data[8..12].copy_from_slice(&0x0000_1000u32.to_be_bytes());
-                        data[12..16].copy_from_slice(&0x0000_2000u32.to_be_bytes());
-                    }
-                }
-                0x2A if dir == Direction::ToDevice => {
-                    self.written.borrow_mut().extend_from_slice(data);
-                    if let Some(token) = self.cancel_after_first_write.take() {
-                        token.cancel();
-                    }
-                }
-                _ => {}
-            }
-            Ok(Completion {
-                scsi_status: 0,
-                sense: Vec::new(),
-                residual: 0,
-            })
-        }
-
-        fn device_path(&self) -> &str {
-            "/dev/fake"
-        }
-    }
-
-    /// 写一个临时镜像文件，内容为 `data`，返回路径与清理用的守卫。
-    struct TempImage {
-        path: PathBuf,
-    }
-
-    impl TempImage {
-        fn new(name: &str, data: &[u8]) -> Self {
-            let mut path = std::env::temp_dir();
-            path.push(format!("optiburn-native-{name}-{}.iso", std::process::id()));
-            std::fs::write(&path, data).expect("write temp image");
-            Self { path }
-        }
-    }
-
-    impl Drop for TempImage {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-
-    fn job(image: PathBuf) -> BurnJob {
-        BurnJob {
-            image,
-            device: "/dev/fake".into(),
-            speed: None,
-            multi: true,
-        }
-    }
-
-    /// 跑一次完整写盘，返回命令顺序与最后一次进度。取消钩子不挂：需要取消的
-    /// 用例自己建设备并挂令牌。
-    fn run(mut drive: ScriptedDrive, image: &TempImage) -> Result<(Vec<Vec<u8>>, f32), BurnError> {
-        let log = Rc::clone(&drive.log);
-        drive.cancel_after_first_write = None;
-        let mut mmc = MmcDevice::new(Box::new(drive));
-        let mut last = 0.0f32;
-        let result = burn_with_device(
-            &mut mmc,
-            &job(image.path.clone()),
-            &mut |f| last = f,
-            &CancelToken::default(),
-        );
-        let cdbs = log.borrow().clone();
-        result.map(|()| (cdbs, last))
-    }
-
-    fn opcodes(cdbs: &[Vec<u8>]) -> Vec<u8> {
-        cdbs.iter().map(|cdb| cdb[0]).collect()
-    }
-
-    #[test]
-    fn blank_cd_burn_writes_the_whole_sequence() {
-        let image = TempImage::new("cd", &vec![0xAAu8; 3 * SECTOR_BYTES + 100]);
-        let drive = ScriptedDrive::new(CurrentProfile::CD_R, 0);
-        let written = Rc::clone(&drive.written);
-
-        let (cdbs, last) = run(drive, &image).expect("burn succeeds");
-
-        // 顺序：就绪、读盘片信息、读 Profile、写参数、写、冲刷、关区段，
-        // 关区段之后再轮询就绪（TUR 0x00）。CD 不读容量、不预留轨道（真机实测，
-        // 见 ADR-0017 补记）。
-        let ops = opcodes(&cdbs);
-        assert!(
-            ops.starts_with(&[0x00, 0x51, 0x46, 0x55, 0x2A, 0x35, 0x5B]),
-            "{ops:?}"
-        );
-        assert!(
-            ops[7..].iter().all(|op| *op == 0x00),
-            "关区段后只应轮询就绪: {ops:?}"
-        );
-
-        // 数据逐块写出，末块少于一块时补零。
-        let filled = 3 * SECTOR_BYTES + 100;
-        let data = written.borrow();
-        assert_eq!(data.len(), 4 * SECTOR_BYTES);
-        assert!(data[..filled].iter().all(|b| *b == 0xAA), "镜像原样写出");
-        assert!(
-            data[filled..].iter().all(|b| *b == 0),
-            "末块补零到整块（多出 {} 字节）",
-            data.len() - filled
-        );
-        assert_eq!(last, 1.0, "进度收在 1.0");
-    }
-
-    #[test]
-    fn appendable_disc_is_written_as_a_new_session_at_nwa() {
-        let image = TempImage::new("appendable", &vec![0x22u8; 2 * SECTOR_BYTES]);
-        let drive = ScriptedDrive::new(CurrentProfile::CD_R, 0b01);
-        let written = Rc::clone(&drive.written);
-
-        let (cdbs, last) = run(drive, &image).expect("burn succeeds");
-
-        let ops = opcodes(&cdbs);
-        assert!(ops.contains(&0x52), "可追加盘要先问 NWA: {ops:?}");
-        let write = cdbs
-            .iter()
-            .find(|cdb| cdb[0] == 0x2A)
-            .expect("a WRITE(10) was issued");
-        let lba = u32::from_be_bytes([write[2], write[3], write[4], write[5]]);
-        assert_eq!(lba, 0x2000, "从 NWA 开始写新区段");
-        assert_eq!(written.borrow().len(), 2 * SECTOR_BYTES);
-        assert_eq!(last, 1.0);
-    }
-
-    #[test]
-    fn finalized_disc_is_refused() {
-        let image = TempImage::new("finalized", &vec![0u8; SECTOR_BYTES]);
-        let drive = ScriptedDrive::new(CurrentProfile::CD_R, 0b10);
-
-        let err = run(drive, &image).expect_err("finalized disc must be refused");
-        assert!(
-            matches!(err, BurnError::NativeGap(NativeGap::FinalizedDisc)),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn unknown_profile_is_refused() {
-        let image = TempImage::new("unknown", &vec![0u8; SECTOR_BYTES]);
-        let drive = ScriptedDrive::new(0xFFFF, 0);
-
-        let err = run(drive, &image).expect_err("unknown profile must be refused");
-        assert!(
-            matches!(
-                err,
-                BurnError::NativeGap(NativeGap::UnsupportedProfile(0xFFFF))
-            ),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn dvd_ram_skips_write_parameters_and_reserve_track() {
-        let image = TempImage::new("ram", &vec![0x11u8; SECTOR_BYTES]);
-        let drive = ScriptedDrive::new(CurrentProfile::DVD_RAM, 0b11);
-
-        let (cdbs, last) = run(drive, &image).expect("burn succeeds");
-        let ops = opcodes(&cdbs);
-        assert!(!ops.contains(&0x53), "随机可写介质不预留轨道: {ops:?}");
-        assert!(
-            !ops.contains(&0x55),
-            "不写参数的介质组不发 MODE SELECT: {ops:?}"
-        );
-        assert!(!ops.contains(&0x5B), "随机可写介质不关区段: {ops:?}");
-        assert_eq!(ops.iter().filter(|op| **op == 0x2A).count(), 1, "{ops:?}");
-        assert_eq!(last, 1.0);
-    }
-
-    #[test]
-    fn cancel_between_chunks_stops_the_burn() {
-        // 40 块超过单条 WRITE 的 32 块，会分成两块来写，取消正好落在两块之间。
-        let image = TempImage::new("cancel", &vec![0u8; 40 * SECTOR_BYTES]);
-        let mut drive = ScriptedDrive::new(CurrentProfile::CD_R, 0);
-        let written_blocks = Rc::clone(&drive.written);
-        let token = CancelToken::new();
-        // 第一条 WRITE 之后假驱动器置位令牌，模拟用户在写盘中途点中止。
-        drive.cancel_after_first_write = Some(token.clone());
-
-        let mut mmc = MmcDevice::new(Box::new(drive));
-        let mut progress_calls = 0;
-        let result = burn_with_device(
-            &mut mmc,
-            &job(image.path.clone()),
-            &mut |_| progress_calls += 1,
-            &token,
-        );
-
-        assert!(matches!(result, Err(BurnError::Cancelled)), "{result:?}");
-        // 第一块写完之后令牌被置位，第二块不再下发。
-        assert_eq!(written_blocks.borrow().len(), 32 * SECTOR_BYTES);
-        assert!(progress_calls <= 2, "取消后不再推进进度");
-    }
-
-    #[test]
-    fn speed_option_is_refused() {
-        let image = TempImage::new("speed", &vec![0u8; SECTOR_BYTES]);
-        let drive = ScriptedDrive::new(CurrentProfile::CD_R, 0);
-        let mut mmc = MmcDevice::new(Box::new(drive));
-        let mut job = job(image.path.clone());
-        job.speed = Some(8);
-
-        let err = burn_with_device(&mut mmc, &job, &mut |_| {}, &CancelToken::default())
-            .expect_err("speed is not implemented");
-        assert!(
-            matches!(err, BurnError::NativeGap(NativeGap::WriteSpeed)),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn image_larger_than_media_is_refused() {
-        // 容量预检只对非 CD 介质生效（CD 的两个地址空间不能混比），用 DVD-R 试。
-        let image = TempImage::new("toobig", &vec![0u8; 4 * SECTOR_BYTES]);
-        let mut drive = ScriptedDrive::new(CurrentProfile::DVD_R, 0);
-        drive.capacity = Some(2); // 介质只有 3 块，镜像是 4 块
-        let written = Rc::clone(&drive.written);
-
-        let mut mmc = MmcDevice::new(Box::new(drive));
-        let err = burn_with_device(
-            &mut mmc,
-            &job(image.path.clone()),
-            &mut |_| {},
-            &CancelToken::default(),
-        )
-        .expect_err("image must not fit");
-        assert!(
-            matches!(err, BurnError::NativeGap(NativeGap::ImageTooLarge)),
-            "{err:?}"
-        );
-        assert!(written.borrow().is_empty(), "拒绝发生在任何写入之前");
-    }
-
-    #[test]
-    fn capacity_probe_failure_does_not_block_the_burn() {
-        let image = TempImage::new("nocap", &vec![0u8; SECTOR_BYTES]);
-        let mut drive = ScriptedDrive::new(CurrentProfile::CD_R, 0);
-        drive.capacity = None; // 空白 CD 上 READ CAPACITY 可能不支持
-
-        let (_, last) = run(drive, &image).expect("burn proceeds without capacity info");
-        assert_eq!(last, 1.0);
-    }
-}
+mod tests;
 
 #[cfg(test)]
-mod hardware_tests {
-    //! 真机测试：需要光驱，用环境变量指定设备后手动跑。
-    //!
-    //! - 只读侦察：`cargo test -p optiburn-engine -- --ignored inspect_real_media --nocapture`
-    //! - 真机写盘：`OPTIBURN_DEVICE=D: OPTIBURN_IMAGE=x.iso cargo test -p optiburn-engine -- --ignored native_burn_real --nocapture`
-    //!   写入会占用一张空白或可覆写的盘，别拿有数据的盘跑。
-
-    use super::*;
-    use optiburn_mmc::{MmcDevice, wait_until_ready};
-
-    #[test]
-    #[ignore = "needs optical drive"]
-    fn inspect_real_media() {
-        let device = std::env::var("OPTIBURN_DEVICE").expect("set OPTIBURN_DEVICE, e.g. D:");
-        let transport = optiburn_transport::open(&device).expect("open device");
-        let mut mmc = MmcDevice::new(transport);
-        wait_until_ready(&mut mmc).expect("device ready");
-        let info = mmc.read_disc_information().expect("disc information");
-        let profile = mmc.get_configuration().expect("current profile");
-        let capacity = mmc.read_capacity();
-        println!("device: {device}");
-        println!("disc: status={:?} sessions={}", info.status, info.sessions);
-        println!(
-            "profile: {:#06x} kind={:?}",
-            profile.0,
-            profile.media_kind()
-        );
-        println!("capacity: {capacity:?}");
-    }
-
-    #[test]
-    #[ignore = "needs optical drive and a writable disc"]
-    fn native_burn_real() {
-        let device = std::env::var("OPTIBURN_DEVICE").expect("set OPTIBURN_DEVICE, e.g. /dev/sr0");
-        let image = std::env::var("OPTIBURN_IMAGE").expect("set OPTIBURN_IMAGE to an .iso path");
-        let mut last = 0.0f32;
-        NativeEngine
-            .burn(
-                &BurnJob {
-                    image: std::path::PathBuf::from(image),
-                    device,
-                    speed: None,
-                    multi: false,
-                },
-                &mut |f| last = f,
-                &CancelToken::default(),
-            )
-            .expect("burn failed");
-        assert!((last - 1.0).abs() < 1e-6);
-    }
-
-    /// 写盘 + 读回对拍：写完把刚写的块用 READ(10) 读回来，与镜像逐字节比较。
-    /// 这是在没有原生读盘能力之前能拿到的最强验证。默认不封盘（multi），
-    /// 盘上已有的区段不会被覆写，新会话接在 NWA 后面。
-    #[test]
-    #[ignore = "needs optical drive and a writable disc"]
-    fn native_burn_and_read_back_real() {
-        let device = std::env::var("OPTIBURN_DEVICE").expect("set OPTIBURN_DEVICE, e.g. D:");
-        let image = std::env::var("OPTIBURN_IMAGE").expect("set OPTIBURN_IMAGE to an .iso path");
-        let expected = std::fs::read(&image).expect("read the image");
-        let blocks = expected.len().div_ceil(SECTOR_BYTES);
-
-        // 与引擎同一套起点判断：空盘 0，可追加盘 NWA。
-        let start = {
-            let mut mmc = MmcDevice::new(optiburn_transport::open(&device).expect("open device"));
-            wait_until_ready(&mut mmc).expect("device ready");
-            let info = mmc.read_disc_information().expect("disc information");
-            match info.status {
-                DiscStatus::Appendable => {
-                    mmc.read_track_information(0xFF)
-                        .expect("track information")
-                        .next_writable_address
-                }
-                _ => 0,
-            }
-        };
-        println!("writing {} blocks at LBA {start}", blocks);
-
-        NativeEngine
-            .burn(
-                &BurnJob {
-                    image: std::path::PathBuf::from(&image),
-                    device: device.clone(),
-                    speed: None,
-                    multi: true,
-                },
-                &mut |_| {},
-                &CancelToken::default(),
-            )
-            .expect("burn failed");
-
-        let mut mmc = MmcDevice::new(optiburn_transport::open(&device).expect("open device"));
-        wait_until_ready_for(&mut mmc, Duration::from_secs(60)).expect("device ready after close");
-        let mut readback = vec![0u8; blocks * SECTOR_BYTES];
-        mmc.read_blocks(start, &mut readback).expect("read back");
-        assert_eq!(
-            &readback[..expected.len()],
-            &expected[..],
-            "读回的字节与镜像不一致"
-        );
-        assert!(
-            readback[expected.len()..].iter().all(|b| *b == 0),
-            "末块补零"
-        );
-        println!("read back {} bytes, identical", readback.len());
-    }
-}
+mod hardware_tests;

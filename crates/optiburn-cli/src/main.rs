@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{
     BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, NativeEngine, XorrisoEngine,
-    grow, grow_print_size, last_session_is_iso,
+    grow, grow_size, last_session_is_iso,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 use optiburn_mmc::{DiscCapacity, DiscStatus, MmcDevice, MmcError, WriteBlock};
@@ -166,6 +166,14 @@ fn burn_error_text(error: &BurnError) -> String {
         }
         BurnError::Mmc(other) => format!("设备命令失败：{other}"),
         BurnError::NativeGap(gap) => native_gap_text(gap).to_string(),
+        BurnError::NotEnoughSpace { needed, free } => capacity_refusal_text(*needed, *free),
+        BurnError::GrowUnsupported(detail) => {
+            format!("这张盘暂时没法用原生引擎追加：{detail}。Linux 上可以改用 xorriso 引擎。")
+        }
+        BurnError::GrowConflict(detail) => format!("追加内容与盘上内容有冲突：{detail}"),
+        BurnError::UnsupportedUdf(detail) => {
+            format!("这张盘的 UDF 结构本工具暂不支持读取：{detail}")
+        }
         other => other.to_string(),
     }
 }
@@ -174,9 +182,7 @@ fn burn_error_text(error: &BurnError) -> String {
 fn native_gap_text(gap: &optiburn_engine::NativeGap) -> &'static str {
     use optiburn_engine::NativeGap;
     match gap {
-        NativeGap::WriteSpeed => {
-            "原生引擎暂不支持指定倍速：去掉 --speed，Linux 上也可以改用 --engine xorriso。"
-        }
+        NativeGap::WriteSpeed => "原生引擎暂不支持指定倍速：去掉 --speed 再试。",
         NativeGap::EmptyImage => "镜像为空文件，没有可刻录的内容。",
         NativeGap::ImageTooLarge => "镜像超出介质容量，请换更大的盘。",
         NativeGap::ImageBeyondAddressRange => "镜像超出 2048 字节块的地址上限。",
@@ -184,6 +190,10 @@ fn native_gap_text(gap: &optiburn_engine::NativeGap) -> &'static str {
             "这种介质暂不支持原生引擎，Linux 上可改用 --engine xorriso。"
         }
         NativeGap::FinalizedDisc => "盘已封口，无法再写入，请更换盘片。",
+        NativeGap::GrowthOnRewritable => {
+            "可覆写介质（DVD-RAM、BD-RE 这类）上的追加暂不支持原生引擎：这类盘可以直接用「刻录」整体重写，或换可追加的盘片。"
+        }
+        NativeGap::EmptyGrowSource => "追加的目录是空的，没有可写入的内容。",
     }
 }
 
@@ -192,6 +202,9 @@ fn native_gap_text(gap: &optiburn_engine::NativeGap) -> &'static str {
 fn read_error_text(action: &str, error: &BurnError) -> String {
     match error {
         BurnError::MissingTool(tool) => BurnError::missing_tool_user_text(tool),
+        BurnError::UnsupportedUdf(detail) => {
+            format!("这张盘的 UDF 结构本工具暂不支持读取：{detail}")
+        }
         other => format!("{action}失败：{other}"),
     }
 }
@@ -243,7 +256,7 @@ fn append_command(
         volume_id: volume_id.to_string(),
         close_disc,
     };
-    let needed = grow_print_size(&job).map_err(|e| read_error_text("计算追加数据量", &e))?;
+    let needed = grow_size(&job).map_err(|e| burn_error_text(&e))?;
     ensure_fits(device, needed)?;
 
     println!("追加 {} 到 {}。", src.display(), device);
@@ -323,13 +336,19 @@ fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), String> {
         return Ok(());
     };
     if needed_bytes + optiburn_engine::SESSION_OVERHEAD > free {
-        return Err(format!(
-            "这张盘放不下本次写入：待写入约 {}，盘上可用容量约 {}。请减少待写内容或更换盘片。",
-            bytes_text(needed_bytes),
-            bytes_text(free),
-        ));
+        return Err(capacity_refusal_text(needed_bytes, free));
     }
     Ok(())
+}
+
+/// 容量门禁拒绝的文案：写前的预检与引擎内的门禁（原生增长模式）共用一份，
+/// 两处口径不漂移。
+fn capacity_refusal_text(needed: u64, free: u64) -> String {
+    format!(
+        "这张盘放不下本次写入：待写入约 {}，盘上可用容量约 {}。请减少待写内容或更换盘片。",
+        bytes_text(needed),
+        bytes_text(free),
+    )
 }
 
 /// 无 `-o` 时把源目录名当作镜像名，输出到当前目录。
@@ -470,6 +489,56 @@ mod tests {
         assert!(text.contains("倍速"), "{text}");
         let text = burn_error_text(&BurnError::Mmc(MmcError::NotReady));
         assert!(text.contains("盘未就绪"), "{text}");
+    }
+
+    /// 容量拒绝与原生增长模式的两条新文案：中文逐字，且不带引擎里的英文原文。
+    #[test]
+    fn growth_and_capacity_failures_are_chinese() {
+        let text = burn_error_text(&BurnError::NotEnoughSpace {
+            needed: 40 * 1024 * 1024,
+            free: 8 * 1024 * 1024,
+        });
+        assert_eq!(
+            text,
+            "这张盘放不下本次写入：待写入约 40.0 MB，盘上可用容量约 8.0 MB。请减少待写内容或更换盘片。"
+        );
+        assert!(!text.contains("not enough space"), "{text}");
+
+        let text = burn_error_text(&BurnError::GrowUnsupported(
+            "the last session has no Joliet directory tree".to_string(),
+        ));
+        assert_eq!(
+            text,
+            "这张盘暂时没法用原生引擎追加：the last session has no Joliet directory tree。Linux 上可以改用 xorriso 引擎。"
+        );
+
+        let text = burn_error_text(&BurnError::GrowConflict(
+            "/a.txt: a new file replaces an existing directory".to_string(),
+        ));
+        assert_eq!(
+            text,
+            "追加内容与盘上内容有冲突：/a.txt: a new file replaces an existing directory"
+        );
+
+        let text = read_error_text(
+            "读取末区段",
+            &BurnError::UnsupportedUdf("metadata partition".to_string()),
+        );
+        assert_eq!(
+            text,
+            "这张盘的 UDF 结构本工具暂不支持读取：metadata partition"
+        );
+
+        for gap in [
+            optiburn_engine::NativeGap::GrowthOnRewritable,
+            optiburn_engine::NativeGap::EmptyGrowSource,
+        ] {
+            let text = burn_error_text(&BurnError::NativeGap(gap));
+            assert!(
+                !text.is_empty() && !text.contains("native engine gap"),
+                "{text}"
+            );
+        }
     }
 
     #[test]

@@ -2656,6 +2656,7 @@ name = "optiburn-engine"
 version = "0.1.5"
 dependencies = [
  "hadris-iso",
+ "hadris-udf",
  "optiburn-mmc",
  "optiburn-transport",
  "thiserror 2.0.21",

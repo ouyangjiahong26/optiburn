@@ -238,6 +238,14 @@ fn disc_read_error(lang: Lang, device: &str, error: BurnError) -> String {
                 "The disc contains an unsafe path, which was rejected for extraction: {path}"
             ),
         },
+        // 盘上的 UDF 结构读不了：与“末区段不是 ISO 9660”不是一回事，文案与卷标、
+        // 回读校验两条读盘路径（engine_error_text）逐字一致。
+        (_, BurnError::UnsupportedUdf(detail)) => match lang {
+            Lang::Zh => format!("这张盘的 UDF 结构本工具暂不支持读取：{detail}"),
+            Lang::En => format!(
+                "This disc uses a UDF structure that this tool cannot read yet: {detail}"
+            ),
+        },
         _ => match optiburn_transport::mounted_at(device) {
             Some(point) => match lang {
                 Lang::Zh => format!(
@@ -272,6 +280,31 @@ mod tests {
         assert!(en.contains("sudo apt install xorriso"), "{en}");
         assert!(en.contains("MSYS2"), "{en}");
         assert!(!en.contains("missing tool"), "{en}");
+    }
+
+    /// 设备页浏览与复制走这条读盘文案：盘上的 UDF 结构读不了时给与卷标、回读
+    /// 校验两条路径逐字一致的双语句，而不是「读取盘片失败：……」接英文串。
+    #[test]
+    fn unsupported_udf_read_message_is_self_contained() {
+        let zh = disc_read_error(
+            Lang::Zh,
+            "D:",
+            BurnError::UnsupportedUdf("metadata partition".into()),
+        );
+        assert_eq!(
+            zh,
+            "这张盘的 UDF 结构本工具暂不支持读取：metadata partition"
+        );
+        let en = disc_read_error(
+            Lang::En,
+            "D:",
+            BurnError::UnsupportedUdf("metadata partition".into()),
+        );
+        assert_eq!(
+            en,
+            "This disc uses a UDF structure that this tool cannot read yet: metadata partition"
+        );
+        assert!(!zh.contains("读取盘片失败"), "{zh}");
     }
 
     #[test]

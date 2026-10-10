@@ -526,7 +526,9 @@ dependencies = [
 name = "optiburn-engine"
 version = "0.1.5"
 dependencies = [
+ "hadris-cd",
  "hadris-iso",
+ "hadris-udf",
  "optiburn-mastering",
  "optiburn-mmc",
  "optiburn-transport",

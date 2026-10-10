@@ -60,4 +60,7 @@ optiburn-cli              命令行：build-image / burn / append / probe
 `CLOSE TRACK/SESSION`，已在 Windows 的 USB 光驱与一张 CD-R 上真机验证。原生读盘也已落地
 （ADR-0018）：`ReadBackend` 接缝上的 `NativeRead` 用 MMC 读块加 ISO 9660 解析读出
 末区段（卷标、目录树、抽取），两种区段地址约定自动探测，已在同一台 USB 光驱上
-验证，Windows 上刻录与读盘都不需要外部工具。后续是增长模式。
+验证，Windows 上刻录与读盘都不需要外部工具。UDF 盘读侧（ADR-0021）与原生增长模式
+（ADR-0020）也已落地：`append` 在 Windows 上读出末区段目录树，生成只含目录结构与
+新文件数据的新区段，旧文件的数据块原地引用。后续是 DVD/BD 各族的真机验证与
+倍速参数。

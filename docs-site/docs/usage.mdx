@@ -58,6 +58,8 @@ optiburn append photos --device /dev/sr0 --volume-id PHOTOS
 - 空盘上这等价于首刻。
 - `--close-disc` 在提交后封盘。
 - 对随机可写介质（DVD-RAM、BD-RE）不生效，xorriso 保持盘可覆写。
+- Windows 上走原生增长模式（ADR-0020）：新区段是 ISO 9660 加 Joliet，旧文件的数据块
+  原地引用。资源管理器要弹出光盘再放回才会刷新挂载视图。
 
 ## probe
 

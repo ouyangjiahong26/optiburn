@@ -7,8 +7,11 @@ repository.workspace = true
 description = "Burning engines for optiburn — native MMC engine and xorriso subprocess engine"
 
 [dependencies]
-# 读侧解析用（ADR-0018）：只要读能力，写侧归 mastering。
-hadris-iso = { version = "2.5", default-features = false, features = ["std", "sync", "read", "joliet"] }
+# 读侧解析用（ADR-0018）：只要读能力，写侧归 mastering。`write` 给增长模式
+# 与测试生成 ISO 记录用（ADR-0020）。
+hadris-iso = { version = "2.5", default-features = false, features = ["std", "sync", "read", "joliet", "write"] }
+# UDF 读侧（ADR-0021）：默认 feature 含 std、sync、read。
+hadris-udf = "2.5"
 optiburn-mmc = { path = "../optiburn-mmc" }
 optiburn-transport = { path = "../optiburn-transport" }
 thiserror.workspace = true
@@ -16,3 +19,5 @@ thiserror.workspace = true
 [dev-dependencies]
 # 读侧往返测试要用 mastering 造镜像。
 optiburn-mastering = { path = "../optiburn-mastering" }
+# UDF 读侧测试要造 UDF-only 镜像。
+hadris-cd = "2.5"
