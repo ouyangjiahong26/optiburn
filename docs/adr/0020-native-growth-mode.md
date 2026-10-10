@@ -129,13 +129,14 @@ Windows 仍走 xorriso，而 Windows 上没有能访问光驱的 xorriso 构建�
     `Volume Id : GROWTV1`、`PVD address : 286786s`（起点加 16），加载镜像树时读到
     26 个节点，与原生读侧一致。
   这两条是“绝对地址约定能被标准读取器读”的直接证据。
-- 未完成的一条：Windows 资源管理器/`Get-Volume` 的挂载视图。验证它需要弹出光盘再
-  放回（Windows 只在换盘时重读区段表），而本次会话里这台 USB 光驱会忽略 SCSI 的
-  Load 命令（`START STOP UNIT` 的 LoEj=1/Start=0、Immed 变体、`PREVENT ALLOW
-  MEDIUM REMOVAL` 都试过，托掤仍停在弹出位），维护者不在机器旁时无法完成。复现
-  步骤：把光盘弹出再放回，`Get-Volume -DriveLetter D` 应显示
-  `FileSystemLabel : GROWTV1` 与 `FileSystem : CDFS`，`dir D:\` 应列出旧文件加
-  追加的两个文件。
+- Windows 挂载视图（2026-10-11，同一台机器，把光盘弹出再放回后）：`Get-Volume
+  -DriveLetter D` 报 `FileSystemLabel : GROWTV1` 与 `FileSystem : CDFS`，也就是新会话
+  的卷标；资源管理器递归列出 26 个条目（旧树 24 个加追加的两个文件），中文名正确，
+  两个追加文件的 md5 与本地源文件一致，旧文件（ARCHITECTURE.md 8376 字节、
+  WINDOWS-COMPAT.md 5768 字节）的 md5 与原生读侧抽出的字节逐个相等。Windows 只按
+  末区段起点加偏移把 extent 当盘上块号读，这条是绝对地址约定在目标平台上的直接证据。
+  托盘需要手动推回：这台 GP70N 忽略 SCSI 的 Load 命令（`START STOP UNIT` 的
+  LoEj=1/Start=0、Immed 变体、`PREVENT ALLOW MEDIUM REMOVAL` 都试过）。
 
 ## 补记：与当初实施计划的偏离
 
