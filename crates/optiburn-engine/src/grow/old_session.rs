@@ -144,8 +144,17 @@ fn read_dir_node(
             "the last session's directory tree contains a cycle",
         ));
     }
+    let start = mapped_lba(mode, base_lba, extent);
+    // extent 来自盘上字节，坏盘可以写一个贴近 32 位上限的值。起点加目录长度先查
+    // 溢出，否则 dev 构建 panic，release 构建回绕后按错误 LBA 读，把目录读成空目录
+    // 再嫁接进新区段。
+    start
+        .checked_add(size.div_ceil(SECTOR_BYTES as u32))
+        .ok_or_else(|| {
+            read_failed("the last session has a directory beyond the addressable blocks")
+        })?;
     let mut data = vec![0u8; size as usize];
-    read_blocks(read, mapped_lba(mode, base_lba, extent), &mut data, cancel)?;
+    read_blocks(read, start, &mut data, cancel)?;
 
     let mut node = DirNode {
         name: name.to_string(),

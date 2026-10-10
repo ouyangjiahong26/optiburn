@@ -114,7 +114,7 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 另有读侧的五个能力 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
 `last_session_is_iso`，接在 `ReadBackend` 接缝上（`XorrisoRead` 子进程与 `NativeRead`
 原生块读加 ISO 9660/UDF 解析，Windows 默认原生，见 ADR-0018 与 ADR-0021），
-`grow_size`（增长模式预演，返回即将写入的新区段字节数，供写前容量门禁比较；
+`grow_size`（增长模式预演，返回即将写入的新区段字节数，供写前容量门禁比较。
 Linux 是 `xorriso -print_size`，Windows 是原生会话计划的尺寸），以及
 `compare_trees`（按文件名与内容单向对比，见 ADR-0010）。容量门禁的区段开销余量
 共用常量 `SESSION_OVERHEAD`。
@@ -130,8 +130,8 @@ ADR-0020）。
 
 已知不足：xorriso 引擎的进度只是粗粒度提示，cdrecord 风格输出里缓冲区/fifo 的百分比
 与写入百分比同格式，且成功时统一补发 1.0。原生引擎的进度按已写块数算，是精确的。
-原生引擎的缺口（倍速、写失败重试）见 ADR-0017；原生增长的形状限制（无 Joliet、
-启动记录、多 extent、Rock Ridge 元数据不结转）见 ADR-0020；UDF 读侧的能力边界见
+原生引擎的缺口（倍速、写失败重试）见 ADR-0017。原生增长的形状限制（无 Joliet、
+启动记录、多 extent、Rock Ridge 元数据不结转）见 ADR-0020。UDF 读侧的能力边界见
 ADR-0021。
 
 ### optiburn-cli
@@ -152,7 +152,7 @@ ADR-0021。
   没有可用的外部引擎（见下节），这条同时是 Windows 刻录的唯一路径。剩余：倍速参数、
   DAO/SAO 路径，以及 DVD/BD 各族的真机验证（CD-R 已过）。
 - v0.6 原生读盘（已落地，ADR-0018）：MMC 读块加 hadris-iso 的 ISO 9660 解析，
-  接在 `ReadBackend` 接缝上，Windows 上读侧不再依赖外部程序；UDF 盘读侧已补齐
+  接在 `ReadBackend` 接缝上，Windows 上读侧不再依赖外部程序，UDF 盘读侧已补齐
   （ADR-0021）。剩余：Rock Ridge 名的显式优先策略、非 CD 介质上区段信息假值的
   真机验证。
 - v0.7：介质容量已落地（可用容量取 `READ TRACK INFORMATION` 的剩余块数，

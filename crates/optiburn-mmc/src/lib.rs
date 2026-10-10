@@ -119,8 +119,8 @@ pub struct DiscInformation {
 pub struct FormatCapacity {
     /// 未格式化介质可格式化到的最大容量（描述符类型 1）。
     pub max_formattable: Option<u64>,
-    /// 已格式化介质的当前格式化容量（描述符类型 2）。可覆写介质上它同时是
-    /// 可用容量口径，一次写介质（CD-R 等）上它是已写成型的范围，不是剩余空间。
+    /// 已格式化介质的当前格式化容量（描述符类型 2）。它只作总容量展示，
+    /// 可用容量只来自描述符类型 1 与剩余块数口径（ADR-0019）。
     pub formatted: Option<u64>,
 }
 
@@ -214,7 +214,7 @@ impl MmcDevice {
         let completion =
             self.transport
                 .issue(&cdb, Direction::FromDevice, &mut data, DEFAULT_TIMEOUT)?;
-        // residual 是“未传送的字节数”；Windows 的 SPTI 不回传 residual（恒为 0），
+        // residual 是“未传送的字节数”，Windows 的 SPTI 不回传 residual（恒为 0），
         // 那里 data 按满长解释，多出的部分是零，不影响按列表长度圈出的解析。
         let written =
             FORMAT_CAPACITIES_LEN.saturating_sub(completion.residual.min(FORMAT_CAPACITIES_LEN));

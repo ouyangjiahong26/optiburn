@@ -591,6 +591,21 @@ fn directory_cycle_in_the_old_session_is_refused() {
 }
 
 #[test]
+fn directory_beyond_the_addressable_blocks_is_refused() {
+    // 坏盘可以把目录记录的 extent 写成贴近 32 位上限的值，起点加长度必须查溢出。
+    let disc = crafted_session(0, Some(u32::MAX), &[]);
+    let mut blocks = MemoryBlocks(disc);
+    let mut read = |lba: u32, out: &mut [u8]| blocks.read_blocks_at(lba, out);
+    let error = read_old_session(&mut read, 0, &CancelToken::default())
+        .expect_err("an overflowing extent must be refused");
+    assert!(
+        matches!(&error, BurnError::ReadFailed(detail)
+            if detail.contains("beyond the addressable blocks")),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn crafted_session_without_iso_reports_no_session() {
     let mut blocks = MemoryBlocks(vec![0u8; 64 * SECTOR_BYTES]);
     let mut read = |lba: u32, out: &mut [u8]| blocks.read_blocks_at(lba, out);

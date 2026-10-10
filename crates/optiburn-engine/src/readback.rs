@@ -34,8 +34,10 @@ pub(crate) trait ReadBackend {
     ) -> Result<(), BurnError>;
 }
 
-/// 选读侧后端：Windows 走原生（那边没有能访问光驱的 xorriso），Linux 维持
-/// xorriso（原生读侧还没在 Linux 真机验证过）。与 `burn_engine` 同一条规则。
+/// 选读侧后端：Windows 走原生（那边没有能访问光驱的 xorriso），Linux 维持该侧的
+/// xorriso。这是维护者决策而不是“原生走不通”：本机没有 Linux 光驱做真机对拍，
+/// 切换的收益不足以承担一次全量回归（ADR-0018 后果节）。与 `burn_engine` 同一条
+/// 规则。
 fn read_backend() -> &'static dyn ReadBackend {
     const XORRISO_READ: XorrisoRead = XorrisoRead;
     const NATIVE_READ: NativeRead = NativeRead;

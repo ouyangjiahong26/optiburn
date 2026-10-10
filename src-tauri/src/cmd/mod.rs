@@ -851,10 +851,7 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             volume_id: task.volume_id.to_string(),
             close_disc: task.close_disc,
         };
-        let needed = grow_size(&job).map_err(|e| match lang() {
-            Lang::Zh => JobError::Input(format!("计算追加数据量失败：{e}")),
-            Lang::En => JobError::Input(format!("Failed to compute the append size: {e}")),
-        })?;
+        let needed = grow_size(&job).map_err(job_error_of_burn)?;
         ensure_fits(task.device, needed)?;
         grow(&job, &mut progress, task.cancel)
     } else {
@@ -879,16 +876,21 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
         ensure_fits(task.device, needed)?;
         burn_engine().burn(&job, &mut progress, task.cancel)
     };
-    result.map_err(|e| match e {
-        // 引擎内的容量门禁（原生增长）与写前门禁走同一个引导弹窗。
+    result.map_err(job_error_of_burn)?;
+    Ok(sessions_message(task.device))
+}
+
+/// 引擎错误到任务错误：引擎内的容量门禁（原生增长）与写前门禁走同一个引导弹窗，
+/// 增长模式的三类拒绝各有自足的文案（见 [`job_error_text`]）与写前预演共用一条
+/// 映射，其余折成 [`JobError::Burn`]。
+fn job_error_of_burn(error: BurnError) -> JobError {
+    match error {
         BurnError::NotEnoughSpace { needed, free } => JobError::Capacity { needed, free },
-        // 增长模式的三类拒绝各有自足的文案（见 job_error_text）。
         BurnError::GrowUnsupported(detail) => JobError::GrowUnsupported(detail),
         BurnError::GrowConflict(detail) => JobError::GrowConflict(detail),
         BurnError::UnsupportedUdf(detail) => JobError::UnsupportedUdf(detail),
         other => JobError::Burn(other),
-    })?;
-    Ok(sessions_message(task.device))
+    }
 }
 
 /// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝（ADR-0019）。

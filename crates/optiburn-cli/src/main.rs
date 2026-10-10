@@ -256,7 +256,7 @@ fn append_command(
         volume_id: volume_id.to_string(),
         close_disc,
     };
-    let needed = grow_size(&job).map_err(|e| format!("计算追加数据量失败：{e}"))?;
+    let needed = grow_size(&job).map_err(|e| burn_error_text(&e))?;
     ensure_fits(device, needed)?;
 
     println!("追加 {} 到 {}。", src.display(), device);
