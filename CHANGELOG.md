@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-10
+
 **中文**
 
 ### FEAT
@@ -18,6 +20,8 @@
 ### FEAT
 
 - **Windows offline installer**: the release now ships `OptiBurn_<version>_x64-setup-offline.exe` with the WebView2 Standalone runtime embedded (about 127 MB), so machines without internet install with zero downloads. The regular installer keeps its online bootstrapper. On Windows 7, Microsoft's installer automatically delivers the last compatible WebView2 109. See ADR-0016.
+
+**Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.4...v0.1.5
 
 ## [0.1.4] - 2026-10-10
 
