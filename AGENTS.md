@@ -14,14 +14,16 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
   枚举（`list_optical_devices`）也按平台收在这里。CDB 上限 16 字节，
   sense 上限 32 字节，命令级成功 = SCSI 状态字节与宿主机/驱动状态全 0。
 - `optiburn-mmc`：MMC 命令编解码。读侧有 `inquiry`、`test_unit_ready`、`read_disc_information`、
-  `read_track_information`、`read_capacity`、`read_blocks`。写侧有 `get_configuration`、
+  `read_track_information`、`read_toc_session_info`、`read_capacity`、`read_blocks`。写侧有 `get_configuration`、
   `set_write_parameters`、`reserve_track`、`write_blocks`、`synchronize_cache`、`close_session`
   （CDB 布局对照 libburn，见 ADR-0017）。
 - `optiburn-mastering`：`build_image(source_dir, output, spec) -> ImageInfo`。profile 到文件
   系统的映射（`options_for`）是 Windows 可读性的唯一落点。输出文件必须以读写方式打开
   （hadris 写完卷描述符会回读打补丁，只写句柄会 `EBADF`）。
 - `optiburn-engine`：`BurnEngine` trait 加两个引擎：`NativeEngine`（原生 MMC 写引擎，
-  ADR-0017）与 `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。
+  ADR-0017）与 `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。读侧接在 `ReadBackend`
+  接缝上：`XorrisoRead`（子进程）与 `NativeRead`（MMC 读块加 hadris-iso 的 ISO 9660
+  解析，两种区段地址约定自动探测，ADR-0018），Windows 走原生、Linux 维持 xorriso。
 - `optiburn-cli`：`optiburn build-image | burn | append | probe`。二进制名是 `optiburn`
   （`[[bin]] name`），不是 `optiburn-cli`。`burn` 默认多区段不封盘，追加刻录走
   `append`（xorriso 增长模式，ADR-0006）。

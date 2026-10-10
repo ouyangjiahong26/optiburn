@@ -70,10 +70,10 @@ optiburn-cli        命令行：build-image / burn / probe
 ### optiburn-mmc
 
 接口：`MmcDevice` 上的读侧命令 `inquiry`、`test_unit_ready`、`read_disc_information`、
-`read_track_information`、`read_capacity`、`read_blocks`，与写侧命令
+`read_track_information`、`read_toc_session_info`、`read_capacity`、`read_blocks`，与写侧命令
 `get_configuration`、`set_write_parameters`、`reserve_track`、`write_blocks`、
 `synchronize_cache`、`close_session`。返回 `Inquiry` / `DiscInformation` /
-`TrackInfo` / `MediaKind` 等结构。
+`TrackInfo` / `SessionInfo` / `MediaKind` 等结构。
 
 隐藏：CDB 字节序与分配长度字段位置（`READ DISC INFORMATION` 的分配长度在 CDB 第
 7–8 字节）、响应里哪些位是盘片状态（字节 2 的低 2 位，同一字节还带 last-session 状态与
@@ -81,7 +81,8 @@ erasable 标志）、尾部空格与 NUL 填充、短响应判定（用 `residua
 （Mode Page 5）的字段、Close Function 的位置、Profile 到写序列分组的映射。写侧 CDB
 与字段逐条对照 libburn，见 ADR-0017。
 
-没有的东西：增长模式（合并既有区段）要读侧目录树解析，留给原生读盘那一步。
+没有的东西：增长模式（合并既有区段）要读出旧区段目录树并合并重写，留给原生增长
+模式那一步。
 
 ### optiburn-mastering
 
@@ -103,14 +104,17 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 `NativeEngine` 自己发 MMC 命令，见 ADR-0017），输入 `BurnJob`：镜像、设备、倍速、是否
 多区段。追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘）。
 原生引擎拒绝时会给出结构化的 `NativeGap`。进度都通过 `&mut dyn FnMut(f32)` 回调。
-另有回读侧的小工具 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
-`last_session_is_iso` 与 `compare_trees`（按文件名与内容单向对比，见 ADR-0010）。
+另有读侧的五个能力 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
+`last_session_is_iso`，接在 `ReadBackend` 接缝上（`XorrisoRead` 子进程与 `NativeRead`
+原生 MMC 加 ISO 9660 解析，Windows 默认原生，见 ADR-0018），以及 `compare_trees`
+（按文件名与内容单向对比，见 ADR-0010）。
 
 隐藏：`xorriso -as cdrecord` 与增长模式（`-dev … -map <目录> / -commit`，见
 ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、stderr 上的百分比
 解析、失败时从 stderr 尾部取摘要、区分工具缺失（`MissingTool`，载荷只有工具名，
 安装指引由 CLI 与 GUI 按系统给出，见 ADR-0004 补记）与其它 I/O 错误（`Io`）、
-原生写序列（起点取 NWA、写参数页、关区段）与块与块之间的取消检查。
+原生写序列（起点取 NWA、写参数页、关区段）与块与块之间的取消检查、原生读侧的
+末区段定位（READ TOC Format 1）与两种区段地址约定的探测（ADR-0018）。
 
 已知不足：xorriso 引擎的进度只是粗粒度提示，cdrecord 风格输出里缓冲区/fifo 的百分比
 与写入百分比同格式，且成功时统一补发 1.0。原生引擎的进度按已写块数算，是精确的。
@@ -132,9 +136,11 @@ ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换
   `CLOSE TRACK/SESSION`，起点取 NWA），写后可用 `READ(10)` 读回对拍。Windows 上
   没有可用的外部引擎（见下节），这条同时是 Windows 刻录的唯一路径。剩余：增长模式
   合并既有区段、倍速参数、DAO/SAO 路径，以及 DVD/BD 各族的真机验证（CD-R 已过）。
-- v0.6：`probe` 增加介质容量（`READ CAPACITY` / `GET CONFIGURATION`），
-  `build-image` 据此在写盘前就拒绝放不下的镜像。原生读盘（ISO 9660 解析）接在
-  同一个 MMC 读侧上，替代 Windows 上不可用的 xorriso 读盘。
+- v0.6 原生读盘（已落地，ADR-0018）：MMC 读块加 hadris-iso 的 ISO 9660 解析，
+  接在 `ReadBackend` 接缝上，Windows 上读侧不再依赖外部程序。剩余：Rock Ridge 名
+  的显式优先策略、UDF 盘读侧、Linux 真机验证。
+- v0.7：`probe` 增加介质容量（`READ CAPACITY` / `GET CONFIGURATION`），
+  `build-image` 据此在写盘前就拒绝放不下的镜像。
 - 后续：BD-R 伪覆盖、Windows 上的 IMAPI2 校验（仅校验，不接管写入，
   见 ADR-0005）。多区段追加已由 `append`（xorriso 增长模式）覆盖，见 ADR-0006。
 
@@ -146,8 +152,10 @@ ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换
 | `burn`（`--engine xorriso` 或 `native`） | 可用（xorriso 需要写设备权限，native 未在 Linux 真机验证） | 可用（`native`，GUI 默认，2026-10-10 在 CD-R 上真机验证，DVD/BD 各族待介质） |
 | `append`（xorriso 增长模式） | 可用，前置检查按盘片状态自动路由 | 不可用：唯一能取得的 xorriso 不含光驱访问（ADR-0008 补记），原生引擎还没有增长模式（ADR-0017） |
 | `probe` | 可用（`/dev/sr*`） | 可用（枚举盘符，2026-10-10 在 USB 光驱上实测） |
+| 读盘（浏览、回读校验、卷标、末区段门禁） | 可用（xorriso） | 可用（`native`，GUI 默认，2026-10-10 在 CD-R 上真机验证，两种区段地址约定都实测读通。复制到剪贴板仅 Linux，见 ADR-0012） |
 | 原生 MMC 传输 | 可用（`SG_IO`） | 可用（SPTI，2026-10-10 在 USB 光驱上实测） |
 
-GUI 的读盘功能（设备页浏览、复制、回读校验）仍只有 xorriso 一条路，Windows 上因此
-不可用（ADR-0012 与 ADR-0017：原生读盘待做）。`cargo check` 覆盖四个目标三元组。
+GUI 的读盘功能（设备页浏览、回读校验、追加页卷标预填）在 Windows 走原生读盘
+（ADR-0018），不需要外部工具，复制到系统剪贴板仍只在 Linux 生效（ADR-0012）。
+`cargo check` 覆盖四个目标三元组。
 SPTI 的写侧已在 CD-R 上真机验证，DVD/BD 各族还没有介质。

@@ -9,6 +9,7 @@
 | 镜像（Image） | 一份按扇区排列的完整光盘映像文件（`.iso`）。对应 `ImageSpec`、`ImageInfo`、`build_image`。 | ISO 文件、光盘文件、映象 |
 | 母盘制作（Mastering） | 把目录树组织成镜像的过程：目录结构连同文件数据写成 ISO 9660/Joliet/UDF 元数据齐备的镜像。对应 crate `optiburn-mastering`。 | 打包、构建镜像、制作镜像 |
 | 区段（Session） | 一次写入操作在盘上形成的完整 lead-in/数据/lead-out 单位。多区段盘上 Windows 只挂载最后一个区段。 | 会话、分节 |
+| 区段地址约定（Session Addressing） | 目录记录里 extent 的解释规则：区段相对（自家原生引擎，独立镜像原样落盘）或盘级绝对（xorriso 增长模式，libisofs 的 ms_block 位移）。读侧按根目录首记录是否自引用探测。 | 地址空间、寻址模式 |
 | 增长模式（Grow） | 追加刻录的方式：引擎读出盘上已有区段的目录树，把源目录内容并入后作为新区段提交，旧文件保持可见。对应 `GrowJob`、`optiburn_engine::grow`、CLI 的 `append`。 | 续刻、增量刻录、追加镜像 |
 | 图形前端（GUI） | optiburn 的图形入口：`src-tauri` 的命令层加 `frontend` 的 React 页面，与 CLI 平级，共用同一批核心 crate。 | 界面、客户端、UI |
 | 更新信息（update information） | 嵌在 AppImage 里的更新定位串（`gh-releases-zync|…`），AppImageUpdate 据此找到新版本的 `.zsync` 做增量更新。 | 更新数据、更新字符串 |
@@ -36,3 +37,4 @@
 | 倍速（speed） | 写入速度相对基准（CD 150 KB/s、DVD 1.35 MB/s、BD 4.5 MB/s 的整数倍）。缺省时交给驱动器自选。 | 速度、速率 |
 | 卷标（volume id） | 写在卷描述符里的盘名，Windows 资源管理器显示的就是它。对应 `ImageSpec::volume_id`。 | 标签、盘标、volume label |
 | 回读校验（Verify） | 写完盘后把盘上最后一区段的目录树抽回本地，与源（追加的待刻录文件或刻录的镜像）按文件名与内容逐文件对比的动作。对应 `compare_trees`、`JobKind::Verify`、GUI 的“校验盘片”。 | 验证、核对、对拍 |
+| 读盘（Disc Reading） | 读出盘上末区段内容的五个能力：卷标、末区段是否 ISO 9660、目录树列举、整树抽取、按路径抽取。接在 `ReadBackend` 接缝上，后端是 xorriso 子进程或原生解析（ADR-0018）。 | 读碟、光盘读取 |

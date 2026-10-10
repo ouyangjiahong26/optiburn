@@ -21,9 +21,10 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Wind
 | `optiburn burn` | Linux 可用（`xorriso` 或 `--engine native`），Windows 可用（`--engine native`，图形前端默认，2026-10-10 在 CD-R 上真机验证，DVD/BD 各族待介质）。默认多区段（盘保持可追加），`--close-disc` 才封盘。 |
 | `optiburn append` | Linux 可用（xorriso 增长模式）。Windows 暂不可用：没有可用的 xorriso 构建，原生引擎也还没有增长模式。追加目录并合并已有区段，旧文件保持可见。 |
 | `optiburn probe` | Linux（`/dev/sr*`）与 Windows（盘符）可用。找不到设备时报“未发现光驱”（退出码 0）。 |
-| `OptiBurn` 图形前端 | 0.1.1 新增（Tauri 2 + React）。四个页面对应四个子命令，刻录类任务可中止。设备页可展开盘上文件清单，支持拖动框选与 Ctrl、Shift 多选，选中后可一键复制到系统剪贴板供文件管理器粘贴（复制与挂载门禁目前只在 Linux 生效）。Windows 上刻录走原生引擎（不需要外部工具），盘上浏览与回读校验仍需要 xorriso，那边没有可用的构建（见上）。追加页的待刻录文件可用文件选择框多选，或在文件管理器复制后按 Ctrl+V 粘贴。卷标自动沿用盘上现有值，刻录与追加两页都能回读盘片并与源逐文件对比，盘被系统挂载时写入会被拦下并提示卸载。Windows 安装包（NSIS，x64 与 arm64）与 Linux 安装包（AppImage 与 deb，x86_64 与 arm64）从 Release 页下载。AppImage 内嵌更新信息，可用 AppImageUpdate 增量更新，图形界面在 Windows 安装包与 AppImage 上可就地检查更新。 |
+| 读盘 | 可用。读侧（卷标、末区段格式门禁、目录树列举、抽取）接在 `ReadBackend` 接缝上：Linux 走 xorriso，Windows 走原生 MMC 加 ISO 9660 解析（ADR-0018，2026-10-10 在 CD-R 上真机验证，两种区段地址约定都读通）。 |
+| `OptiBurn` 图形前端 | 0.1.1 新增（Tauri 2 + React）。四个页面对应四个子命令，刻录类任务可中止。设备页可展开盘上文件清单，支持拖动框选与 Ctrl、Shift 多选，选中后可一键复制到系统剪贴板供文件管理器粘贴（复制与挂载门禁目前只在 Linux 生效）。Windows 上刻录与读盘都走原生路径（不需要外部工具，读盘见 ADR-0018）。追加页的待刻录文件可用文件选择框多选，或在文件管理器复制后按 Ctrl+V 粘贴。卷标自动沿用盘上现有值，刻录与追加两页都能回读盘片并与源逐文件对比，盘被系统挂载时写入会被拦下并提示卸载。Windows 安装包（NSIS，x64 与 arm64）与 Linux 安装包（AppImage 与 deb，x86_64 与 arm64）从 Release 页下载。AppImage 内嵌更新信息，可用 AppImageUpdate 增量更新，图形界面在 Windows 安装包与 AppImage 上可就地检查更新。 |
 
-原生 MMC 写入（不借助外部工具）已落地为 `--engine native` 与图形前端在 Windows 上的默认引擎（ADR-0017）；DVD/BD 各族与增长模式仍待后续。分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，介质与文件系统矩阵见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。
+原生 MMC 写入（不借助外部工具）已落地为 `--engine native` 与图形前端在 Windows 上的默认引擎（ADR-0017），原生读盘（ADR-0018）让 Windows 上设备页浏览、回读校验与卷标预填也不需要外部工具。DVD/BD 各族与增长模式仍待后续。分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，介质与文件系统矩阵见 [docs/WINDOWS-COMPAT.md](docs/WINDOWS-COMPAT.md)。
 
 ## 安装
 
@@ -35,8 +36,8 @@ cargo build --release
 ```
 
 - Rust 1.98.1（由 `rust-toolchain.toml` 固定）。
-- `xorriso` 在 `PATH` 上：CLI 的默认刻录引擎（Linux）与图形前端的盘上浏览、复制、回读校验都用它，它也是测试里的参考实现。Debian/Ubuntu 用 `sudo apt install xorriso`。Windows 上没有可用的构建：MSYS2 的包（`pacman -S xorriso`）编译时未链 libcdio，只能操作镜像文件，碰不到光驱（2026-10-10 实测，证据见 ADR-0008 补记）。Windows 上刻录不需要外部工具：图形前端与 `--engine native` 走原生 MMC 引擎（ADR-0017）。
-- 图形前端：Windows 下载 `OptiBurn_0.1.5_x64-setup.exe`（或 arm64 版），Linux 下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。刻录在 Windows 上走原生引擎（不需要外部工具），Linux 上走 `xorriso`，盘上浏览与复制需要 `xorriso`，Windows 上没有可用的构建（见上）。无网的 Windows 机器改用 x64 安装包的 `-offline` 版本：内嵌 WebView2 运行时（安装器约 210 MB），安装全程不需要联网。缺补丁的 Windows 7 上 WebView2 安装器会报 0x8007007F，先从 [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) 离线装 KB2533623 与 KB3063858 再安装（详见 ADR-0016 补记）。
+- `xorriso` 在 `PATH` 上：CLI 的默认刻录引擎（Linux）与图形前端在 Linux 上的盘上浏览、复制、回读校验、增长模式都用它，它也是测试里的参考实现。Debian/Ubuntu 用 `sudo apt install xorriso`。Windows 上没有可用的构建：MSYS2 的包（`pacman -S xorriso`）编译时未链 libcdio，只能操作镜像文件，碰不到光驱（2026-10-10 实测，证据见 ADR-0008 补记）。Windows 上刻录与读盘都不需要外部工具：图形前端与 `--engine native` 走原生 MMC 引擎（ADR-0017），读侧走原生解析（ADR-0018）。
+- 图形前端：Windows 下载 `OptiBurn_0.1.5_x64-setup.exe`（或 arm64 版），Linux 下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。刻录与读盘在 Windows 上都走原生路径（不需要外部工具），Linux 上走 `xorriso`（见上）。无网的 Windows 机器改用 x64 安装包的 `-offline` 版本：内嵌 WebView2 运行时（安装器约 210 MB），安装全程不需要联网。缺补丁的 Windows 7 上 WebView2 安装器会报 0x8007007F，先从 [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) 离线装 KB2533623 与 KB3063858 再安装（详见 ADR-0016 补记）。
 - 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
 
 ## 用法

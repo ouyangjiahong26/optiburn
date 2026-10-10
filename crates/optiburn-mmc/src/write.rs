@@ -184,8 +184,11 @@ pub const TRACK_INFO_LEN: usize = 32;
 pub struct TrackInfo {
     /// 轨道起始地址（响应字节 8-11）。
     pub start_lba: u32,
-    /// 下一个可写地址（响应字节 12-15）。追加新区段从它开始写。
+    /// 下一个可写地址（响应字节 12-15）。追加刻录的起点在它后面（中间是链接块）。
     pub next_writable_address: u32,
+    /// 轨道大小（响应字节 24-27，2048 字节块计）。诊断用（打印轨道布局核对
+    /// 解析偏移时读的就是它）。
+    pub track_blocks: u32,
 }
 
 /// READ TRACK INFORMATION（0x52）：Track 位置位，轨道号按大端 32 位放在字节 2-5。
@@ -202,13 +205,79 @@ pub fn track_info_cdb(track: u32) -> [u8; 10] {
     cdb
 }
 
-/// 从 READ TRACK INFORMATION 的响应取起始地址与 NWA。
+/// 从 READ TRACK INFORMATION 的响应取起始地址、NWA 与轨道大小。
 pub fn parse_track_information(response: &[u8]) -> Option<TrackInfo> {
     let start = response.get(8..12)?;
     let nwa = response.get(12..16)?;
+    let size = response.get(24..28)?;
     Some(TrackInfo {
         start_lba: u32::from_be_bytes([start[0], start[1], start[2], start[3]]),
         next_writable_address: u32::from_be_bytes([nwa[0], nwa[1], nwa[2], nwa[3]]),
+        track_blocks: u32::from_be_bytes([size[0], size[1], size[2], size[3]]),
+    })
+}
+
+/// READ TOC Format 1（区段信息）的响应长度：4 字节头加一条 8 字节描述符。
+/// Format 1 只回一条描述符（末个可读区段的，MMC-5 6.26.3.3），不是每个已完结
+/// 区段一条，8 区段的盘实测数据长度仍是 10。取 12 字节覆盖头加整条描述符。
+pub const SESSION_INFO_LEN: usize = 12;
+
+/// 区段信息（READ TOC Format 1 那条区段描述符的关键字段）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionInfo {
+    /// 首个已完结区段的编号（响应字节 2）。
+    pub first_session: u8,
+    /// 末个已完结区段的编号（响应字节 3）。可追加盘上它比 READ DISC
+    /// INFORMATION 的区段数少 1（开放区段不计入），两个口径不要对齐。
+    pub last_session: u8,
+    /// 末区段的起始地址（描述符的字节 4-7）。Format 1 一律 LBA，但 MMC-5
+    /// 6.26.3.3.3 提醒非 CD 介质可能回 track 1、LBA 0 的无用假值，libburn 因此
+    /// 先查 TOC 再兜底。本机 USB 光驱对 CD-R 回真值（实测），DVD/BD 驱动器若照
+    /// 规范回假值，读侧会静默定位到首个区段，记为待验证缺口。
+    pub last_session_start: u32,
+}
+
+/// READ TOC/PMA/ATIP（0x43）Format 1（区段信息）。CDB 对齐 libburn 的
+/// `MMC_GET_MSINFO` 同一布局（format 1、MSF 位 0），alloc length 给 12 字节
+/// （libburn 的 `mmc_read_multi_session_c1` 把模板里的 16 覆写成 0x000C，
+/// 实测 12 字节申请下驱动器只回 10 字节，描述符照常完整）。
+pub fn toc_session_info_cdb() -> [u8; 10] {
+    [
+        0x43,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        SESSION_INFO_LEN as u8,
+        0x00,
+    ]
+}
+
+/// 从区段信息响应取末区段编号与起始地址。
+///
+/// 解析规则（按 MMC-5 的响应布局，实测 CD-R 驱动器照此回填）：响应头两字节是
+/// 数据长度（不含长度字段自身，单条描述符时为 10），字节 2 与 3 是首末会话编号，
+/// 描述符跟在头后面，其字节 2 是末区段首轨号、字节 4-7 是末区段起始 LBA。
+/// Format 1 只回一条描述符（末个可读区段的），8 区段的盘实测数据长度仍是 10。
+/// 盘上没有已完结区段（空白盘）时数据长度不足，返回 `None`。
+pub fn parse_session_info(response: &[u8]) -> Option<SessionInfo> {
+    let data_len = u16::from_be_bytes([*response.first()?, *response.get(1)?]);
+    if data_len < 10 {
+        return None;
+    }
+    let descriptor = response.get(4..12)?;
+    Some(SessionInfo {
+        first_session: *response.get(2)?,
+        last_session: *response.get(3)?,
+        last_session_start: u32::from_be_bytes([
+            descriptor[4],
+            descriptor[5],
+            descriptor[6],
+            descriptor[7],
+        ]),
     })
 }
 
@@ -276,6 +345,39 @@ mod tests {
         assert_eq!(
             close_session_cdb(),
             [0x5B, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn toc_session_info_cdb_matches_libburn() {
+        // libburn 的 MMC_GET_MSINFO 同一布局（format 1、MSF 位 0），alloc length
+        // 我们给 12（头 4 加一条描述符 8）。
+        assert_eq!(
+            toc_session_info_cdb(),
+            [0x43, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x00]
+        );
+    }
+
+    #[test]
+    fn session_info_parse_reads_the_hardware_shape() {
+        // 实测 8 区段可追加 CD-R（2026-10-10）：data_len=10，描述符给末区段首轨 8、
+        // 起始 LBA 279570（0x0004_4412）。首末会话编号是 1 与 7（驱动器对末个
+        // 已完结区段的口径，比 DI 的区段数少 1，开放区段不计入）。
+        let reply = [
+            0x00, 0x0A, 0x01, 0x07, 0x00, 0x14, 0x08, 0x00, 0x00, 0x04, 0x44, 0x12,
+        ];
+        assert_eq!(
+            parse_session_info(&reply),
+            Some(SessionInfo {
+                first_session: 1,
+                last_session: 7,
+                last_session_start: 279_570,
+            })
+        );
+        // 空白盘：数据长度不足一条描述符（实测未拿到，按 MMC-5 的长度字段语义推）。
+        assert_eq!(
+            parse_session_info(&[0x00, 0x04, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0]),
+            None
         );
     }
 

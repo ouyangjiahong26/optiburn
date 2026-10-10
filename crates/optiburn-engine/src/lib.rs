@@ -7,13 +7,15 @@
 //!   不依赖外部程序，Windows 上唯一可用的刻录路径（ADR-0017）。
 //! - [`XorrisoEngine`]：调用 `xorriso -as cdrecord` 子进程（ADR-0004）。
 //!
-//! 除写盘外还有回读用的小工具：读盘上卷标、把镜像或设备的目录树抽到本地，以及
-//! 本地目录树的内容对比（回读校验，见 ADR-0010）。回读侧目前只有 xorriso 一条路。
+//! 除写盘外还有读侧：读盘上卷标、列目录树、抽取到本地，以及本地目录树的内容
+//! 对比（回读校验，见 ADR-0010）。读侧同样有两个后端（xorriso 子进程与原生
+//! MMC 加 ISO 9660 解析，ADR-0018），Windows 走原生、Linux 维持 xorriso。
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod disc_read;
 mod native;
 mod readback;
 mod verify;
