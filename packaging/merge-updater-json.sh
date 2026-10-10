@@ -39,7 +39,7 @@ function walk(dir) {
   return results;
 }
 
-// 产物文件名后缀 → updater 平台键（{os}-{arch}，见 tauri-plugin-updater）。
+// 产物文件名后缀到 updater 平台键（{os}-{arch}，见 tauri-plugin-updater）的对应关系。
 // Linux 的 updater 产物就是裸 .AppImage 本体（v2 原生），Windows 同理是 setup.exe。
 const RULES = [
   [/_amd64\.AppImage$/, "linux-x86_64"],

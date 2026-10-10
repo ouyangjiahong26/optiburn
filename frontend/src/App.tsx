@@ -128,7 +128,7 @@ export function App() {
             </button>
           ))}
         </nav>
-        {/* 检查更新固定在侧栏底部；不可就地更新的安装形态（Linux deb）组件自返回 null。 */}
+        {/* 检查更新固定在侧栏底部，不可就地更新的安装形态（Linux deb）组件自返回 null。 */}
         <UpdaterSection locked={locked} />
       </aside>
       <main className="content">

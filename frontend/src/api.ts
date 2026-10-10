@@ -1,4 +1,5 @@
 // 命令与事件的唯一出入口：页面不直接接触 @tauri-apps 的模块。
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -124,24 +125,29 @@ export function speedOption(value: string): number | null {
     : parsed;
 }
 
-// 自更新入口是否可用：Windows NSIS 与 Linux AppImage 为真，deb 安装为假（ADR-0015）。
+// 应用内更新入口是否可用：Windows NSIS 与 Linux AppImage 为真，deb 安装为假（ADR-0015）。
 export function canSelfUpdate(): Promise<boolean> {
   return invoke("can_self_update");
 }
 
-// 向 endpoints 指向的 latest.json 要一次更新描述；没有新版本时得到 null。
+// 本机应用版本，显示在“检查更新”入口上方。
+export function appVersion(): Promise<string> {
+  return getVersion();
+}
+
+// 向 endpoints 指向的 latest.json 要一次更新描述。没有新版本时得到 null。
 export function checkForUpdate(): Promise<Update | null> {
   return check();
 }
 
-// 下载并就地安装更新。onProgress 在总量可知时收到 0 到 1 的小数，否则为 null。
-export async function installUpdate(
+// 只下载不安装，安装另行触发。onProgress 在总量可知时收到 0 到 1 的小数，否则为 null。
+export async function downloadUpdate(
   update: Update,
   onProgress: (fraction: number | null) => void,
 ): Promise<void> {
   let total: number | null = null;
   let received = 0;
-  await update.downloadAndInstall((event) => {
+  await update.download((event) => {
     switch (event.event) {
       case "Started":
         total = event.data.contentLength ?? null;
@@ -157,7 +163,15 @@ export async function installUpdate(
   });
 }
 
-// 安装完成后重启进入新版本。
-export function relaunchApp(): Promise<void> {
-  return relaunch();
+// 安装已下载的更新。Windows 上 NSIS 安装器接管并退出应用，本函数不返回，
+// 因此安装的触发时机必须由调用方挑（任务不在跑才装）。Linux AppImage 是就地
+// 替换文件，装完重启进新版本。
+export async function applyUpdate(update: Update): Promise<void> {
+  await update.install();
+  await relaunch();
+}
+
+// “暂不更新”或流程放弃时释放更新描述句柄（不安装的 Update 必须显式关闭）。
+export function discardUpdate(update: Update): Promise<void> {
+  return update.close();
 }
