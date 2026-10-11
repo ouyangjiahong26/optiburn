@@ -416,7 +416,7 @@ fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
         if let Some(zip) = &file.zip {
             if zip.rebuilt {
                 println!(
-                    "        已重建为可解的 zip：{} 个完整条目，解压前共 {}；{} 没写完，没有保留。",
+                    "        已重建为可解的 zip：{} 个完整条目，解压前共 {}；从 {} 起没有保留。",
                     zip.entries,
                     bytes_text(zip.stored_bytes),
                     zip.dropped_entry.as_deref().unwrap_or("最后一个条目")

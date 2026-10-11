@@ -89,12 +89,12 @@ fn summary_text(lang: Lang, report: &SalvageReport, dest: &Path) -> String {
         let note = if zip.rebuilt {
             match lang {
                 Lang::Zh => format!(
-                    "「{name}」已重建为可解的 zip：{} 个完整条目，{} 没写完没有保留。",
+                    "「{name}」已重建为可解的 zip：{} 个完整条目，从 {} 起没有保留。",
                     zip.entries,
                     zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
                 ),
                 Lang::En => format!(
-                    "\"{name}\" was rebuilt into a readable zip with {} complete entries; the truncated one was dropped.",
+                    "\"{name}\" was rebuilt into a readable zip with {} complete entries; the rest was dropped.",
                     zip.entries
                 ),
             }

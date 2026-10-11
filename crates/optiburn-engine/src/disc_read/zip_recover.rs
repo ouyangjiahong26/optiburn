@@ -47,10 +47,13 @@ impl Entry {
 
 /// 抢救一个截断的 zip：读 `path`，把完整的条目重建成新的 zip 写回 `path`。
 ///
-/// 返回值有三种情形。`Ok(None)`：这不是本地头链（不像 zip）或结构本来就是全的
-/// （中央目录还在），文件不动。`Ok(Some(..))` 且 `entries > 0`：文件已换成重建后
-/// 的 zip。`Ok(Some(..))` 且 `entries == 0`：链是 zip 的链，但一条完整条目都没有
-/// （中断点落在第一条里面），文件按原始字节保留，`dropped_entry` 报出是哪一条。
+/// 返回值有四种情形。`Ok(None)`：这不是本地头链（不像 zip）或结构本来就是全的
+/// （中央目录还在），文件不动。`Ok(Some(..))` 且 `rebuilt`：文件已换成只含完整条目
+/// 的 zip。`Ok(Some(..))` 且 `rebuilt == false` 且 `entries == 0`：链是 zip 的链，
+/// 但一条完整条目都没有（中断点落在第一条里面），文件按原始字节保留。`Ok(Some(..))`
+/// 且 `rebuilt == false` 且 `entries > 0`：找到了完整条目，但条目数或总长超出普通
+/// zip 的表达范围，没有重建，文件按原始字节保留。后两种都用 `dropped_entry` 报出
+/// 没保留下来的那一条。
 pub(crate) fn recover_truncated_zip(path: &Path) -> Result<Option<ZipSalvage>, BurnError> {
     let data = std::fs::read(path)?;
     let Some((entries, dropped)) = scan_entries(&data)? else {

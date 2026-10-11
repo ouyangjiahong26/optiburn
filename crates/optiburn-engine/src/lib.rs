@@ -152,7 +152,8 @@ pub struct SalvagedFile {
     pub path: String,
     pub size: u64,
     pub state: SalvageState,
-    /// 半截的 `.zip` 被重建后（只保留完整条目）的统计，其他情况为 `None`。
+    /// 半截的 `.zip` 走进重建流程后的统计，文件有没有真的被重写看 `rebuilt`，
+    /// 其他情况为 `None`。
     pub zip: Option<ZipSalvage>,
 }
 
