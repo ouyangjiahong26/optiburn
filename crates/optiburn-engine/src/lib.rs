@@ -162,12 +162,15 @@ pub struct SalvagedFile {
 /// 这时文件没有被重写，还是抢救出来的原始字节。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZipSalvage {
-    /// 保留下来（数据读全、校验对得上）的条目数。
+    /// 保留下来（数据读全、长度自洽）的条目数。
     pub entries: u32,
     /// 保留的条目解压前的总大小。
     pub stored_bytes: u64,
     /// 中断点落在的那个条目名，没保留下来。
     pub dropped_entry: Option<String>,
+    /// 是否真的把文件重写成了可解的 zip。条目数或总长超出普通 zip 的表达范围时
+    /// 为假，文件保留原始字节（与 zip64 同一取舍）。
+    pub rebuilt: bool,
 }
 
 /// 抢救未关闭轨道（中断写入）的结果（ADR-0022 补记）。

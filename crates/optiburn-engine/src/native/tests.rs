@@ -520,11 +520,29 @@ fn grow_refuses_a_damaged_last_session_without_confirmation() {
 
 #[test]
 fn grow_refuses_a_missing_write_address_without_confirmation() {
-    // 中断刻录之后驱动器可能报不出 NWA（实测地址字段全零）：不许拿 0 当起点写，
-    // 推得出来的位置也要用户确认。
+    // 中断刻录之后驱动器可能报不出 NWA（实测地址字段全零）：不许拿 0 当起点写。
+    // 旧区段本身可读，拒绝发生在解析写入位置这一步（先读旧树、后定地址，读之前
+    // 不下发任何写命令）。
     let tmp = TempDir::new("grow-no-nwa");
-    std::fs::write(tmp.path().join("a.txt"), b"hello").expect("write sample");
+    let old_src = tmp.path().join("old");
+    std::fs::create_dir_all(&old_src).expect("create old src");
+    std::fs::write(old_src.join("old.txt"), b"old content").expect("write old file");
+    let old_plan = crate::grow::plan_session(None, &old_src, "OLD".into(), 0x1000)
+        .expect("plan the old session");
+    let mut old_image = Vec::new();
+    old_plan
+        .write_image(&mut old_image, &CancelToken::default())
+        .expect("write the old session");
+    let mut disc = vec![0u8; 0x3000 * SECTOR_BYTES];
+    disc[0x1000 * SECTOR_BYTES..0x1000 * SECTOR_BYTES + old_image.len()]
+        .copy_from_slice(&old_image);
+
+    let new_src = tmp.path().join("new");
+    std::fs::create_dir_all(&new_src).expect("create new src");
+    std::fs::write(new_src.join("new.txt"), b"new content").expect("write new file");
+
     let mut drive = ScriptedDrive::new(CurrentProfile::CD_R, 0b01);
+    drive.disc = disc;
     drive.nwa = 0;
     drive.nwa_valid = false;
     drive.last_session_start = 0x1000;
@@ -533,7 +551,7 @@ fn grow_refuses_a_missing_write_address_without_confirmation() {
     let mut mmc = MmcDevice::new(Box::new(drive));
     let error = grow_with_device(
         &mut mmc,
-        &grow_job(tmp.path()),
+        &grow_job(&new_src),
         &mut |_| {},
         &CancelToken::default(),
     )

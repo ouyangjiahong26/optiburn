@@ -1013,3 +1013,86 @@ fn zip_cut_inside_the_first_entry_reports_it_without_rewriting() {
     assert_eq!(std::fs::read(&path).unwrap(), cut, "没有完整条目就不重写");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn zip_name_check_survives_multibyte_names() {
+    // 中文名截断或没写时也会走这个判断：按字符切后缀会踩非字符边界而 panic。
+    assert!(!is_zip_name("附件"));
+    assert!(!is_zip_name("会议记录"));
+    assert!(!is_zip_name("文件ab"));
+    assert!(is_zip_name("x.zip"));
+    assert!(is_zip_name("档案.ZIP"));
+    assert!(!is_zip_name("zip"));
+}
+
+#[test]
+fn final_state_treats_an_empty_file_as_complete() {
+    // 零长度文件抽出 0 字节就是完整，不能因为读出来是零就报「一个字节都没写」。
+    assert_eq!(final_salvage_state(0, 0), SalvageState::Complete);
+    assert_eq!(final_salvage_state(2048, 2048), SalvageState::Complete);
+    assert_eq!(final_salvage_state(4096, 2048), SalvageState::Complete);
+    assert_eq!(final_salvage_state(0, 4096), SalvageState::Missing);
+    assert_eq!(
+        final_salvage_state(1024, 4096),
+        SalvageState::Truncated {
+            readable_bytes: 1024
+        }
+    );
+}
+
+#[test]
+fn descriptor_scan_skips_a_false_header_inside_stored_data() {
+    // 存储条目的数据里出现 PK\x03\x04（zip 套 zip、docx、apk 都会）。取第一个签名
+    // 当条目结尾会把这一条连同后面完整的条目一起丢掉，所以要按描述符自洽性挑。
+    let nested = b"PK\x03\x04\x14\x00\x00\x00\x00\x00junkjunkjunk";
+    let zip = build_descriptor_zip(&[("outer.bin", nested), ("next.txt", b"tail")], false);
+    let keep = zip.len() - 22 - 2 * (46 + 5) - (4 + 4 + 4) + 2;
+    let cut = zip[..keep].to_vec();
+    let dir = std::env::temp_dir().join("optiburn-zip-nested-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cut.zip");
+    std::fs::write(&path, &cut).unwrap();
+
+    let salvaged = zip_recover::recover_truncated_zip(&path)
+        .unwrap()
+        .expect("应识别出 zip 链");
+    assert_eq!(salvaged.entries, 1, "假签名不该截断第一条");
+    assert_eq!(salvaged.dropped_entry.as_deref(), Some("next.txt"));
+    assert!(salvaged.rebuilt);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn zip_with_too_many_entries_keeps_the_raw_bytes() {
+    // 中央目录与 EOCD 的条目数是 16 位：装不下就不重建，不写自相矛盾的 EOCD。
+    let mut zip = Vec::new();
+    let total = u16::MAX as usize + 1;
+    for index in 0..total {
+        let name = format!("{index:05}");
+        zip.extend_from_slice(b"PK\x03\x04");
+        zip.extend_from_slice(&20u16.to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip.extend_from_slice(&zip_recover::crc32(b"a").to_le_bytes());
+        zip.extend_from_slice(&1u32.to_le_bytes());
+        zip.extend_from_slice(&1u32.to_le_bytes());
+        zip.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip.extend_from_slice(name.as_bytes());
+        zip.extend_from_slice(b"a");
+    }
+    let dir = std::env::temp_dir().join("optiburn-zip-many-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("many.zip");
+    std::fs::write(&path, &zip).unwrap();
+
+    let salvaged = zip_recover::recover_truncated_zip(&path)
+        .unwrap()
+        .expect("应识别出 zip 链");
+    assert_eq!(salvaged.entries as usize, total);
+    assert!(!salvaged.rebuilt, "超出表达范围时不该重建");
+    assert_eq!(std::fs::read(&path).unwrap(), zip, "原始字节要留着");
+    std::fs::remove_dir_all(&dir).ok();
+}

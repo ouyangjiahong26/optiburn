@@ -113,24 +113,26 @@ pub(crate) fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
     grow_size_with_device(&mut mmc, job)
 }
 
-/// 预演主体：从一台已打开的设备开始，与 [`grow_with_device`] 共用状态路由。
+/// 预演主体：从一台已打开的设备开始，与 [`grow_with_device`] 共用读侧路由。
+///
+/// 只读：不解析写入位置（那条路在损坏轨道上会下发修复命令），会话计划里的地址字段
+/// 用 0 占位，因为尺寸只由会话内的相对布局决定，写入时才由 NWA 给出真实基址。
 pub(crate) fn grow_size_with_device(mmc: &mut MmcDevice, job: &GrowJob) -> Result<u64, BurnError> {
     wait_until_ready(mmc)?;
     let info = mmc.read_disc_information()?;
     let profile = mmc.get_configuration()?;
-    let kind = profile
+    profile
         .media_kind()
         .ok_or(BurnError::NativeGap(NativeGap::UnsupportedProfile(
             profile.0,
         )))?;
-    let (start, old) = growth_start(
+    let (_, old) = growth_source(
         mmc,
         info.status,
-        kind,
         &CancelToken::default(),
         job.allow_damaged_last_session,
     )?;
-    let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
+    let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), 0)?;
     Ok(plan.total_bytes())
 }
 
@@ -152,13 +154,17 @@ pub(crate) fn grow_with_device(
         .ok_or(BurnError::NativeGap(NativeGap::UnsupportedProfile(
             profile.0,
         )))?;
-    let (start, old) = growth_start(
-        mmc,
-        info.status,
-        kind,
-        cancel,
-        job.allow_damaged_last_session,
-    )?;
+    let (last_session_start, old) =
+        growth_source(mmc, info.status, cancel, job.allow_damaged_last_session)?;
+    // 写入位置：接在 NWA 后面写新区段。这一步可能下发修复命令（关闭损坏的轨道与
+    // 区段），所以只出现在真正写入的路径上。
+    let start = if old.is_some() {
+        let info = mmc.read_disc_information()?;
+        let last_track = u16::from(info.last_session_last_track);
+        grow_write_address(mmc, kind, last_session_start, last_track)?
+    } else {
+        0
+    };
     let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
     guard_grow_capacity(mmc, plan.total_bytes())?;
 
@@ -213,15 +219,16 @@ pub(crate) fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnErr
     })
 }
 
-/// 增长模式的写前路由：返回新区段的起点与旧区段模型。空盘从 0 起写第一区段；
-/// 可追加盘接在 NWA（下一个可写地址）后面写，旧区段则从 READ TOC Format 1 报的
-/// 末区段起点读（NWA 指向旧区段之后的位置，不能用来定位旧区段的内容）；封口盘与
-/// 随机可写介质（DVD-RAM、BD-RE）拒绝。末区段不是 ISO 9660 时读旧区段会报
-/// `NoIsoSession`，调用方门禁先拦住这类盘，这里是兜底。
-fn growth_start(
+/// 增长模式的读侧路由：返回旧区段起点（读旧区段用）与旧区段模型。空盘没有旧区段；
+/// 可追加盘旧区段从 READ TOC Format 1 报的末区段起点读（NWA 指向旧区段之后的位置，
+/// 不能用来定位旧区段的内容）；封口盘与随机可写介质（DVD-RAM、BD-RE）拒绝。末区段
+/// 不是 ISO 9660 时读旧区段会报 `NoIsoSession`，调用方门禁先拦住这类盘，这里是兜底。
+///
+/// 写入位置（NWA）不在这里解析：那条路在损坏轨道上会下发写命令（MODE SELECT 加
+/// CLOSE TRACK/SESSION，见 [`grow_write_address`]），尺寸预演是只读路径，不能碰盘。
+fn growth_source(
     mmc: &mut MmcDevice,
     status: DiscStatus,
-    kind: MediaKind,
     cancel: &CancelToken,
     allow_damaged_last_session: bool,
 ) -> Result<(u32, Option<crate::grow::OldSession>), BurnError> {
@@ -231,18 +238,13 @@ fn growth_start(
             let Some(session) = mmc.read_toc_session_info()? else {
                 return Err(BurnError::NoIsoSession);
             };
-            // 修复与关轨道都要末条轨道的编号：READ DISC INFORMATION 的字节 6 是
-            // 末区段里最后一条轨道（含 NWA 处的隐形轨道）。
-            let info = mmc.read_disc_information()?;
-            let last_track = u16::from(info.last_session_last_track);
-            let start = grow_write_address(mmc, kind, session.last_session_start, last_track)?;
             let old = read_graft_source(
                 mmc,
                 session.last_session_start,
                 cancel,
                 allow_damaged_last_session,
             )?;
-            Ok((start, Some(old)))
+            Ok((session.last_session_start, Some(old)))
         }
         DiscStatus::Finalized => Err(BurnError::NativeGap(NativeGap::FinalizedDisc)),
         DiscStatus::Other(_) => Err(BurnError::NativeGap(NativeGap::GrowthOnRewritable)),

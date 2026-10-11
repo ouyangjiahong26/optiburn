@@ -60,7 +60,10 @@ pub(crate) fn recover_truncated_zip(path: &Path) -> Result<Option<ZipSalvage>, B
         .iter()
         .map(|entry| u64::from(entry.uncompressed))
         .sum();
-    if !entries.is_empty() {
+    // 中央目录与 EOCD 的条目数是 16 位、偏移与总长是 32 位。装不下就放弃重建，
+    // 保留原始字节（与 zip64 同一取舍，不写一个自相矛盾的 EOCD）。
+    let rebuilt = !entries.is_empty() && fits_plain_zip(&entries);
+    if rebuilt {
         let rebuilt = build_zip(&data, &entries)?;
         let mut file = std::fs::File::create(path)?;
         file.write_all(&rebuilt)?;
@@ -69,7 +72,21 @@ pub(crate) fn recover_truncated_zip(path: &Path) -> Result<Option<ZipSalvage>, B
         entries: entries.len() as u32,
         stored_bytes,
         dropped_entry: dropped,
+        rebuilt,
     }))
+}
+
+/// 条目数与总长是否装得进 32 位 zip 的中央目录与 EOCD。
+fn fits_plain_zip(entries: &[Entry]) -> bool {
+    if entries.len() > u16::MAX as usize {
+        return false;
+    }
+    // 条目的本地部分加中央目录条目（头部 46 字节加名字）。
+    let total: u64 = entries
+        .iter()
+        .map(|entry| (entry.end - entry.start) as u64 + 46 + entry.name.len() as u64)
+        .sum();
+    total <= u64::from(u32::MAX)
 }
 
 /// 本地头链的扫描结果：`None` 表示不是 zip 链或结构本来就全，`Some` 给完整条目
@@ -145,54 +162,98 @@ fn parse_entry(data: &[u8], offset: usize) -> Result<Option<Entry>, BurnError> {
         extra_len,
     };
     if has_descriptor {
-        // 数据描述符在数据之后：先找到下一条本地头，再从它往前认描述符（16 字节带
-        // 签名，或 12 字节不带）。真实长度只信描述符，本地头那三个字段这时是零。
-        let Some(next) = find_next_header(data, data_start) else {
-            return Ok(None);
-        };
-        let (descriptor_start, descriptor) =
-            if next >= data_start + 16 && data[next - 16..next - 12] == *b"PK\x07\x08" {
-                (next - 16, next - 12)
-            } else if next >= data_start + 12 {
-                (next - 12, next - 12)
-            } else {
+        // 数据描述符在数据之后，真实长度只信它（本地头那三个字段这时是零）。描述符
+        // 本身没有签名，只能先找下一个结构（下一条本地头、中央目录或 EOCD）的签名，
+        // 再往前试 16 字节（带 `PK\x07\x08`）与 12 字节两种形态。条目数据里出现同
+        // 样的签名时会碰到假候选（zip 套 zip、docx、apk 这类数据里很常见），所以候选
+        // 必须自洽才算数：描述符里的数据长度要与算出来的跨度一致，存储条目的 CRC32
+        // 还要与数据对得上。都不自洽说明链断在这里。
+        let mut candidate = find_next_structure(data, data_start);
+        loop {
+            let Some(next) = candidate else {
                 return Ok(None);
             };
-        entry.crc = u32::from_le_bytes([
+            if let Some(fields) = descriptor_at(data, data_start, next, method) {
+                entry.crc = fields.0;
+                entry.compressed = fields.1;
+                entry.uncompressed = fields.2;
+                entry.data_len = fields.3;
+                entry.end = next;
+                return Ok(Some(entry));
+            }
+            candidate = find_next_structure(data, next + 4);
+        }
+    }
+    entry.data_len = compressed as usize;
+    entry.end = data_start + entry.data_len;
+    Ok(Some(entry))
+}
+
+/// 在候选位置试两种描述符形态，返回自洽的那一种的（crc、压缩长度、解压长度、数据
+/// 跨度）。存储条目要求 CRC32 与数据一致（crc 为零表示没写，只核长度），压缩条目
+/// 只核长度（要解压才能算 CRC，见模块头注释）。
+#[allow(clippy::type_complexity)]
+fn descriptor_at(
+    data: &[u8],
+    data_start: usize,
+    next: usize,
+    method: u16,
+) -> Option<(u32, u32, u32, usize)> {
+    for (descriptor_start, descriptor) in [
+        (next.checked_sub(16)?, next - 12),
+        (next.checked_sub(12)?, next - 12),
+    ] {
+        if descriptor_start < data_start || next - 12 < data_start {
+            continue;
+        }
+        if descriptor_start == next - 16
+            && data[descriptor_start..descriptor_start + 4] != *b"PK\x07\x08"
+        {
+            continue;
+        }
+        let crc = u32::from_le_bytes([
             data[descriptor],
             data[descriptor + 1],
             data[descriptor + 2],
             data[descriptor + 3],
         ]);
-        entry.compressed = u32::from_le_bytes([
+        let compressed = u32::from_le_bytes([
             data[descriptor + 4],
             data[descriptor + 5],
             data[descriptor + 6],
             data[descriptor + 7],
         ]);
-        entry.uncompressed = u32::from_le_bytes([
+        let uncompressed = u32::from_le_bytes([
             data[descriptor + 8],
             data[descriptor + 9],
             data[descriptor + 10],
             data[descriptor + 11],
         ]);
-        entry.data_len = descriptor_start - data_start;
-        entry.end = next;
-    } else {
-        entry.data_len = compressed as usize;
-        entry.end = data_start + entry.data_len;
+        let data_len = descriptor_start - data_start;
+        if compressed as usize != data_len {
+            continue;
+        }
+        if method == 0 && crc != 0 {
+            let payload = data.get(data_start..data_start + data_len)?;
+            if crc32(payload) != crc {
+                continue;
+            }
+        }
+        return Some((crc, compressed, uncompressed, data_len));
     }
-    Ok(Some(entry))
+    None
 }
 
-/// 从 `from` 起找下一个本地头签名。
-fn find_next_header(data: &[u8], from: usize) -> Option<usize> {
+/// 从 `from` 起找下一个结构签名（下一条本地头、中央目录或 EOCD）。
+fn find_next_structure(data: &[u8], from: usize) -> Option<usize> {
     if from > data.len() {
         return None;
     }
     data[from..]
         .windows(4)
-        .position(|window| window == b"PK\x03\x04")
+        .position(|window| {
+            window == b"PK\x03\x04" || window == b"PK\x01\x02" || window == b"PK\x05\x06"
+        })
         .map(|offset| from + offset)
 }
 
@@ -203,9 +264,6 @@ fn entry_complete(data: &[u8], entry: &Entry) -> Result<bool, BurnError> {
         return Ok(false);
     }
     if entry.compressed == ZIP64_MARKER || entry.uncompressed == ZIP64_MARKER {
-        return Ok(false);
-    }
-    if entry.compressed as usize != entry.data_len {
         return Ok(false);
     }
     let data_start = entry.start + 30 + entry.name.len() + entry.extra_len as usize;

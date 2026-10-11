@@ -86,7 +86,19 @@ fn summary_text(lang: Lang, report: &SalvageReport, dest: &Path) -> String {
         };
         let name = file.path.trim_start_matches('/');
         text.push(' ');
-        let note = if zip.entries == 0 {
+        let note = if zip.rebuilt {
+            match lang {
+                Lang::Zh => format!(
+                    "「{name}」已重建为可解的 zip：{} 个完整条目，{} 没写完没有保留。",
+                    zip.entries,
+                    zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
+                ),
+                Lang::En => format!(
+                    "\"{name}\" was rebuilt into a readable zip with {} complete entries; the truncated one was dropped.",
+                    zip.entries
+                ),
+            }
+        } else if zip.entries == 0 {
             let dropped = zip.dropped_entry.as_deref().unwrap_or(match lang {
                 Lang::Zh => "第一条",
                 Lang::En => "the first entry",
@@ -102,12 +114,11 @@ fn summary_text(lang: Lang, report: &SalvageReport, dest: &Path) -> String {
         } else {
             match lang {
                 Lang::Zh => format!(
-                    "「{name}」已重建为可解的 zip：{} 个完整条目，{} 没写完没有保留。",
-                    zip.entries,
-                    zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
+                    "「{name}」有 {} 个完整条目，但超出普通 zip 的表达范围，没有重建，按原始字节保留。",
+                    zip.entries
                 ),
                 Lang::En => format!(
-                    "\"{name}\" was rebuilt into a readable zip with {} complete entries; the truncated one was dropped.",
+                    "\"{name}\" has {} complete entries, but they do not fit a plain zip, so the raw bytes were left in place.",
                     zip.entries
                 ),
             }
@@ -170,6 +181,7 @@ mod tests {
                     readable_bytes: 18_895_872,
                 },
                 zip: Some(ZipSalvage {
+                    rebuilt: false,
                     entries: 0,
                     stored_bytes: 0,
                     dropped_entry: Some("Atlas Playbook v0.5.0.apbx".to_string()),
@@ -196,6 +208,7 @@ mod tests {
                 readable_bytes: 500,
             },
             zip: Some(ZipSalvage {
+                rebuilt: true,
                 entries: 7,
                 stored_bytes: 400,
                 dropped_entry: Some("tail.bin".to_string()),

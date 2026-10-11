@@ -556,16 +556,13 @@ fn salvage_unclosed_session(
                 let target = dest.join(safe_relative_path(&path)?);
                 extracted = extract_salvage_file(&mut mmc, file.extent, readable, &target, cancel)?;
             }
-            let state = match extracted {
-                0 => SalvageState::Missing,
-                bytes if bytes >= file.size => SalvageState::Complete,
-                bytes => SalvageState::Truncated {
-                    readable_bytes: bytes,
-                },
-            };
+            let state = final_salvage_state(extracted, file.size);
             // 半截的 zip 重建一份只含完整条目的：中央目录在文件尾，缺失后常规工具
-            // 打不开；重建后能直接解。失败或没有可保留的条目就留着原始字节。
-            let zip = if state != SalvageState::Complete && is_zip_name(&file.name) {
+            // 打不开；重建后能直接解。只对真的写了一部分的文件做，一个字节都没写
+            // 的文件在 dest 下根本不存在（也就没有原始字节可留）。重建失败或没有
+            // 可保留的条目时文件不动。
+            let zip = if matches!(state, SalvageState::Truncated { .. }) && is_zip_name(&file.name)
+            {
                 let target = dest.join(safe_relative_path(&path)?);
                 zip_recover::recover_truncated_zip(&target)?
             } else {
@@ -629,9 +626,26 @@ fn extract_salvage_file(
     }
     Ok(written)
 }
-/// 名字是不是 zip（重建只对 zip 有意义，`.ZIP` 也认）。
+/// 按实际写下的字节数给文件定性：够了算完整（零长度文件抽出 0 字节也算完整），
+/// 一个字节都没读出来且文件本来非空算没写，其余算半截。中途读失败会让实际字节数
+/// 比边界允许的更短，这里以实际为准。
+fn final_salvage_state(extracted: u64, size: u64) -> SalvageState {
+    if extracted >= size {
+        SalvageState::Complete
+    } else if extracted == 0 {
+        SalvageState::Missing
+    } else {
+        SalvageState::Truncated {
+            readable_bytes: extracted,
+        }
+    }
+}
+
+/// 名字是不是 zip（重建只对 zip 有意义，`.ZIP` 也认）。按字节比较：按字符切后缀
+/// 在多字节名字（中文名）上会踩到非字符边界，`str` 索引直接 panic。
 fn is_zip_name(name: &str) -> bool {
-    name.len() > 4 && name[name.len() - 4..].eq_ignore_ascii_case(".zip")
+    let bytes = name.as_bytes();
+    bytes.len() > 4 && bytes[bytes.len() - 4..].eq_ignore_ascii_case(b".zip")
 }
 
 fn last_session_only() -> bool {

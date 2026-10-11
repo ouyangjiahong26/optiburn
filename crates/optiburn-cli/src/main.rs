@@ -414,17 +414,22 @@ fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
             }
         }
         if let Some(zip) = &file.zip {
-            if zip.entries == 0 {
+            if zip.rebuilt {
+                println!(
+                    "        已重建为可解的 zip：{} 个完整条目，解压前共 {}；{} 没写完，没有保留。",
+                    zip.entries,
+                    bytes_text(zip.stored_bytes),
+                    zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
+                );
+            } else if zip.entries == 0 {
                 println!(
                     "        中断点落在第一条「{}」里面，没有可保留的完整 zip 条目，文件按原始字节保留。",
                     zip.dropped_entry.as_deref().unwrap_or("未知名条目")
                 );
             } else {
                 println!(
-                    "        已重建为可解的 zip：{} 个完整条目，解压前共 {}；{} 没写完，没有保留。",
-                    zip.entries,
-                    bytes_text(zip.stored_bytes),
-                    zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
+                    "        完整条目有 {} 个，但条目数或总长超出普通 zip 的表达范围，没有重建，文件按原始字节保留。",
+                    zip.entries
                 );
             }
         }
