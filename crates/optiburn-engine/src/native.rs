@@ -24,7 +24,10 @@ use optiburn_mmc::{
     wait_until_ready_for,
 };
 
-use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, NativeGap, SESSION_OVERHEAD};
+use crate::{
+    BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, NativeGap, RepairOutcome,
+    SESSION_OVERHEAD, SessionFallback,
+};
 
 /// 单条 WRITE(10) 携带的块数：32 块（64 KiB）。同步写、没有缓冲队列，
 /// 块小一点让取消与进度的粒度都细一些，慢速介质也来得及落盘。实测过这一档
@@ -110,12 +113,26 @@ pub(crate) fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
     grow_size_with_device(&mut mmc, job)
 }
 
-/// 预演主体：从一台已打开的设备开始，与 [`grow_with_device`] 共用状态路由。
+/// 预演主体：从一台已打开的设备开始，与 [`grow_with_device`] 共用读侧路由。
+///
+/// 只读：不解析写入位置（那条路在损坏轨道上会下发修复命令），会话计划里的地址字段
+/// 用 0 占位，因为尺寸只由会话内的相对布局决定，写入时才由 NWA 给出真实基址。
 pub(crate) fn grow_size_with_device(mmc: &mut MmcDevice, job: &GrowJob) -> Result<u64, BurnError> {
     wait_until_ready(mmc)?;
     let info = mmc.read_disc_information()?;
-    let (start, old) = growth_start(mmc, info.status, &CancelToken::default())?;
-    let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
+    let profile = mmc.get_configuration()?;
+    profile
+        .media_kind()
+        .ok_or(BurnError::NativeGap(NativeGap::UnsupportedProfile(
+            profile.0,
+        )))?;
+    let (_, old) = growth_source(
+        mmc,
+        info.status,
+        &CancelToken::default(),
+        job.allow_damaged_last_session,
+    )?;
+    let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), 0)?;
     Ok(plan.total_bytes())
 }
 
@@ -137,7 +154,17 @@ pub(crate) fn grow_with_device(
         .ok_or(BurnError::NativeGap(NativeGap::UnsupportedProfile(
             profile.0,
         )))?;
-    let (start, old) = growth_start(mmc, info.status, cancel)?;
+    let (last_session_start, old) =
+        growth_source(mmc, info.status, cancel, job.allow_damaged_last_session)?;
+    // 写入位置：接在 NWA 后面写新区段。这一步可能下发修复命令（关闭损坏的轨道与
+    // 区段），所以只出现在真正写入的路径上。
+    let start = if old.is_some() {
+        let info = mmc.read_disc_information()?;
+        let last_track = u16::from(info.last_session_last_track);
+        grow_write_address(mmc, kind, last_session_start, last_track)?
+    } else {
+        0
+    };
     let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
     guard_grow_capacity(mmc, plan.total_bytes())?;
 
@@ -156,37 +183,146 @@ pub(crate) fn grow_with_device(
     Ok(())
 }
 
-/// 增长模式的写前路由：返回新区段的起点与旧区段模型。空盘从 0 起写第一区段；
-/// 可追加盘接在 NWA（下一个可写地址）后面写，旧区段则从 READ TOC Format 1 报的
-/// 末区段起点读（NWA 指向旧区段之后的位置，不能用来定位旧区段的内容）；封口盘与
-/// 随机可写介质（DVD-RAM、BD-RE）拒绝。末区段不是 ISO 9660 时读旧区段会报
-/// `NoIsoSession`，调用方门禁先拦住这类盘，这里是兜底。
-fn growth_start(
+/// 修复主体：读损坏标志，按需关闭损坏的轨道与区段，再复核可写地址。
+/// 见 [`crate::repair`]。
+pub(crate) fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnError> {
+    let transport =
+        optiburn_transport::open(device).map_err(|e| BurnError::Mmc(MmcError::Transport(e)))?;
+    let mut mmc = MmcDevice::new(transport);
+    wait_until_ready(&mut mmc)?;
+    let info = mmc.read_disc_information()?;
+    let profile = mmc.get_configuration()?;
+    let Some(kind) = profile.media_kind() else {
+        return Err(BurnError::NativeGap(NativeGap::UnsupportedProfile(
+            profile.0,
+        )));
+    };
+    let track = mmc.read_track_information(LAST_TRACK)?;
+    let attempted = force || track.damaged;
+    let mut error = None;
+    if attempted {
+        // 失败不即时上抛：把驱动器的理由带在结果里，后面的复核照样做。
+        error = mmc
+            .close_damaged(kind, u16::from(info.last_session_last_track), true)
+            .err()
+            .map(|e| e.to_string());
+    }
+    let after = mmc.read_track_information(LAST_TRACK)?;
+    Ok(RepairOutcome {
+        damaged: track.damaged,
+        attempted,
+        writable: after.nwa_valid && after.next_writable_address > 0,
+        next_writable_address: after.nwa_valid.then_some(after.next_writable_address),
+        free_bytes: (after.free_blocks > 0)
+            .then(|| u64::from(after.free_blocks) * SECTOR_BYTES as u64),
+        error,
+    })
+}
+
+/// 增长模式的读侧路由：返回旧区段起点（读旧区段用）与旧区段模型。空盘没有旧区段；
+/// 可追加盘旧区段从 READ TOC Format 1 报的末区段起点读（NWA 指向旧区段之后的位置，
+/// 不能用来定位旧区段的内容）；封口盘与随机可写介质（DVD-RAM、BD-RE）拒绝。末区段
+/// 不是 ISO 9660 时读旧区段会报 `NoIsoSession`，调用方门禁先拦住这类盘，这里是兜底。
+///
+/// 写入位置（NWA）不在这里解析：那条路在损坏轨道上会下发写命令（MODE SELECT 加
+/// CLOSE TRACK/SESSION，见 [`grow_write_address`]），尺寸预演是只读路径，不能碰盘。
+fn growth_source(
     mmc: &mut MmcDevice,
     status: DiscStatus,
     cancel: &CancelToken,
+    allow_damaged_last_session: bool,
 ) -> Result<(u32, Option<crate::grow::OldSession>), BurnError> {
     match status {
         DiscStatus::Empty => Ok((0, None)),
         DiscStatus::Appendable => {
-            let start = mmc
-                .read_track_information(LAST_TRACK)?
-                .next_writable_address;
             let Some(session) = mmc.read_toc_session_info()? else {
                 return Err(BurnError::NoIsoSession);
             };
-            let old = {
-                let mut read = |lba: u32, out: &mut [u8]| {
-                    mmc.read_blocks(lba, out)?;
-                    Ok(())
-                };
-                crate::grow::read_old_session(&mut read, session.last_session_start, cancel)?
-            };
-            Ok((start, Some(old)))
+            let old = read_graft_source(
+                mmc,
+                session.last_session_start,
+                cancel,
+                allow_damaged_last_session,
+            )?;
+            Ok((session.last_session_start, Some(old)))
         }
         DiscStatus::Finalized => Err(BurnError::NativeGap(NativeGap::FinalizedDisc)),
         DiscStatus::Other(_) => Err(BurnError::NativeGap(NativeGap::GrowthOnRewritable)),
     }
+}
+
+/// 新区段的写入位置，按 libburn 的 `mmc_get_nwa` 口径：只看 NWA 字段，且要求
+/// NWA_V（字节 7 的 bit 0）置位。位清零说明地址不可信（中断刻录留下的损坏轨道），
+/// 此时按 `burn_disc_close_damaged` 的顺序尝试关掉损坏的轨道与区段再重读一次；
+/// 仍拿不到有效地址就拒绝，文案区分“损坏且不可写”与“驱动器没报地址”两种。
+fn grow_write_address(
+    mmc: &mut MmcDevice,
+    kind: MediaKind,
+    last_session_start: u32,
+    last_track: u16,
+) -> Result<u32, BurnError> {
+    let track = mmc.read_track_information(LAST_TRACK)?;
+    if track.nwa_valid && track.next_writable_address > last_session_start {
+        return Ok(track.next_writable_address);
+    }
+    // 修复尝试：Damage 位置位说明驱动器自己认了损坏轨道，交给它关（as_needed）。
+    let damaged = track.damaged;
+    if damaged {
+        let _ = mmc.close_damaged(kind, last_track, true);
+        let repaired = mmc.read_track_information(LAST_TRACK)?;
+        if repaired.nwa_valid && repaired.next_writable_address > last_session_start {
+            return Ok(repaired.next_writable_address);
+        }
+    }
+    Err(BurnError::WriteAddressUnknown {
+        last_session_start,
+        damaged,
+    })
+}
+
+/// 读出要嫁接的旧区段。末区段读得出来就是它；读不出来时按候选列表（轨道起点加
+/// 末区段起点，新到旧）回退，回退前要用户确认（ADR-0022）：被跳过区段里的文件
+/// 不会进新区段的目录树，等于从可见视图消失。
+///
+/// 全部候选都读不出来时返回**末区段**的错误，让文案与今天一致。
+fn read_graft_source(
+    mmc: &mut MmcDevice,
+    last_session_start: u32,
+    cancel: &CancelToken,
+    allow_damaged_last_session: bool,
+) -> Result<crate::grow::OldSession, BurnError> {
+    let read_session = |mmc: &mut MmcDevice, base: u32| {
+        let mut read = |lba: u32, out: &mut [u8]| {
+            mmc.read_blocks(lba, out)?;
+            Ok(())
+        };
+        crate::grow::read_old_session(&mut read, base, cancel)
+    };
+    let newest_error = match read_session(mmc, last_session_start) {
+        Ok(old) => return Ok(old),
+        Err(error) => error,
+    };
+    let candidates = crate::disc_read::session_candidates(mmc)?;
+    let total = candidates.len();
+    for (index, base) in candidates.into_iter().enumerate() {
+        if base == last_session_start {
+            continue;
+        }
+        if let Ok(old) = read_session(mmc, base) {
+            if !allow_damaged_last_session {
+                return Err(BurnError::DamagedLastSession {
+                    fallback: SessionFallback {
+                        skipped: index,
+                        ordinal: total - index,
+                        candidates: total,
+                        session_start: base,
+                    },
+                });
+            }
+            return Ok(old);
+        }
+    }
+    Err(newest_error)
 }
 
 /// 增长会话的容量门禁（ADR-0019 的口径）：驱动器报得出可用容量就让新会话加上
@@ -276,7 +412,7 @@ fn start_lba(mmc: &mut MmcDevice, status: DiscStatus) -> Result<u32, BurnError> 
 
 /// READ TRACK INFORMATION 的轨道号约定：CD 上用 0xFF 表示“当前可写的那条”
 /// （libburn 对 CD 同样传 0xFF，见其 mmc_read_track_info）。
-const LAST_TRACK: u32 = 0xFF;
+pub(crate) const LAST_TRACK: u32 = 0xFF;
 
 /// 镜像的块数：向上取整到 2048 字节块，末块不足时写零补齐。
 fn image_blocks(job: &BurnJob) -> Result<u64, BurnError> {

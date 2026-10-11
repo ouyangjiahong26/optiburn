@@ -18,6 +18,7 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
   const [volumeId, setVolumeId] = useState("OPTIBURN");
   const [speed, setSpeed] = useState("");
   const [closeDisc, setCloseDisc] = useState(false);
+  const [allowDamaged, setAllowDamaged] = useState(false);
   const [verify, setVerify] = useState<VerifyReport | null>(null);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
   const { devices, probing, refresh } = useDeviceProbe();
@@ -135,8 +136,11 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
         files,
         device,
         volumeId: volumeId.trim(),
-        speed: speedOption(speed),
-        closeDisc,
+        options: {
+          speed: speedOption(speed),
+          closeDisc,
+          allowDamagedLastSession: allowDamaged,
+        },
       });
     } catch (cause) {
       onJobAbort("append", String(cause));
@@ -320,6 +324,23 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
               onChange={(event) => setCloseDisc(event.target.checked)}
             />
             {t("Finalize after appending", "追加完成后封盘")}
+          </label>
+        </FormRow>
+        <FormRow
+          label={t("Damaged last session", "损坏的末区段")}
+          hint={t(
+            "Only for discs whose last session is unreadable: the append falls back to the previous readable session and files in the skipped sessions disappear from the visible directory",
+            "仅用于末区段读不出来的盘：追加会回退到更早的可读区段，被跳过区段里的文件不再出现在可见目录里",
+          )}
+        >
+          <label className="option">
+            <input
+              type="checkbox"
+              checked={allowDamaged}
+              disabled={locked}
+              onChange={(event) => setAllowDamaged(event.target.checked)}
+            />
+            {t("Allow skipping a damaged last session", "允许跳过损坏的末区段")}
           </label>
         </FormRow>
         <div className="form-actions">

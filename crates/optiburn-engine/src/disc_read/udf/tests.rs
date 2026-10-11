@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use hadris_cd::{Directory, FileEntry, FileTree, OpticalImageOptions, OpticalImageWriter};
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 
+use crate::IsoSessionState;
 use crate::disc_read::{DiscSession, NativeRead, is_joliet_root, open_session, walk_list};
 use crate::readback::ReadBackend;
 
@@ -480,7 +481,10 @@ fn udf_only_image_volume_id_list_and_extract() {
     let source = image.to_str().expect("utf-8 temp path");
     let backend = NativeRead;
     assert_eq!(backend.read_volume_id(source).unwrap(), FIXTURE_VOLUME_ID);
-    assert!(!backend.last_session_is_iso(source).unwrap());
+    assert!(matches!(
+        backend.iso_session_state(source).unwrap(),
+        IsoSessionState::Unusable
+    ));
     let mut listed = backend.list_tree(source).expect("list through the backend");
     listed.sort_by(|a, b| a.path.cmp(&b.path));
     assert_eq!(

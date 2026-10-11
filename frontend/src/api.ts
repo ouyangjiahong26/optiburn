@@ -44,8 +44,11 @@ export function startAppend(args: {
   files: string[];
   device: string;
   volumeId: string;
-  speed: number | null;
-  closeDisc: boolean;
+  options: {
+    speed: number | null;
+    closeDisc: boolean;
+    allowDamagedLastSession: boolean;
+  };
 }): Promise<void> {
   return invoke("start_append", args);
 }
@@ -57,6 +60,20 @@ export async function pickFiles(): Promise<string[]> {
     return [];
   }
   return Array.isArray(picked) ? picked : [picked];
+}
+
+// 选一个目录作为抢救目标（中断写入的数据按盘上路径写进去）。
+export async function pickSalvageFolder(): Promise<string | null> {
+  const picked = await open({ directory: true, multiple: false });
+  if (picked === null) {
+    return null;
+  }
+  return Array.isArray(picked) ? (picked[0] ?? null) : picked;
+}
+
+// 抢救未关闭轨道（刻录中断的那一次写入）里的数据，抽到用户选的目录。
+export function salvageDisc(device: string, dest: string): Promise<void> {
+  return invoke("salvage_disc", { device, dest });
 }
 
 // 读系统剪贴板里的文件列表（文件管理器复制后的粘贴入口）。

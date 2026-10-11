@@ -29,7 +29,7 @@ use crate::{BurnError, CancelToken, NativeGap};
 /// 文件数据的读写分块。
 const FILE_CHUNK: usize = 64 * 1024;
 /// 描述符区的起始逻辑块。
-const DESC_START: u32 = 16;
+pub(crate) const DESC_START: u32 = 16;
 /// 目录递归深度上限（ECMA-119 建议不超过 8 层）。
 const MAX_DEPTH: usize = 8;
 /// 单条目录记录的定长部分加名字与补位后的长度（与 `DirectoryRecord::new` 一致）。

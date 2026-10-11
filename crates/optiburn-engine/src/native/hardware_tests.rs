@@ -78,6 +78,7 @@ fn native_grow_and_read_back_real() {
         speed: None,
         volume_id: "GROWTV1".to_string(),
         close_disc: false,
+        allow_damaged_last_session: false,
     };
     let mut last = 0.0f32;
     grow(

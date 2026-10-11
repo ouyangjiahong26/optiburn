@@ -291,6 +291,16 @@ impl MmcDevice {
         Ok(write::parse_session_info(&data))
     }
 
+    /// READ TOC/PMA/ATIP（0x43）Format 0：轨道列表（编号与起始 LBA）。
+    ///
+    /// 跳过损坏的末区段（issue #40）要靠它枚举候选区段起点：每个区段的首条轨道
+    /// 起点就是该区段的起点，列表里还有驱动器报的导出区（轨道号 0xAA），它不是
+    /// 候选。读不到任何轨道时返回空列表，由调用方决定怎么办。
+    pub fn read_toc_tracks(&mut self) -> Result<Vec<write::TrackStart>, MmcError> {
+        let data = self.read_into(&write::toc_track_list_cdb(), write::TRACK_LIST_LEN)?;
+        Ok(write::parse_track_list(&data).unwrap_or_default())
+    }
+
     /// READ(10)（0x28）：从 `lba` 读一段数据，长度必须是整块。写侧命令的读侧对偶，
     /// 写盘后的回读校验与将来的原生读盘都用它。
     ///
@@ -374,6 +384,42 @@ impl MmcDevice {
         let cdb = write::close_session_cdb();
         self.transport
             .issue(&cdb, Direction::None, &mut [], LONG_OP_TIMEOUT)?;
+        Ok(())
+    }
+
+    /// 关一条轨道（CLOSE TRACK/SESSION 的功能码 0b001），轨道号是 16 位字段。
+    pub fn close_track(&mut self, track: u16) -> Result<(), MmcError> {
+        let cdb = write::close_track_cdb(track);
+        self.transport
+            .issue(&cdb, Direction::None, &mut [], LONG_OP_TIMEOUT)?;
+        Ok(())
+    }
+
+    /// 尝试关掉被中断写入留下的损坏轨道与区段（libburn 的 `burn_disc_close_damaged`，
+    /// xorriso 的 `-close_damaged`）：CD 与 DVD-R 族先下发写参数页（CD 用 TAO，
+    /// DVD-R 用增量写），再关区段；+R 族与 BD-R 不发参数页，关最后一条轨道后再按
+    /// 需要关区段。区段是否留在可追加状态由 `multi` 决定（写参数页的 multi 位）。
+    ///
+    /// 驱动器不支持这条修复路径时返回错误，调用方按“不可写”报告。
+    pub fn close_damaged(
+        &mut self,
+        kind: MediaKind,
+        last_track: u16,
+        multi: bool,
+    ) -> Result<(), MmcError> {
+        match kind {
+            MediaKind::Cd | MediaKind::DvdMinus => {
+                self.set_write_parameters(kind, multi)?;
+                self.close_session()?;
+            }
+            MediaKind::PlusOrBdR => {
+                self.close_track(last_track)?;
+                if !multi {
+                    self.close_session()?;
+                }
+            }
+            MediaKind::RandomWritable => {}
+        }
         Ok(())
     }
 
@@ -543,7 +589,7 @@ mod tests {
             }
             if cdb[0] == 0x52
                 && let Some(reject) = *self.reject_track.borrow()
-                && u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]) == reject
+                && u32::from(u16::from_be_bytes([cdb[2], cdb[3]])) == reject
             {
                 return Err(TransportError::CommandFailed {
                     cdb: cdb.to_vec(),
@@ -811,7 +857,18 @@ mod tests {
             next_writable_address: 286_770,
             free_blocks: 73_077,
             track_blocks: 73_077,
+            damaged: false,
+            nwa_valid: true,
         }
+    }
+
+    #[test]
+    fn read_toc_tracks_sends_the_format_zero_cdb_and_tolerates_empty_replies() {
+        let (mut dev, log) = device(vec![0u8; write::TRACK_LIST_LEN]);
+        let tracks = dev.read_toc_tracks().expect("空响应按空列表处理");
+        assert!(tracks.is_empty());
+        assert_eq!(log.borrow()[0][0..4], [0x43, 0x00, 0x00, 0x00]);
+        assert_eq!(log.borrow()[0][7..9], [0x03, 0x24]);
     }
 
     #[test]
@@ -864,7 +921,7 @@ mod tests {
             .borrow()
             .iter()
             .filter(|cdb| cdb[0] == 0x52)
-            .map(|cdb| u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]))
+            .map(|cdb| u32::from(u16::from_be_bytes([cdb[2], cdb[3]])))
             .collect();
         assert_eq!(tracks, vec![0xFF, 9], "先问 0xFF，被拒后改问末条轨道");
     }
@@ -889,7 +946,7 @@ mod tests {
             .borrow()
             .iter()
             .filter(|cdb| cdb[0] == 0x52)
-            .map(|cdb| u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]]))
+            .map(|cdb| u32::from(u16::from_be_bytes([cdb[2], cdb[3]])))
             .collect();
         assert_eq!(tracks, vec![0xFF, 1], "读不到末条轨道号时按轨道 1");
     }
@@ -944,6 +1001,8 @@ mod tests {
             next_writable_address: 0,
             free_blocks: 0,
             track_blocks: 0,
+            damaged: false,
+            nwa_valid: false,
         };
         assert_eq!(
             disc_capacity_of(Some(&empty_track), Some(&unformatted)),
@@ -1183,6 +1242,9 @@ mod tests {
         assert_eq!(writes.borrow()[0], data);
     }
 
+    /// 轨道号在字节 2-3，字节 1 置 0：2026-10-11 在中断刻录后的 CD-R 上实测，旧写法
+    /// （32 位放字节 2-5 加字节 1 置位）被驱动器拒或回退化描述符，见 `track_info_cdb`
+    /// 的注释。
     #[test]
     fn read_track_information_cdb_and_parse_are_golden() {
         let mut reply = vec![0u8; write::TRACK_INFO_LEN];
@@ -1200,7 +1262,7 @@ mod tests {
         assert_eq!(
             cdbs.borrow().as_slice(),
             &[vec![
-                0x52, 0x01, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x20, 0x00
+                0x52, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00
             ]]
         );
     }

@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, NativeEngine, NativeGap,
-    XorrisoEngine, grow, grow_size, last_session_is_iso, read_volume_id,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, IsoSessionState,
+    NativeEngine, NativeGap, SessionFallback, XorrisoEngine, grow, grow_size, iso_session_state,
+    read_volume_id,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
@@ -17,6 +18,7 @@ use crate::i18n::{Lang, lang, pick};
 use crate::job::{JobKind, JobState, RunningJob};
 
 pub(crate) mod copy;
+pub(crate) mod salvage;
 pub(crate) mod verify;
 
 /// 一台光驱及其盘片状态，字段与前端 `types.ts` 的 `DeviceInfo` 一一对应。
@@ -99,6 +101,15 @@ enum JobError {
     GrowUnsupported(String),
     /// 追加内容与盘上已有内容冲突（同名文件对目录、命名空间内重名）。
     GrowConflict(String),
+    /// 末区段损坏，回退到更早区段前需要用户确认（ADR-0022）。
+    DamagedSession {
+        fallback: SessionFallback,
+    },
+    /// 驱动器报出的可写地址无效，不能安全续写（ADR-0022）。
+    WriteAddressUnknown {
+        last_session_start: u32,
+        damaged: bool,
+    },
     /// 盘上最后一区段是 UDF，但用了本工具读不了的结构（VAT、元数据分区等）。
     UnsupportedUdf(String),
     Burn(BurnError),
@@ -318,10 +329,43 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
                 format!("The appended content conflicts with what is on the disc: {detail}")
             }
         },
+        JobError::WriteAddressUnknown {
+            last_session_start,
+            damaged,
+        } => match (lang, damaged) {
+            (Lang::Zh, true) => format!(
+                "驱动器把盘上的下一轨道报成损坏（末区段起点 {last_session_start}），关闭损坏轨道与区段的修复也失败：按 libburn 的口径这是“损坏、未关闭且不可写”。这张盘不能续写，请先读盘把数据取出来，再换一张空白盘。"
+            ),
+            (Lang::Zh, false) => format!(
+                "驱动器没有报出可写地址（NWA_V 清零，末区段起点 {last_session_start}）：盘上地址不可信，不能续写。请先读盘把数据取出来，再换一张空白盘。"
+            ),
+            (Lang::En, true) => format!(
+                "The drive reports the upcoming track as damaged (last session at LBA {last_session_start}) and closing the damaged track/session failed: by libburn's wording this disc is \"Damaged, not closed and not writable\". Read the data back and use a blank disc."
+            ),
+            (Lang::En, false) => format!(
+                "The drive did not report a next writable address (NWA_V clear, last session at LBA {last_session_start}): addresses on this disc cannot be trusted. Read the data back and use a blank disc."
+            ),
+        },
         JobError::UnsupportedUdf(detail) => match lang {
             Lang::Zh => format!("这张盘的 UDF 结构本工具暂不支持读取：{detail}"),
             Lang::En => format!(
                 "This disc uses a UDF structure that this tool cannot read yet: {detail}"
+            ),
+        },
+        JobError::DamagedSession { fallback } => match lang {
+            Lang::Zh => format!(
+                "盘上末区段损坏，续写要回退到第 {} 个候选区段（起点 {}，共 {} 个候选）：被跳过的 {} 个候选里的文件将不再出现在盘上的可见目录里。确认可以接受时勾选「允许跳过损坏的末区段」再试。",
+                fallback.ordinal,
+                fallback.session_start,
+                fallback.candidates,
+                fallback.skipped
+            ),
+            Lang::En => format!(
+                "The last session on this disc is damaged. Appending would fall back to candidate session {} of {} (starting at LBA {}): files in the {} skipped candidates will no longer appear in the disc's visible directory. Tick \"allow skipping a damaged last session\" to proceed.",
+                fallback.ordinal,
+                fallback.candidates,
+                fallback.session_start,
+                fallback.skipped
             ),
         },
         JobError::Burn(BurnError::MissingTool(tool)) => missing_tool_text(lang, tool),
@@ -502,6 +546,7 @@ fn gate_of(error: &JobError) -> Option<&'static str> {
         JobError::Mounted { .. } => Some("mounted"),
         JobError::NoIsoSession => Some("noIsoSession"),
         JobError::Capacity { .. } => Some("capacity"),
+        JobError::DamagedSession { .. } => Some("damagedSession"),
         _ => None,
     }
 }
@@ -593,7 +638,7 @@ pub async fn start_burn(
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
         let image = PathBuf::from(image);
-        let result = check_write_gates(&device, false).and_then(|()| {
+        let result = check_write_gates(&device, false).and_then(|_| {
             run_disc_task(DiscTask {
                 app: &worker,
                 kind: JobKind::Burn,
@@ -604,6 +649,7 @@ pub async fn start_burn(
                 volume_id: "",
                 speed,
                 close_disc,
+                allow_damaged_last_session: false,
                 cancel: &cancel,
             })
         });
@@ -618,6 +664,16 @@ pub async fn start_burn(
     Ok(())
 }
 
+/// 追加的写入选项：前端一次传齐，字段名就是调用协议。合成一个结构是为了让命令层
+/// 与任务层都留在 clippy 的参数上限以内（选项变多时不必再往下拆参数）。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppendOptions {
+    speed: Option<u32>,
+    close_disc: bool,
+    allow_damaged_last_session: bool,
+}
+
 /// 把待刻录文件追加到盘上（增长模式）：文件先收进暂存目录，再按盘根写入。
 #[tauri::command]
 pub async fn start_append(
@@ -626,8 +682,7 @@ pub async fn start_append(
     files: Vec<String>,
     device: String,
     volume_id: String,
-    speed: Option<u32>,
-    close_disc: bool,
+    options: AppendOptions,
 ) -> Result<(), String> {
     if files.is_empty() {
         return Err(pick(lang(), "待刻录列表是空的。", "The file list is empty.").into());
@@ -635,9 +690,7 @@ pub async fn start_append(
     let cancel = begin_job(&state)?;
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
-        let result = run_append_task(
-            &worker, &cancel, files, &device, &volume_id, speed, close_disc,
-        );
+        let result = run_append_task(&worker, &cancel, files, &device, &volume_id, options);
         match result {
             Ok(message) => finish_job(&worker, JobKind::Append, "done", None, message),
             Err(e) => {
@@ -656,11 +709,16 @@ fn run_append_task(
     files: Vec<String>,
     device: &str,
     volume_id: &str,
-    speed: Option<u32>,
-    close_disc: bool,
+    options: AppendOptions,
 ) -> Result<String, JobError> {
     // 门禁先跑：挂载、封口、末区段格式这些拒绝都发生在把文件拷进暂存之前。
-    check_write_gates(device, true)?;
+    // 末区段损坏时门禁会带回回退信息：没有用户确认（勾选/参数）就拒绝，确认了
+    // 也要在日志里说清跳过了什么（ADR-0022）。
+    if let Some(fallback) = check_write_gates(device, true)?
+        && !options.allow_damaged_last_session
+    {
+        return Err(JobError::DamagedSession { fallback });
+    }
     let stage = unique_temp_dir("optiburn-stage").map_err(JobError::Input)?;
     if let Err(message) = stage_files(lang(), &files, &stage) {
         // 暂存阶段的失败同样要清目录，不留用户文件的副本。
@@ -674,8 +732,9 @@ fn run_append_task(
         path: &stage,
         device,
         volume_id,
-        speed,
-        close_disc,
+        speed: options.speed,
+        close_disc: options.close_disc,
+        allow_damaged_last_session: options.allow_damaged_last_session,
         cancel,
     });
     let _ = std::fs::remove_dir_all(&stage);
@@ -830,6 +889,8 @@ struct DiscTask<'a> {
     volume_id: &'a str,
     speed: Option<u32>,
     close_disc: bool,
+    /// 追加时允许在末区段损坏的盘上回退续写（ADR-0022），门禁在调用方先跑。
+    allow_damaged_last_session: bool,
     cancel: &'a CancelToken,
 }
 
@@ -850,6 +911,7 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             speed: task.speed,
             volume_id: task.volume_id.to_string(),
             close_disc: task.close_disc,
+            allow_damaged_last_session: task.allow_damaged_last_session,
         };
         let needed = grow_size(&job).map_err(job_error_of_burn)?;
         ensure_fits(task.device, needed)?;
@@ -888,6 +950,14 @@ fn job_error_of_burn(error: BurnError) -> JobError {
         BurnError::NotEnoughSpace { needed, free } => JobError::Capacity { needed, free },
         BurnError::GrowUnsupported(detail) => JobError::GrowUnsupported(detail),
         BurnError::GrowConflict(detail) => JobError::GrowConflict(detail),
+        BurnError::DamagedLastSession { fallback } => JobError::DamagedSession { fallback },
+        BurnError::WriteAddressUnknown {
+            last_session_start,
+            damaged,
+        } => JobError::WriteAddressUnknown {
+            last_session_start,
+            damaged,
+        },
         BurnError::UnsupportedUdf(detail) => JobError::UnsupportedUdf(detail),
         other => JobError::Burn(other),
     }
@@ -935,7 +1005,9 @@ fn burn_engine() -> Box<dyn BurnEngine> {
 ///
 /// 追加在把用户文件拷进暂存之前先跑这里，挂载、封口、UDF 盘这些拒绝都发生在
 /// 白拷之前。刻录由 start_burn 的任务闭包先跑。
-fn check_write_gates(device: &str, append: bool) -> Result<(), JobError> {
+/// 查写前门禁。返回“末区段损坏时回退到更早区段”的信息（`None` 表示没有这种情况），
+/// 由调用方决定要不要用户确认（ADR-0022）。
+fn check_write_gates(device: &str, append: bool) -> Result<Option<SessionFallback>, JobError> {
     // 挂载占用必挂：libburn 拿不到独占设备时只回英文报错，这里先换成卸载指引。
     if let Some(point) = optiburn_transport::mounted_at(device) {
         return Err(JobError::Mounted {
@@ -946,9 +1018,10 @@ fn check_write_gates(device: &str, append: bool) -> Result<(), JobError> {
     let info = open_gate(device)?;
     // 镜像路径不接受可追加盘（单区段镜像会遮住已有区段的文件），增长模式放行。
     approve_write(&info, append).map_err(JobError::Gate)?;
-    // 追加路径再过一道：末区段不是 ISO 9660 的盘（例如 UDF 盘）拒绝，见 ADR-0010。
+    // 追加路径再过一道：盘上有没有可用的 ISO 9660 会话（ADR-0010、ADR-0022）。
+    let mut damaged = None;
     if append && info.status == DiscStatus::Appendable {
-        let iso_readable = last_session_is_iso(device).map_err(|e| match e {
+        match iso_session_state(device).map_err(|e| match e {
             // 盘上 UDF 结构读不了：与“末区段格式”不是一回事，文案由 job_error_text 给。
             BurnError::UnsupportedUdf(detail) => JobError::UnsupportedUdf(detail),
             other => JobError::Input(engine_error_text(
@@ -957,12 +1030,13 @@ fn check_write_gates(device: &str, append: bool) -> Result<(), JobError> {
                 "Reading the last session format",
                 &other,
             )),
-        })?;
-        if !iso_readable {
-            return Err(JobError::NoIsoSession);
+        })? {
+            IsoSessionState::Usable => {}
+            IsoSessionState::Damaged(fallback) => damaged = Some(fallback),
+            IsoSessionState::Unusable => return Err(JobError::NoIsoSession),
         }
     }
-    Ok(())
+    Ok(damaged)
 }
 
 /// 打开设备并完成刻录前查询：等就绪、读盘片信息。查询完立刻释放句柄，
@@ -1271,6 +1345,29 @@ mod tests {
                 free: 50
             }),
             Some("capacity")
+        );
+    }
+
+    /// 末区段损坏的回退信息：中英文本钉住，gate 标记供前端弹对话框（ADR-0022）。
+    #[test]
+    fn damaged_session_texts_are_pinned() {
+        let fallback = SessionFallback {
+            skipped: 2,
+            ordinal: 4,
+            candidates: 6,
+            session_start: 286_770,
+        };
+        let zh = job_error_text(Lang::Zh, &JobError::DamagedSession { fallback });
+        assert_eq!(
+            zh,
+            "盘上末区段损坏，续写要回退到第 4 个候选区段（起点 286770，共 6 个候选）：被跳过的 2 个候选里的文件将不再出现在盘上的可见目录里。确认可以接受时勾选「允许跳过损坏的末区段」再试。"
+        );
+        let en = job_error_text(Lang::En, &JobError::DamagedSession { fallback });
+        assert!(en.contains("candidate session 4 of 6"), "{en}");
+        assert!(en.contains("LBA 286770"), "{en}");
+        assert_eq!(
+            gate_of(&JobError::DamagedSession { fallback }),
+            Some("damagedSession")
         );
     }
 

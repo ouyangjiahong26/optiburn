@@ -27,7 +27,7 @@ mod xorriso;
 
 pub use native::NativeEngine;
 pub use readback::{
-    DiscEntry, extract_paths, extract_tree, last_session_is_iso, list_tree, read_volume_id,
+    DiscEntry, extract_paths, extract_tree, iso_session_state, list_tree, read_volume_id, salvage,
 };
 pub use verify::compare_trees;
 pub use xorriso::{BurnFailure, XorrisoEngine};
@@ -47,6 +47,20 @@ pub fn grow(
         native::grow(job, progress, cancel)
     } else {
         xorriso::grow(job, progress, cancel)
+    }
+}
+
+/// 尝试修复被中断刻录留下的损坏轨道与区段：按 libburn 的 `burn_disc_close_damaged`
+/// 的顺序（CD 与 DVD-R 族先下发写参数页再关区段，+R 族与 BD-R 关最后一条轨道），
+/// 等价于 xorriso 的 `-close_damaged as_needed`（`force` 对应 `force`）。驱动器报
+/// 损坏才动，`force` 时无条件尝试；命令与介质族不匹配时返回错误。
+///
+/// 只做修复与状态复核，不写数据；修复成功后 [`grow`] 就可能在这张盘上继续。
+pub fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnError> {
+    if cfg!(windows) {
+        native::repair(device, force)
+    } else {
+        xorriso::repair(device, force)
     }
 }
 
@@ -100,6 +114,128 @@ pub struct GrowJob {
     pub volume_id: String,
     /// 提交后把盘标记为不可追加（封盘）。
     pub close_disc: bool,
+    /// 允许在末区段损坏的盘上追加，回退到更早的可读区段（ADR-0022）。
+    ///
+    /// 置位前调用方必须把 [`SessionFallback`] 的内容告知用户：被跳过区段里的文件
+    /// 不在新会话的目录树里，等于从可见视图消失。没有这个授权时引擎按
+    /// [`BurnError::DamagedLastSession`] 拒绝。
+    pub allow_damaged_last_session: bool,
+}
+
+/// 末区段损坏时回退到更早区段的信息（读取与追加共用，ADR-0022）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionFallback {
+    /// 被跳过的候选个数（0 表示末区段本身可用）。
+    pub skipped: usize,
+    /// 选中区段在候选里的序号，从旧到新数，1 起。
+    pub ordinal: usize,
+    /// 参与枚举的候选总数。
+    pub candidates: usize,
+    /// 选中区段的起点（盘级块号）。
+    pub session_start: u32,
+}
+
+/// 抢救未关闭轨道（中断写入）时的文件状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SalvageState {
+    /// 数据完整写在盘上。
+    Complete,
+    /// 只写了一部分，`readable_bytes` 是能读出来的字节数。
+    Truncated { readable_bytes: u64 },
+    /// 一个字节都没写（中断点在这个文件的数据之前）。
+    Missing,
+}
+
+/// 抢救结果里的一条文件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SalvagedFile {
+    pub path: String,
+    pub size: u64,
+    pub state: SalvageState,
+    /// 半截的 `.zip` 被重建后（只保留完整条目）的统计，其他情况为 `None`。
+    pub zip: Option<ZipSalvage>,
+}
+
+/// 截断 zip 的重建结果：把能读出来的部分里完整的条目抽成一个新的 zip。
+///
+/// `entries` 为 0 表示链是 zip 的链但一条完整条目都没有（中断点落在第一条里面），
+/// 这时文件没有被重写，还是抢救出来的原始字节。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZipSalvage {
+    /// 保留下来（数据读全、长度自洽）的条目数。
+    pub entries: u32,
+    /// 保留的条目解压前的总大小。
+    pub stored_bytes: u64,
+    /// 中断点落在的那个条目名，没保留下来。
+    pub dropped_entry: Option<String>,
+    /// 是否真的把文件重写成了可解的 zip。条目数或总长超出普通 zip 的表达范围时
+    /// 为假，文件保留原始字节（与 zip64 同一取舍）。
+    pub rebuilt: bool,
+}
+
+/// 抢救未关闭轨道（中断写入）的结果（ADR-0022 补记）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SalvageReport {
+    /// 未关闭轨道的起点。
+    pub session_start: u32,
+    /// 已经写下去的数据边界（不含）。
+    pub boundary: u32,
+    /// 目录树里能列出的文件及各自的状态。
+    pub files: Vec<SalvagedFile>,
+}
+
+impl SalvageReport {
+    /// 状态为完整的文件数。
+    pub fn complete(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| file.state == SalvageState::Complete)
+            .count()
+    }
+
+    /// 只写了一部分的文件数。
+    pub fn truncated(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| matches!(file.state, SalvageState::Truncated { .. }))
+            .count()
+    }
+
+    /// 一个字节都没写的文件数。
+    pub fn missing(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| file.state == SalvageState::Missing)
+            .count()
+    }
+}
+
+/// 修复尝试的结果（`optiburn repair`，对齐 xorriso 的 `-close_damaged`，ADR-0022）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepairOutcome {
+    /// 驱动器是否把下一轨道报成损坏（MMC 的 Damage 位）。
+    pub damaged: bool,
+    /// 是否真的执行了修复（未报损坏且没强制时不执行）。
+    pub attempted: bool,
+    /// 修复后是否拿到可用的可写地址。
+    pub writable: bool,
+    /// 修复后的下一个可写地址。
+    pub next_writable_address: Option<u32>,
+    /// 修复后的剩余可写字节数（驱动器报剩余块数时）。
+    pub free_bytes: Option<u64>,
+    /// 修复命令自身的报错（驱动器拒绝修复时），执行成功是 `None`。
+    pub error: Option<String>,
+}
+
+/// 盘上 ISO 9660 会话的可用状态，追加门禁据此分流（ADR-0022）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsoSessionState {
+    /// 末区段就是可读的 ISO 9660 会话。
+    Usable,
+    /// 末区段损坏，回退到更早的会话；追加会跳过被跳过区段里的文件，需要确认。
+    Damaged(SessionFallback),
+    /// 盘上没有被支持的 ISO 9660 会话（空白盘、纯 UDF 盘、音频盘）。
+    Unusable,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -131,6 +267,23 @@ pub enum BurnError {
     /// 盘上旧区段的形状不支持嫁接式增长（无 Joliet、启动记录、多 extent 文件等）。
     #[error("cannot grow this disc with the native engine: {0}")]
     GrowUnsupported(String),
+    /// 末区段损坏，回退到更早区段前需要用户确认（ADR-0022）。
+    #[error(
+        "the last session is damaged: skipped {} candidates, the readable session starts at LBA {}",
+        .fallback.skipped,
+        .fallback.session_start
+    )]
+    DamagedLastSession { fallback: SessionFallback },
+    /// 盘上没有可用的可写地址（NWA_V 清零，或 NWA 不落在末区段之后），不能续写。
+    /// `damaged` 区分两种形态：驱动器认了损坏轨道（libburn 的 "Damaged, not closed
+    /// and not writable"）与单纯的地址不可用（"No Next-Writable-Address"）。
+    #[error(
+        "no usable next writable address (last session at LBA {last_session_start}, damaged {damaged})"
+    )]
+    WriteAddressUnknown {
+        last_session_start: u32,
+        damaged: bool,
+    },
     /// 追加的目录与盘上已有内容冲突（同名文件对目录、命名空间内重名）。
     #[error("growth content conflicts with the disc: {0}")]
     GrowConflict(String),

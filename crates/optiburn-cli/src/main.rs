@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, NativeEngine, XorrisoEngine,
-    grow, grow_size, last_session_is_iso,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, IsoSessionState,
+    NativeEngine, SessionFallback, XorrisoEngine, grow, grow_size, iso_session_state,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 use optiburn_mmc::{DiscCapacity, DiscStatus, MmcDevice, MmcError, WriteBlock};
@@ -68,12 +68,34 @@ enum Command {
         /// 写入倍速，缺省交给驱动器自选
         #[arg(long)]
         speed: Option<u32>,
-        /// 写完封盘。默认保持可追加
+        /// 写完封盘。默认不封口，保留继续追加区段的能力
         #[arg(long)]
         close_disc: bool,
+        /// 允许在末区段损坏的盘上追加：回退到更早的可读区段，被跳过区段里的文件
+        /// 不再出现在盘上的可见目录里
+        #[arg(long)]
+        allow_damaged_last_session: bool,
     },
     /// 列出光驱与其中的盘片状态
     Probe,
+    /// 尝试修复被中断刻录留下的损坏轨道与区段（等价于 xorriso 的 -close_damaged）
+    Repair {
+        /// 目标设备，例如 /dev/sr0 或 E:
+        #[arg(long)]
+        device: String,
+        /// 驱动器没有报损坏时也强制尝试
+        #[arg(long)]
+        force: bool,
+    },
+    /// 抢救未关闭轨道（刻录中断的那一次写入）里的数据，能读的部分抽到目录里
+    Salvage {
+        /// 目标设备，例如 E:
+        #[arg(long)]
+        device: String,
+        /// 抽取目录，抢救出来的文件按盘上路径写进去
+        #[arg(long)]
+        dest: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -115,8 +137,18 @@ fn main() -> ExitCode {
             volume_id,
             speed,
             close_disc,
-        } => append_command(&src, &device, &volume_id, speed, close_disc),
+            allow_damaged_last_session,
+        } => append_command(
+            &src,
+            &device,
+            &volume_id,
+            speed,
+            close_disc,
+            allow_damaged_last_session,
+        ),
         Command::Probe => probe_command(),
+        Command::Repair { device, force } => repair_command(&device, force),
+        Command::Salvage { device, dest } => salvage_command(&device, &dest),
     };
 
     match outcome {
@@ -171,6 +203,12 @@ fn burn_error_text(error: &BurnError) -> String {
             format!("这张盘暂时没法用原生引擎追加：{detail}。Linux 上可以改用 xorriso 引擎。")
         }
         BurnError::GrowConflict(detail) => format!("追加内容与盘上内容有冲突：{detail}"),
+        // 引擎里的拒绝与门禁里的同源信息走同一份文案。
+        BurnError::DamagedLastSession { fallback } => damaged_session_text(*fallback, false),
+        BurnError::WriteAddressUnknown {
+            last_session_start,
+            damaged,
+        } => write_address_text(*last_session_start, *damaged),
         BurnError::UnsupportedUdf(detail) => {
             format!("这张盘的 UDF 结构本工具暂不支持读取：{detail}")
         }
@@ -247,14 +285,22 @@ fn append_command(
     volume_id: &str,
     speed: Option<u32>,
     close_disc: bool,
+    allow_damaged_last_session: bool,
 ) -> Result<(), String> {
-    ensure_burnable(device, true)?;
+    let damaged = ensure_burnable(device, true)?;
+    if let Some(fallback) = damaged {
+        if !allow_damaged_last_session {
+            return Err(damaged_session_text(fallback, false));
+        }
+        println!("{}", damaged_session_text(fallback, true));
+    }
     let job = GrowJob {
         src: src.to_path_buf(),
         device: device.to_string(),
         speed,
         volume_id: volume_id.to_string(),
         close_disc,
+        allow_damaged_last_session,
     };
     let needed = grow_size(&job).map_err(|e| burn_error_text(&e))?;
     ensure_fits(device, needed)?;
@@ -270,7 +316,10 @@ fn append_command(
 ///
 /// 镜像路径（`accept_appendable = false`）不接受可追加盘：单区段镜像不带前面
 /// 区段的目录树，写下去会把旧文件遮住。追加必须走 `append` 的增长模式。
-fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> {
+fn ensure_burnable(
+    device: &str,
+    accept_appendable: bool,
+) -> Result<Option<SessionFallback>, String> {
     // 挂载中的盘写不进去（引擎要独占打开设备），先拦下来并给出卸载指引。
     if let Some(point) = optiburn_transport::mounted_at(device) {
         return Err(format!(
@@ -299,23 +348,168 @@ fn ensure_burnable(device: &str, accept_appendable: bool) -> Result<(), String> 
         }
         WriteBlock::Finalized => "盘已封口，无法再写入，请更换盘片。".to_string(),
     })?;
-    // 追加路径再过一道：末区段不是 ISO 9660 的盘（例如 Windows 的 UDF 盘）不能续写，
-    // 追加 ISO 区段会改变盘在按最后一区段挂载的系统里的可见内容（ADR-0010）。
+    // 追加路径再过一道：盘上有没有可用的 ISO 9660 会话（ADR-0010、ADR-0022）。
+    // 三态分流：末区段可用就放行；末区段损坏但更早区段可读时把回退信息交给调用方
+    // 去要确认；连更早区段都读不出来（纯 UDF 盘、空白盘）按今天的文案拒绝。
+    let mut damaged = None;
     if accept_appendable && info.status == DiscStatus::Appendable {
-        let iso_readable =
-            last_session_is_iso(device).map_err(|e| read_error_text("读取末区段格式", &e))?;
-        if !iso_readable {
-            return Err(
-                "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
-                    .to_string(),
-            );
+        match iso_session_state(device).map_err(|e| read_error_text("读取末区段格式", &e))? {
+            IsoSessionState::Usable => {}
+            IsoSessionState::Damaged(fallback) => damaged = Some(fallback),
+            IsoSessionState::Unusable => {
+                return Err(
+                    "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
+                        .to_string(),
+                );
+            }
         }
     }
     // 门禁放行后，可追加盘只剩追加路径，把区段数报给用户留个底。
     if info.status == DiscStatus::Appendable {
         println!("盘上已有 {} 个区段，将追加新区段。", info.sessions);
     }
+    Ok(damaged)
+}
+
+/// 抢救未关闭轨道里的数据，把每个文件的状态与抽到哪里报出来（ADR-0022 补记）。
+fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
+    let report = optiburn_engine::salvage(device, dest, &CancelToken::default())
+        .map_err(|e| read_error_text("抢救未关闭轨道", &e))?;
+    let Some(report) = report else {
+        println!("盘上没有未关闭轨道（没有中断的写入，或它的目录树读不出来）：没有可抢救的内容。");
+        return Ok(());
+    };
+    println!(
+        "未关闭轨道起点 {}，已经写下去的边界 {}（{} 块，约 {}）。",
+        report.session_start,
+        report.boundary,
+        report.boundary - report.session_start,
+        bytes_text(u64::from(report.boundary - report.session_start) * 2048),
+    );
+    println!(
+        "目录树里有 {} 个文件：完整 {}，半截 {}，一个字节都没写 {}。",
+        report.files.len(),
+        report.complete(),
+        report.truncated(),
+        report.missing()
+    );
+    println!("抢救目录：{}", dest.display());
+    for file in &report.files {
+        match file.state {
+            optiburn_engine::SalvageState::Complete => {
+                println!("  [完整] {}（{}）", file.path, bytes_text(file.size));
+            }
+            optiburn_engine::SalvageState::Truncated { readable_bytes } => println!(
+                "  [半截] {}（能读 {}，原大小 {}）",
+                file.path,
+                bytes_text(readable_bytes.min(file.size)),
+                bytes_text(file.size)
+            ),
+            optiburn_engine::SalvageState::Missing => {
+                println!(
+                    "  [没有] {}（{}，中断点在它之前）",
+                    file.path,
+                    bytes_text(file.size)
+                );
+            }
+        }
+        if let Some(zip) = &file.zip {
+            if zip.rebuilt {
+                println!(
+                    "        已重建为可解的 zip：{} 个完整条目，解压前共 {}；{} 没写完，没有保留。",
+                    zip.entries,
+                    bytes_text(zip.stored_bytes),
+                    zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
+                );
+            } else if zip.entries == 0 {
+                println!(
+                    "        中断点落在第一条「{}」里面，没有可保留的完整 zip 条目，文件按原始字节保留。",
+                    zip.dropped_entry.as_deref().unwrap_or("未知名条目")
+                );
+            } else {
+                println!(
+                    "        完整条目有 {} 个，但条目数或总长超出普通 zip 的表达范围，没有重建，文件按原始字节保留。",
+                    zip.entries
+                );
+            }
+        }
+    }
+    if report.missing() > 0 {
+        println!(
+            "注意：标“没有”的文件只在这个中断的会话里存在才需要抢救；同名文件若在更早的已关闭区段里，用普通读盘取出来更完整。"
+        );
+    }
     Ok(())
+}
+
+/// 尝试修复损坏的轨道与区段，并把修复前后的状态报出来（对齐 xorriso 的
+/// `-close_damaged as_needed|force`，ADR-0022）。
+fn repair_command(device: &str, force: bool) -> Result<(), String> {
+    let outcome = optiburn_engine::repair(device, force).map_err(|e| burn_error_text(&e))?;
+    if !outcome.attempted {
+        println!("驱动器没有把下一轨道报成损坏，按 as_needed 不尝试修复。要强制尝试加 --force。");
+    } else if let Some(error) = &outcome.error {
+        println!("修复失败：{error}");
+    }
+    println!(
+        "驱动器报损坏：{}；已尝试修复：{}；修复后可写：{}",
+        yes_no(outcome.damaged),
+        yes_no(outcome.attempted),
+        yes_no(outcome.writable)
+    );
+    if let Some(address) = outcome.next_writable_address {
+        println!("下一个可写地址：{address}");
+    }
+    match outcome.free_bytes {
+        Some(bytes) => println!("可用容量：{}", bytes_text(bytes)),
+        None => println!("可用容量：驱动器没有报出（跳过容量门禁）"),
+    }
+    if !outcome.writable {
+        println!("这张盘在修复后仍不可写：先读盘把数据取出来，再换一张空白盘。");
+    }
+    Ok(())
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "是" } else { "否" }
+}
+
+/// 没有可用可写地址时的文案（libburn 的两种形态，ADR-0022）：
+/// Damage 置位且 NWA_V 清零是「损坏、未关闭且不可写」，只有 NWA_V 清零是「驱动器
+/// 没报地址」。两种都建议先把数据读出来。
+fn write_address_text(last_session_start: u32, damaged: bool) -> String {
+    let head = if damaged {
+        format!(
+            "驱动器把盘上的下一轨道报成损坏（末区段起点 {last_session_start}），关闭损坏轨道与区段的修复也失败（libburn 的口径：损坏、未关闭且不可写）。"
+        )
+    } else {
+        format!(
+            "驱动器没有报出可写地址（NWA_V 清零，末区段起点 {last_session_start}）：盘上地址不可信。"
+        )
+    };
+    format!(
+        "{head}这张盘不能续写：先读盘把数据取出来（图形前端的设备页支持整树抽取），再换一张空白盘。"
+    )
+}
+
+/// 末区段损坏、要回退到更早区段时的文案。`confirmed` 区分“要求确认”与“已确认，
+/// 说明跳过什么”两种用法，两处口径相同。
+fn damaged_session_text(fallback: SessionFallback, confirmed: bool) -> String {
+    let where_from = format!(
+        "第 {} 个候选区段（起点 {}，共 {} 个候选）",
+        fallback.ordinal, fallback.session_start, fallback.candidates
+    );
+    if confirmed {
+        format!(
+            "末区段损坏，已回退到{where_from}：被跳过的 {} 个候选里的文件不再出现在盘上的可见目录里（数据仍在盘上，但没有目录指向它们）。",
+            fallback.skipped
+        )
+    } else {
+        format!(
+            "盘上末区段损坏，续写要回退到{where_from}：被跳过的 {} 个候选里的文件将不再出现在盘上的可见目录里。确认可以接受时加 --allow-damaged-last-session 重试。",
+            fallback.skipped
+        )
+    }
 }
 
 /// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝，避免写到一半废一张盘
