@@ -245,8 +245,8 @@ pub(crate) enum DiscSession {
 /// Bridge 盘因此走 ISO 分支，与追加门禁的语义保持一致（那些盘续写 ISO 区段会
 /// 遮住原有内容，见 [`crate::readback::last_session_is_iso`]）。
 ///
-/// 末区段损坏时按 [`open_readable_session`] 的候选回退。回退信息只在这一层丢掉，
-/// 需要告知用户的调用方走 [`ReadBackend::session_fallback`]。
+/// 末区段损坏时按 [`open_readable_session`] 的候选回退。回退信息经
+/// [`IsoSessionState::Damaged`] 报出，需要告知用户的调用方读它。
 pub(crate) fn open_session(source: &Path, cancel: &CancelToken) -> Result<DiscSession, BurnError> {
     match open_readable_session(source, cancel) {
         Ok(opened) => Ok(DiscSession::Iso(opened.iso)),

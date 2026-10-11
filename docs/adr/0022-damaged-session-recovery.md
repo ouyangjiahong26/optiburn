@@ -26,7 +26,7 @@
    验证强度只到目录树，不逐文件抽读。
 3. 最新的可用候选获胜。读盘的四个能力与卷标都走这个选择器
    （`open_readable_session`），回退信息（跳过几个候选、选中第几个、起点）随之报出。
-   全部候选都不可用时返回**最新候选**的错误，读盘文案与改动前一致。
+   全部候选都不可用时返回最新候选的错误，读盘文案与改动前一致。
 4. 追加的嫁接源用同一套枚举（`read_graft_source`），写入位置仍是 NWA。末区段读不
    出来而更早区段可读时，没有用户确认就报 `BurnError::DamagedLastSession` 拒绝：
    被跳过区段里的文件不会进新区段的目录树，等于从可见视图消失。确认由调用方表达，
@@ -65,14 +65,14 @@
 维护者指出这条路径在 Linux 上已有实现，源码级对齐（libburn 1.5.6 与 xorriso 1.5.6
 的源码与手册）得到两件东西：
 
-1. **判定**：libburn 的 `mmc_get_nwa`（`libburn/mmc.c`）读 `READ TRACK INFORMATION`
+1. 判定：libburn 的 `mmc_get_nwa`（`libburn/mmc.c`）读 `READ TRACK INFORMATION`
    的响应字节 5 bit 5（MMC-5 6.27.3.7 的 Damage 位）与字节 7 bit 0（6.27.3.9 的
    NWA_V），按四种组合分流：Damage 置位且 NWA_V 清零是 "Damaged, not closed and
    not writable"，Damage 置位而 NWA_V 仍置位是 "Damaged and not closed"，只有 NWA_V
    清零是 "No Next-Writable-Address"，都伴随 `next_track_damaged` 状态位。xorriso 把
    它呈现在 `-toc` 的 Media status 行（"but next track is damaged"）与驱动器接管时的
    警告里。
-2. **修复**：libburn 的 `burn_disc_close_damaged`（`libburn/write.c`）在驱动器报了
+2. 修复：libburn 的 `burn_disc_close_damaged`（`libburn/write.c`）在驱动器报了
    Damage 位时尝试关闭损坏的轨道与区段：CD 与 DVD-R 族先下发写参数页（CD 用 TAO，
    DVD-R 用增量写）再关区段。DVD+R 与 BD-R 关最后一条轨道（按 `multi` 决定是否连
    区段一起关）。xorriso 用它做 `-close_damaged as_needed|force`，`as_needed` 只在
@@ -87,18 +87,18 @@
 
 CDB 编码也照 libburn 的 `mmc_close` 修正：`CLOSE TRACK/SESSION` 的功能码是字节 2 的
 位 2-0（`(session & 3) << 1 | !!track`，0b001 关轨道、0b010 关区段），轨道号是字节
-4-5 的 **16 位大端**字段。本仓库早期只往字节 4 填轨道号，实测被驱动器以 INVALID
+4-5 的 16 位大端字段。本仓库早期只往字节 4 填轨道号，实测被驱动器以 INVALID
 FIELD IN CDB 拒绝（等于在关轨道 0）。`READ TRACK INFORMATION` 的轨道号同理：早期把
 32 位写进字节 2-5，低字节落进保留的字节 5，实测任何轨道号都回地址全零的退化描述符。
 字节 1 也不能置位（同一台驱动器回 INVALID FIELD IN CDB）。改到“字节 1 置 0、轨道号
 在字节 2-3”后，同一张盘回出真实描述符：轨道 0xFF 给开放轨道，起始 301170。
 
-**真机结论（同一张被拔线的 CD-R，HL-DT-ST GP70N）**：所有修复路径都被驱动器拒绝：
+真机结论（同一张被拔线的 CD-R，HL-DT-ST GP70N）：所有修复路径都被驱动器拒绝：
 `WRITE(10)` 到开放轨道地址报 ILLEGAL REQUEST 加地址越界，`CLOSE TRACK/SESSION`
 功能码 2 与 6 报 SESSION FIXATION ERROR（ASC 0x72/ASCQ 0x03），功能码 0、1、3、4、5、7
 报 INVALID FIELD IN CDB，`REPAIR TRACK/SESSION`（0x58）整条命令不实现（INVALID
 COMMAND OPERATION CODE）。按 libburn 的口径这张盘就是 "Damaged, not closed and not
-writable"：**软件能把状态判准、能把修复尝试做全、不能把这份固件状态变回可写**。盘上
+writable"：软件能把状态判准、能把修复尝试做全、不能把这份固件状态变回可写。盘上
 已有数据仍完整可读（读侧回退到最新的可用会话，27 个条目、卷标 RECOVERY 未被破坏）。
 
 顺带更正一处早期结论：`READ TRACK INFORMATION` 的 NWA 字段与起始地址都不可单独当作
@@ -130,7 +130,7 @@ TOC，libburn 与 xorriso 一类的读取器只认 TOC 里登记过的区段，�
   重写中央目录与 EOCD。zip64 长度标记的条目（长度字段为 0xFFFFFFFF）不可信，从它开始
   不再保留，它前面的完整条目照旧重建。条目数或总长超出普通 zip 的表达范围、或一条完整
   条目都没有时，整个文件保留原始字节不动。
-- 入口：CLI 的 `optiburn salvage --device D: --dest DIR`，以及 GUI 设备页在盘可追加
+- 入口：CLI 的 `optiburn salvage --device D: --dest DIR`，以及 GUI 设备页在盘可追加或随机可写
   时出现的“抢救中断写入的数据”（选好目标目录后与写盘同占任务槽，结果随完成消息
   给出）。两处调的是同一个引擎函数。
 - 不需要源文件：边界来自驱动器，条目完整性来自盘上数据。因此别的电脑刻坏、盘拿到本机

@@ -149,7 +149,7 @@ pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
     read_backend().read_volume_id(device)
 }
 
-/// 抢救未关闭轨道（中断写入）里的数据：列出它的目录树，按"已经写下去的数据边界"
+/// 抢救未关闭轨道（中断写入）里的数据：列出它的目录树，按“已经写下去的数据边界”
 /// 给每个文件定性（完整、只写了一部分、一个字节都没写），把完整与半截的文件抽到
 /// `dest`。
 ///
@@ -157,8 +157,9 @@ pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
 /// 里的内容（ADR-0022 补记）。普通读路径与追加门禁不受影响，仍以最后一个已关闭
 /// 会话为准。
 ///
-/// 驱动器不报开放轨道、或它的树读不出来时返回 `Ok(None)`。Linux 的 xorriso 路径
-/// 没有这个能力，返回错误说明。
+/// 盘上没有未关闭轨道（镜像文件、空盘、驱动器不报开放轨道）时返回 `Ok(None)`；
+/// 目录树读不出来按读盘错误上抛，不并进 `None`。Linux 的 xorriso 路径没有这个
+/// 能力，返回错误说明。
 pub fn salvage(
     source: &str,
     dest: &Path,

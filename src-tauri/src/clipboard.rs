@@ -3,7 +3,7 @@
 //! Linux 走 GTK3 剪贴板，同时提供 `text/uri-list` 与 `x-special/gnome-copied-files`
 //! 两个目标。Windows 走 CF_HDROP 文件列表加 Preferred DropEffect（复制语义），粘贴
 //! 方向读同一个格式。两侧都只写路径，不复制数据，所以剪贴板指向的文件必须在用户
-//! 粘贴前一直存在（暂存生命周期见 ADR-0012）。剪切板内容在应用存活期间有效。
+//! 粘贴前一直存在（暂存生命周期见 ADR-0012）。剪贴板内容在应用存活期间有效。
 
 #[cfg(target_os = "linux")]
 pub use platform::{copy_files, read_files};

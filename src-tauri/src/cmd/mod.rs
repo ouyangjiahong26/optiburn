@@ -277,7 +277,7 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
         JobError::NoIsoSession => pick(
             lang,
             "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。",
-            "The last session on this disc is not ISO 9660 (e.g. a UDF disc written by Windows): appending an ISO session would leave systems that mount the last session seeing only the new content. This tool cannot append to such discs yet，use a blank disc instead.",
+            "The last session on this disc is not ISO 9660 (e.g. a UDF disc written by Windows): appending an ISO session would leave systems that mount the last session seeing only the new content. This tool cannot append to such discs yet, use a blank disc instead.",
         )
         .into(),
         JobError::Capacity { needed, free } => {

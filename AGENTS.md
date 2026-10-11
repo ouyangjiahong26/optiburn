@@ -86,11 +86,11 @@ CI 没有光驱，默认不跑。本机的 Windows 侧接了 USB 光驱，可用
 | `crates/optiburn-transport/` | `lib.rs`（trait + 平台分发）、`linux.rs`（SG_IO）、`windows.rs`（SPTI） |
 | `crates/optiburn-mmc/` | CDB 编解码与响应解析（`write.rs` 是写侧），含黄金 CDB 断言与固定缓冲区解析测试 |
 | `crates/optiburn-mastering/` | `build_image` + profile 映射。`tests/roundtrip.rs` 是 xorriso 对拍 |
-| `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`/`NativeGap`）、`native.rs`（原生 MMC 写引擎，含增长写序列）、`xorriso.rs`（参数与进度解析）、`grow.rs` 与 `grow/`（原生增长的会话生成与旧区段读取）、`disc_read/`（原生读盘：ISO 9660 与 `udf.rs`） |
-| `crates/optiburn-cli/` | `src/main.rs` 五个子命令（多一个 `repair`，对齐 xorriso 的 `-close_damaged`） |
+| `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`/`NativeGap`）、`native.rs`（原生 MMC 写引擎，含增长写序列）、`xorriso.rs`（参数与进度解析）、`grow.rs` 与 `grow/`（原生增长的会话生成与旧区段读取）、`disc_read/`（原生读盘：ISO 9660 与 `udf.rs`，含抢救用的 `salvage.rs` 与 `zip_recover.rs`） |
+| `crates/optiburn-cli/` | `src/main.rs` 六个子命令（含 `repair` 与 `salvage`，前者对齐 xorriso 的 `-close_damaged`） |
 | `src-tauri/` | GUI 的 Rust 侧：Tauri 命令层，调用核心 crate |
 | `frontend/` | GUI 的 React 页面，Vite + TS |
-| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0021） |
+| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0023） |
 | `CONTEXT.md` | 领域术语表（术语/定义/禁用同义词三列），命名一律照它 |
 | `.github/workflows/` | `ci.yml`（job 名即分支保护的 required checks）、`release.yml` |
 

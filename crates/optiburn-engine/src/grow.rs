@@ -41,7 +41,7 @@ mod old_session;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use old_session::{DirNode, OldSession, read_old_session};
+pub(crate) use old_session::{DirNode, OldFile, OldSession, read_old_session};
 
 /// 命名空间：主标识（Level 2 大写名）或 Joliet。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

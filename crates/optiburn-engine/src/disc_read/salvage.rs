@@ -100,6 +100,36 @@ pub(super) fn salvage_unclosed_session(
     dest: &Path,
     cancel: &CancelToken,
 ) -> Result<Option<SalvageReport>, BurnError> {
+    let Some((mut mmc, start, vss)) = open_unclosed_track(source)? else {
+        return Ok(None);
+    };
+    let tree = {
+        let mut read = |lba: u32, out: &mut [u8]| {
+            mmc.read_blocks(lba, out)?;
+            Ok(())
+        };
+        crate::grow::read_old_session(&mut read, start, cancel)?.root
+    };
+    let boundary = {
+        let mut read = |lba: u32, out: &mut [u8]| {
+            mmc.read_blocks(lba, out)?;
+            Ok(())
+        };
+        written_boundary(&mut read, start, vss, cancel)?
+    };
+    let mut files = walk_and_extract(&mut mmc, tree, dest, boundary, cancel)?;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(Some(SalvageReport {
+        session_start: start,
+        boundary,
+        files,
+    }))
+}
+
+/// 打开设备并确认盘上确有可抢救的未关闭轨道，返回轨道起点与卷空间大小（PVD 的
+/// 偏移 80..84）。没有可抢救对象时返回 `None`：镜像文件、空盘、没有区段信息、
+/// 开放轨道不晚于末个已关闭区段、描述符不是 ISO 9660。
+fn open_unclosed_track(source: &str) -> Result<Option<(MmcDevice, u32, u32)>, BurnError> {
     let SourceKind::Device(device) = classify_source(Path::new(source)) else {
         return Ok(None);
     };
@@ -120,76 +150,75 @@ pub(super) fn salvage_unclosed_session(
         return Ok(None);
     }
     let start = track.start_lba;
-
-    // 卷空间大小（PVD 的偏移 80..84）与目录树。
     let mut pvd = vec![0u8; SECTOR_BYTES];
     mmc.read_blocks(start + crate::grow::DESC_START, &mut pvd)?;
     if pvd[1..6] != *b"CD001" {
         return Ok(None);
     }
     let vss = u32::from_le_bytes([pvd[80], pvd[81], pvd[82], pvd[83]]);
-    let tree = {
-        let mut read = |lba: u32, out: &mut [u8]| {
-            mmc.read_blocks(lba, out)?;
-            Ok(())
-        };
-        crate::grow::read_old_session(&mut read, start, cancel)?.root
-    };
-    let boundary = {
-        let mut read = |lba: u32, out: &mut [u8]| {
-            mmc.read_blocks(lba, out)?;
-            Ok(())
-        };
-        written_boundary(&mut read, start, vss, cancel)?
-    };
+    Ok(Some((mmc, start, vss)))
+}
 
-    // 按边界分类，能读的部分抽出去（目录按原样建出来）。抽完再按实际读到的字节
-    // 定最终状态：中途读失败会让文件比边界允许的更短。
+/// 遍历目录树，按边界给每个文件定性并把能读的部分抽出去（目录按原样建出来）。
+fn walk_and_extract(
+    mmc: &mut MmcDevice,
+    tree: crate::grow::DirNode,
+    dest: &Path,
+    boundary: u32,
+    cancel: &CancelToken,
+) -> Result<Vec<SalvagedFile>, BurnError> {
     let mut files = Vec::new();
     let mut stack = vec![(String::new(), tree)];
     while let Some((prefix, node)) = stack.pop() {
         for file in node.files {
             let path = format!("{prefix}/{}", file.name);
-            let planned = classify_salvage_state(file.extent, file.size, boundary);
-            let mut extracted = 0u64;
-            if planned != SalvageState::Missing {
-                let readable = match planned {
-                    SalvageState::Complete => file.size,
-                    SalvageState::Truncated { readable_bytes } => readable_bytes.min(file.size),
-                    SalvageState::Missing => 0,
-                };
-                let target = dest.join(safe_relative_path(&path)?);
-                extracted = extract_salvage_file(&mut mmc, file.extent, readable, &target, cancel)?;
-            }
-            let state = final_salvage_state(extracted, file.size);
-            // 半截的 zip 重建一份只含完整条目的：中央目录在文件尾，缺失后常规工具
-            // 打不开。重建后能直接解。只对真的写了一部分的文件做，一个字节都没写
-            // 的文件在 dest 下根本不存在（也就没有原始字节可留）。重建失败或没有
-            // 可保留的条目时文件不动。
-            let zip = if matches!(state, SalvageState::Truncated { .. }) && is_zip_name(&file.name)
-            {
-                let target = dest.join(safe_relative_path(&path)?);
-                zip_recover::recover_truncated_zip(&target)?
-            } else {
-                None
-            };
-            files.push(SalvagedFile {
-                path,
-                size: file.size,
-                state,
-                zip,
-            });
+            files.push(salvage_one_file(mmc, &path, &file, dest, boundary, cancel)?);
         }
         for dir in node.dirs {
             stack.push((format!("{prefix}/{}", dir.name), dir));
         }
     }
-    files.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(Some(SalvageReport {
-        session_start: start,
-        boundary,
-        files,
-    }))
+    Ok(files)
+}
+
+/// 一条文件的全部处置：定性、抽取、半截 zip 重建。抽完按实际读到的字节定最终
+/// 状态，中途读失败会让文件比边界允许的更短。
+fn salvage_one_file(
+    mmc: &mut MmcDevice,
+    path: &str,
+    file: &crate::grow::OldFile,
+    dest: &Path,
+    boundary: u32,
+    cancel: &CancelToken,
+) -> Result<SalvagedFile, BurnError> {
+    let planned = classify_salvage_state(file.extent, file.size, boundary);
+    let mut extracted = 0u64;
+    if planned != SalvageState::Missing {
+        let readable = match planned {
+            SalvageState::Complete => file.size,
+            SalvageState::Truncated { readable_bytes } => readable_bytes.min(file.size),
+            SalvageState::Missing => 0,
+        };
+        let target = dest.join(safe_relative_path(path)?);
+        extracted = extract_salvage_file(mmc, file.extent, readable, &target, cancel)?;
+    }
+    let state = final_salvage_state(extracted, file.size);
+    // 半截的 zip 重建一份只含完整条目的：中央目录在文件尾，缺失后常规工具
+    // 打不开。重建后能直接解。只对真的写了一部分的文件做，一个字节都没写
+    // 的文件在 dest 下根本不存在（也就没有原始字节可留）。重建失败或没有
+    // 可保留的条目时文件不动。
+    let zip = if matches!(state, SalvageState::Truncated { .. }) && is_zip_name(&file.name) {
+        let target = dest.join(safe_relative_path(path)?);
+        zip_recover::recover_truncated_zip(&target)?
+    } else {
+        None
+    };
+    Ok(SalvagedFile {
+        path: path.to_string(),
+        size: file.size,
+        state,
+        zip,
+    })
 }
 
 /// 把一条文件能读出来的字节抽到本地：按 32 块分块读，末尾按 `readable_bytes` 截断，
@@ -197,7 +226,7 @@ pub(super) fn salvage_unclosed_session(
 ///
 /// 中途读失败（损坏或中断点比扫描结果更靠前）不报错：停在那里返回已写下的部分，
 /// 由调用方按实际字节数定性。
-fn extract_salvage_file(
+pub(super) fn extract_salvage_file(
     mmc: &mut MmcDevice,
     extent: u32,
     readable_bytes: u64,
@@ -228,6 +257,13 @@ fn extract_salvage_file(
         written += chunk_bytes as u64;
         remaining -= chunk_bytes as u64;
         lba += blocks as u32;
+    }
+    // 首块就读失败时一个字节都没写：把空壳删掉，与“没写的文件在 dest 下根本
+    // 不存在”的口径一致。零长度文件 readable_bytes 为 0，不进这个分支，抽出的
+    // 0 字节就是它的全部内容。
+    if readable_bytes > 0 && written == 0 {
+        drop(out);
+        std::fs::remove_file(target)?;
     }
     Ok(written)
 }

@@ -58,6 +58,11 @@ pub enum MmcError {
     TooManyBlocks { blocks: usize, max: usize },
     #[error("device not ready within timeout")]
     NotReady,
+    /// 该介质没有“中断写入留下的未关闭轨道”这个形态（DVD-RAM、BD-RE 等随机可写
+    /// 介质），修复路径对它无从谈起（对照 libburn write.c:3487-3493 对这类 profile
+    /// 直接报 “Cannot close damaged track on given media type”）。
+    #[error("cannot close damaged track on this media type")]
+    UnsupportedMedia,
 }
 
 /// 设备的 INQUIRY 标识字段。尾部填充的空格与 NUL 已去掉。
@@ -396,11 +401,15 @@ impl MmcDevice {
     }
 
     /// 尝试关掉被中断写入留下的损坏轨道与区段（libburn 的 `burn_disc_close_damaged`，
-    /// xorriso 的 `-close_damaged`）：CD 与 DVD-R 族先下发写参数页（CD 用 TAO，
-    /// DVD-R 用增量写），再关区段。+R 族与 BD-R 不发参数页，关最后一条轨道后再按
-    /// 需要关区段。区段是否留在可追加状态由 `multi` 决定（写参数页的 multi 位）。
+    /// xorriso 的 `-close_damaged`）。命令序列对照 libburn 1.5.6 `write.c:3449-3473`
+    /// 的 profile 分支：CD 先下发写参数页（TAO）再关区段，不发 CLOSE TRACK；
+    /// DVD-R 族在写参数页之后先关最后一条轨道（CLOSE TRACK 001b，libburn 用
+    /// `d->last_track_no`）再关区段，中断留下的轨道不显式关掉，要求先关轨道的
+    /// 驱动器会把这次修复判成失败。+R 族与 BD-R 不发参数页，关最后一条轨道后再
+    /// 按需要关区段。区段是否留在可追加状态由 `multi` 决定（写参数页的 multi 位）。
     ///
-    /// 驱动器不支持这条修复路径时返回错误，调用方按“不可写”报告。
+    /// 随机可写介质没有这个形态，返回 [`MmcError::UnsupportedMedia`]，
+    /// 调用方按“不可写”报告。
     pub fn close_damaged(
         &mut self,
         kind: MediaKind,
@@ -408,8 +417,13 @@ impl MmcDevice {
         multi: bool,
     ) -> Result<(), MmcError> {
         match kind {
-            MediaKind::Cd | MediaKind::DvdMinus => {
+            MediaKind::Cd => {
                 self.set_write_parameters(kind, multi)?;
+                self.close_session()?;
+            }
+            MediaKind::DvdMinus => {
+                self.set_write_parameters(kind, multi)?;
+                self.close_track(last_track)?;
                 self.close_session()?;
             }
             MediaKind::PlusOrBdR => {
@@ -418,7 +432,7 @@ impl MmcDevice {
                     self.close_session()?;
                 }
             }
-            MediaKind::RandomWritable => {}
+            MediaKind::RandomWritable => return Err(MmcError::UnsupportedMedia),
         }
         Ok(())
     }
@@ -1194,6 +1208,48 @@ mod tests {
         assert!(payload[..8].iter().all(|b| *b == 0));
         assert_eq!(&payload[8..10], &[0x05, 0x32]);
         assert_eq!(payload[10], 0x41);
+    }
+
+    #[test]
+    fn close_damaged_closes_the_track_before_the_session_on_dvd_r() {
+        // 对照 libburn write.c:3460-3473 的 DVD-R 分支：先 CLOSE TRACK（001b，
+        // 轨道号取末轨道）再 CLOSE SESSION（010b）。中断留下的轨道不显式关掉，
+        // 要求先关轨道的驱动器会把修复判成失败。
+        let (mut dev, cdbs, _) = device_capturing(Vec::new());
+
+        dev.close_damaged(MediaKind::DvdMinus, 7, true).unwrap();
+        let issued = cdbs.borrow();
+        let opcodes: Vec<u8> = issued.iter().map(|cdb| cdb[0]).collect();
+        assert_eq!(opcodes, [0x55, 0x5B, 0x5B]);
+        assert_eq!(issued[1][2] & 0b111, 0b001);
+        assert_eq!(&issued[1][4..6], &7u16.to_be_bytes());
+        assert_eq!(issued[2][2] & 0b111, 0b010);
+    }
+
+    #[test]
+    fn close_damaged_on_cd_only_sends_page_five_and_close_session() {
+        // 对照 libburn write.c:3449-3459 的 CD 分支：mode page 5 加 CLOSE SESSION，
+        // 没有 CLOSE TRACK。
+        let (mut dev, cdbs, _) = device_capturing(Vec::new());
+
+        dev.close_damaged(MediaKind::Cd, 3, true).unwrap();
+        let issued = cdbs.borrow();
+        let opcodes: Vec<u8> = issued.iter().map(|cdb| cdb[0]).collect();
+        assert_eq!(opcodes, [0x55, 0x5B]);
+        assert_eq!(issued[1][2] & 0b111, 0b010);
+    }
+
+    #[test]
+    fn close_damaged_rejects_random_writable_media_without_commands() {
+        // DVD-RAM、BD-RE 没有未关闭轨道的形态：libburn 对这类 profile 直接报
+        // 失败（write.c:3487-3493），这里同样报错且不下发任何命令。
+        let (mut dev, cdbs, _) = device_capturing(Vec::new());
+
+        let error = dev
+            .close_damaged(MediaKind::RandomWritable, 1, true)
+            .unwrap_err();
+        assert!(matches!(error, MmcError::UnsupportedMedia), "{error:?}");
+        assert!(cdbs.borrow().is_empty(), "不该对随机可写介质下发命令");
     }
 
     #[test]

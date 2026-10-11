@@ -1,9 +1,9 @@
 //! 未关闭轨道的抢救命令：把刻录中断留下的那一次写入里能读的数据抽到本地目录
-//! （ADR-0022 补记）。设备页的入口在盘可追加时出现，与写盘同占任务槽（互斥）。
+//! （ADR-0022 补记）。设备页的入口在盘可追加或随机可写时出现，与写盘同占任务槽（互斥）。
 
 use std::path::Path;
 
-use optiburn_engine::{BurnError, CancelToken, SalvageReport, salvage};
+use optiburn_engine::{BurnError, CancelToken, SalvageReport, ZipSalvage, salvage};
 use tauri::{AppHandle, State};
 
 use super::{JobError, JobKind, JobState, begin_job, fail_job, finish_job, set_join};
@@ -52,8 +52,8 @@ fn salvage_blocking(device: &str, dest: &Path, cancel: &CancelToken) -> Result<S
     let Some(report) = report else {
         return Ok(pick(
             lang(),
-            "盘上没有未关闭轨道（没有中断的写入，或它的目录树读不出来）：没有可抢救的内容。盘上若还能看到文件，那是另一种中断形态（残片已被登记成末区段），按普通读盘取即可。",
-            "The disc has no unclosed track (no interrupted write, or its directory tree cannot be read): nothing to salvage. If the disc still lists files, it is the other interrupted shape (the fragment was registered as a session), and ordinary disc reading gets them out.",
+            "盘上没有未关闭轨道（没有中断的写入）：没有可抢救的内容。盘上若还能看到文件，那是另一种中断形态（残片已被登记成末区段），按普通读盘取即可。",
+            "The disc has no unclosed track (no interrupted write): nothing to salvage. If the disc still lists files, it is the other interrupted shape (the fragment was registered as a session), and ordinary disc reading gets them out.",
         )
         .to_string());
     };
@@ -81,59 +81,61 @@ fn summary_text(lang: Lang, report: &SalvageReport, dest: &Path) -> String {
         ),
     };
     for file in &report.files {
-        let Some(zip) = &file.zip else {
-            continue;
-        };
-        let name = file.path.trim_start_matches('/');
-        text.push(' ');
-        let note = if zip.rebuilt {
-            match lang {
-                Lang::Zh => format!(
-                    "“{name}”已重建为可解的 zip：{} 个完整条目，从 {} 起没有保留。",
-                    zip.entries,
-                    zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
-                ),
-                Lang::En => format!(
-                    "\"{name}\" was rebuilt into a readable zip with {} complete entries; the rest was dropped.",
-                    zip.entries
-                ),
-            }
-        } else if zip.entries == 0 {
-            let dropped = zip.dropped_entry.as_deref().unwrap_or(match lang {
-                Lang::Zh => "第一条",
-                Lang::En => "the first entry",
-            });
-            match lang {
-                Lang::Zh => format!(
-                    "“{name}”的中断点落在第一条“{dropped}”里面，没有可保留的完整 zip 条目，按原始字节保留。"
-                ),
-                Lang::En => format!(
-                    "The cut inside \"{name}\" falls inside its first entry \"{dropped}\", so no complete zip entry could be kept and the raw bytes were left in place."
-                ),
-            }
-        } else {
-            match lang {
-                Lang::Zh => format!(
-                    "“{name}”有 {} 个完整条目，但超出普通 zip 的表达范围，没有重建，按原始字节保留。",
-                    zip.entries
-                ),
-                Lang::En => format!(
-                    "\"{name}\" has {} complete entries, but they do not fit a plain zip, so the raw bytes were left in place.",
-                    zip.entries
-                ),
-            }
-        };
-        text.push_str(&note);
+        if let Some(zip) = &file.zip {
+            text.push(' ');
+            text.push_str(&zip_note(lang, file.path.trim_start_matches('/'), zip));
+        }
     }
     text
+}
+
+/// 一条半截 zip 的处置说明：重建了、中断点落在第一条、还是超出表达范围没重建。
+fn zip_note(lang: Lang, name: &str, zip: &ZipSalvage) -> String {
+    if zip.rebuilt {
+        return match lang {
+            Lang::Zh => format!(
+                "“{name}”已重建为可解的 zip：{} 个完整条目，从 {} 起没有保留。",
+                zip.entries,
+                zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
+            ),
+            Lang::En => format!(
+                "\"{name}\" was rebuilt into a readable zip with {} complete entries; the rest was dropped.",
+                zip.entries
+            ),
+        };
+    }
+    if zip.entries == 0 {
+        let dropped = zip.dropped_entry.as_deref().unwrap_or(match lang {
+            Lang::Zh => "第一条",
+            Lang::En => "the first entry",
+        });
+        return match lang {
+            Lang::Zh => format!(
+                "“{name}”的中断点落在第一条“{dropped}”里面，没有可保留的完整 zip 条目，按原始字节保留。"
+            ),
+            Lang::En => format!(
+                "The cut inside \"{name}\" falls inside its first entry \"{dropped}\", so no complete zip entry could be kept and the raw bytes were left in place."
+            ),
+        };
+    }
+    match lang {
+        Lang::Zh => format!(
+            "“{name}”有 {} 个完整条目，但超出普通 zip 的表达范围，没有重建，按原始字节保留。",
+            zip.entries
+        ),
+        Lang::En => format!(
+            "\"{name}\" has {} complete entries, but they do not fit a plain zip, so the raw bytes were left in place.",
+            zip.entries
+        ),
+    }
 }
 
 /// 抢救失败的文案：取消原样上报，盘被挂载给出卸载指引，其余保留动作前缀。
 fn salvage_error(device: &str, error: BurnError) -> JobError {
     if matches!(error, BurnError::Cancelled) {
         return JobError::Cancelled {
-            zh: "已中止抢救。",
-            en: "Salvage cancelled.",
+            zh: "抢救",
+            en: "salvage",
         };
     }
     if let Some(point) = optiburn_transport::mounted_at(device) {

@@ -348,27 +348,31 @@ fn ensure_burnable(
         }
         WriteBlock::Finalized => "盘已封口，无法再写入，请更换盘片。".to_string(),
     })?;
-    // 追加路径再过一道：盘上有没有可用的 ISO 9660 会话（ADR-0010、ADR-0022）。
-    // 三态分流：末区段可用就放行。末区段损坏但更早区段可读时把回退信息交给调用方
-    // 去要确认。连更早区段都读不出来（纯 UDF 盘、空白盘）按今天的文案拒绝。
-    let mut damaged = None;
-    if accept_appendable && info.status == DiscStatus::Appendable {
-        match iso_session_state(device).map_err(|e| read_error_text("读取末区段格式", &e))? {
-            IsoSessionState::Usable => {}
-            IsoSessionState::Damaged(fallback) => damaged = Some(fallback),
-            IsoSessionState::Unusable => {
-                return Err(
-                    "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
-                        .to_string(),
-                );
-            }
-        }
-    }
+    // 追加路径再过一道：盘上有没有可用的 ISO 9660 会话，三态分流见下面的函数。
+    let damaged = if accept_appendable && info.status == DiscStatus::Appendable {
+        ensure_iso_session(device)?
+    } else {
+        None
+    };
     // 门禁放行后，可追加盘只剩追加路径，把区段数报给用户留个底。
     if info.status == DiscStatus::Appendable {
         println!("盘上已有 {} 个区段，将追加新区段。", info.sessions);
     }
     Ok(damaged)
+}
+
+/// 追加路径再过一道：盘上有没有可用的 ISO 9660 会话（ADR-0010、ADR-0022）。
+/// 三态分流：末区段可用就放行。末区段损坏但更早区段可读时把回退信息交给调用方
+/// 去要确认。连更早区段都读不出来（纯 UDF 盘、空白盘）按今天的文案拒绝。
+fn ensure_iso_session(device: &str) -> Result<Option<SessionFallback>, String> {
+    match iso_session_state(device).map_err(|e| read_error_text("读取末区段格式", &e))? {
+        IsoSessionState::Usable => Ok(None),
+        IsoSessionState::Damaged(fallback) => Ok(Some(fallback)),
+        IsoSessionState::Unusable => Err(
+            "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。"
+                .to_string(),
+        ),
+    }
 }
 
 /// 抢救未关闭轨道里的数据，把每个文件的状态与抽到哪里报出来（ADR-0022 补记）。
@@ -377,7 +381,7 @@ fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
         .map_err(|e| read_error_text("抢救未关闭轨道", &e))?;
     let Some(report) = report else {
         println!(
-            "盘上没有未关闭轨道（没有中断的写入，或它的目录树读不出来）：没有可抢救的内容。\n\
+            "盘上没有未关闭轨道（没有中断的写入）：没有可抢救的内容。\n\
              盘上若还能看到文件，那是另一种中断形态（残片已被登记成末区段），按普通读盘取即可。\
              追加时可以选择跳过损坏的残片。"
         );
@@ -399,44 +403,7 @@ fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
     );
     println!("抢救目录：{}", dest.display());
     for file in &report.files {
-        match file.state {
-            optiburn_engine::SalvageState::Complete => {
-                println!("  [完整] {}（{}）", file.path, bytes_text(file.size));
-            }
-            optiburn_engine::SalvageState::Truncated { readable_bytes } => println!(
-                "  [半截] {}（能读 {}，原大小 {}）",
-                file.path,
-                bytes_text(readable_bytes.min(file.size)),
-                bytes_text(file.size)
-            ),
-            optiburn_engine::SalvageState::Missing => {
-                println!(
-                    "  [没有] {}（{}，中断点在它之前）",
-                    file.path,
-                    bytes_text(file.size)
-                );
-            }
-        }
-        if let Some(zip) = &file.zip {
-            if zip.rebuilt {
-                println!(
-                    "        已重建为可解的 zip：{} 个完整条目，解压前共 {}。从 {} 起没有保留。",
-                    zip.entries,
-                    bytes_text(zip.stored_bytes),
-                    zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
-                );
-            } else if zip.entries == 0 {
-                println!(
-                    "        中断点落在第一条“{}”里面，没有可保留的完整 zip 条目，文件按原始字节保留。",
-                    zip.dropped_entry.as_deref().unwrap_or("未知名条目")
-                );
-            } else {
-                println!(
-                    "        完整条目有 {} 个，但条目数或总长超出普通 zip 的表达范围，没有重建，文件按原始字节保留。",
-                    zip.entries
-                );
-            }
-        }
+        print_salvage_file(file);
     }
     if report.missing() > 0 {
         println!(
@@ -444,6 +411,48 @@ fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// 打印一条文件的抢救状态，半截 zip 另起一行给处置结果。
+fn print_salvage_file(file: &optiburn_engine::SalvagedFile) {
+    match file.state {
+        optiburn_engine::SalvageState::Complete => {
+            println!("  [完整] {}（{}）", file.path, bytes_text(file.size));
+        }
+        optiburn_engine::SalvageState::Truncated { readable_bytes } => println!(
+            "  [半截] {}（能读 {}，原大小 {}）",
+            file.path,
+            bytes_text(readable_bytes.min(file.size)),
+            bytes_text(file.size)
+        ),
+        optiburn_engine::SalvageState::Missing => {
+            println!(
+                "  [没有] {}（{}，中断点在它之前）",
+                file.path,
+                bytes_text(file.size)
+            );
+        }
+    }
+    if let Some(zip) = &file.zip {
+        if zip.rebuilt {
+            println!(
+                "        已重建为可解的 zip：{} 个完整条目，解压前共 {}。从 {} 起没有保留。",
+                zip.entries,
+                bytes_text(zip.stored_bytes),
+                zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
+            );
+        } else if zip.entries == 0 {
+            println!(
+                "        中断点落在第一条“{}”里面，没有可保留的完整 zip 条目，文件按原始字节保留。",
+                zip.dropped_entry.as_deref().unwrap_or("未知名条目")
+            );
+        } else {
+            println!(
+                "        完整条目有 {} 个，但条目数或总长超出普通 zip 的表达范围，没有重建，文件按原始字节保留。",
+                zip.entries
+            );
+        }
+    }
 }
 
 /// 尝试修复损坏的轨道与区段，并把修复前后的状态报出来（对齐 xorriso 的

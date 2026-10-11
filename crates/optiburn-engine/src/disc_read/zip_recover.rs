@@ -18,6 +18,9 @@ use crate::{BurnError, ZipSalvage};
 /// 那要走 zip64 的额外字段与 EOCD64，收益不值这个复杂度，保留原始字节更实在。
 const ZIP64_MARKER: u32 = 0xFFFF_FFFF;
 
+/// 无注释 EOCD 的固定长度。
+const EOCD_LEN: usize = 22;
+
 /// 一条条目的定位结果。
 struct Entry {
     /// 条目在文件里的起点（本地头签名处）。
@@ -84,12 +87,14 @@ fn fits_plain_zip(entries: &[Entry]) -> bool {
     if entries.len() > u16::MAX as usize {
         return false;
     }
-    // 条目的本地部分加中央目录条目（头部 46 字节加名字）。
+    // 条目的本地部分加中央目录条目（头部 46 字节加名字）。EOCD 本身固定 22 字节，
+    // 中央目录偏移与尺寸都以 32 位写进 EOCD：总长连同 EOCD 必须装进 u32，否则
+    // build_zip 的 `out.len() as u32` 回绕，写出自相矛盾的 EOCD。
     let total: u64 = entries
         .iter()
         .map(|entry| (entry.end - entry.start) as u64 + 46 + entry.name.len() as u64)
         .sum();
-    total <= u64::from(u32::MAX)
+    total + EOCD_LEN as u64 <= u64::from(u32::MAX)
 }
 
 /// 本地头链的扫描结果：`None` 表示不是 zip 链或结构本来就全，`Some` 给完整条目
