@@ -225,7 +225,7 @@ pub fn track_info_cdb(track: u32) -> [u8; 10] {
 
 /// CLOSE TRACK/SESSION（0x5B）的 CDB。功能码按 libburn 的 `mmc_close`：字节 2 的
 /// 位 2-0 是 `(session & 3) << 1 | !!track`，其中 session 与 track 是调用方的选择位，
-/// 实际值 0b001 是关轨道、0b010 是关区段；轨道号是字节 4-5 的 **16 位大端**字段
+/// 实际值 0b001 是关轨道、0b010 是关区段。轨道号是字节 4-5 的 **16 位大端**字段
 /// （libburn 写 `opcode[4] = track >> 8; opcode[5] = track & 0xFF`，只填字节 4 会把
 /// 轨道号读成 0，2026-10-11 实测被驱动器以 INVALID FIELD IN CDB 拒掉）。
 ///

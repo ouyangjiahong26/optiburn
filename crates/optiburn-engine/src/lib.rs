@@ -53,9 +53,9 @@ pub fn grow(
 /// 尝试修复被中断刻录留下的损坏轨道与区段：按 libburn 的 `burn_disc_close_damaged`
 /// 的顺序（CD 与 DVD-R 族先下发写参数页再关区段，+R 族与 BD-R 关最后一条轨道），
 /// 等价于 xorriso 的 `-close_damaged as_needed`（`force` 对应 `force`）。驱动器报
-/// 损坏才动，`force` 时无条件尝试；命令与介质族不匹配时返回错误。
+/// 损坏才动，`force` 时无条件尝试。命令与介质族不匹配时返回错误。
 ///
-/// 只做修复与状态复核，不写数据；修复成功后 [`grow`] 就可能在这张盘上继续。
+/// 只做修复与状态复核，不写数据。修复成功后 [`grow`] 就可能在这张盘上继续。
 pub fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnError> {
     if cfg!(windows) {
         native::repair(device, force)
@@ -233,7 +233,7 @@ pub struct RepairOutcome {
 pub enum IsoSessionState {
     /// 末区段就是可读的 ISO 9660 会话。
     Usable,
-    /// 末区段损坏，回退到更早的会话；追加会跳过被跳过区段里的文件，需要确认。
+    /// 末区段损坏，回退到更早的会话。追加会跳过被跳过区段里的文件，需要确认。
     Damaged(SessionFallback),
     /// 盘上没有被支持的 ISO 9660 会话（空白盘、纯 UDF 盘、音频盘）。
     Unusable,
@@ -357,9 +357,9 @@ pub trait BurnEngine {
     /// 引擎名，用于 CLI 的 `--engine` 取值与日志。
     fn name(&self) -> &'static str;
 
-    /// 执行刻录。`progress` 收到 0.0–1.0 的进度回调；`cancel` 在进度循环里被
+    /// 执行刻录。`progress` 收到 0.0–1.0 的进度回调。`cancel` 在进度循环里被
     /// 检查，置位后子进程被停掉并返回 `BurnError::Cancelled`，除非子进程已自然
-    /// 写完退出——那时盘已写完，迟到取消不算数。
+    /// 写完退出。那时盘已写完，迟到取消不算数。
     fn burn(
         &self,
         job: &BurnJob,

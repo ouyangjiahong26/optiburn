@@ -139,7 +139,7 @@ fn profile_from_str(lang: Lang, profile: &str) -> Result<DiscProfile, String> {
     }
 }
 
-/// GUI 没有“当前目录”语义：默认输出落在源目录的父目录下，同名加 .iso；
+/// GUI 没有“当前目录”语义：默认输出落在源目录的父目录下，同名加 .iso。
 /// 源为根目录（没有父目录）时退回 optiburn.iso。
 fn default_output(src: &Path) -> PathBuf {
     let name = src
@@ -244,7 +244,7 @@ fn native_gap_text(lang: Lang, gap: NativeGap) -> String {
         .to_string(),
         NativeGap::GrowthOnRewritable => pick(
             lang,
-            "可覆写介质（DVD-RAM、BD-RE 这类）上的追加暂不支持原生引擎：这类盘可以直接用「刻录」整体重写，或换可追加的盘片。",
+            "可覆写介质（DVD-RAM、BD-RE 这类）上的追加暂不支持原生引擎：这类盘可以直接用“刻录”整体重写，或换可追加的盘片。",
             "Growing a rewritable disc (DVD-RAM, BD-RE) is not supported by the native engine yet. Burn the whole disc again instead, or use an appendable disc.",
         )
         .to_string(),
@@ -277,7 +277,7 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
         JobError::NoIsoSession => pick(
             lang,
             "盘上最后的区段不是 ISO 9660（例如 Windows 写入的 UDF 盘）：追加 ISO 区段后，按最后一区段挂载的系统将只看到新内容。本工具暂不支持续写这类盘，请换用空白盘重刻。",
-            "The last session on this disc is not ISO 9660 (e.g. a UDF disc written by Windows): appending an ISO session would leave systems that mount the last session seeing only the new content. This tool cannot append to such discs yet — use a blank disc instead.",
+            "The last session on this disc is not ISO 9660 (e.g. a UDF disc written by Windows): appending an ISO session would leave systems that mount the last session seeing only the new content. This tool cannot append to such discs yet，use a blank disc instead.",
         )
         .into(),
         JobError::Capacity { needed, free } => {
@@ -354,7 +354,7 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
         },
         JobError::DamagedSession { fallback } => match lang {
             Lang::Zh => format!(
-                "盘上末区段损坏，续写要回退到第 {} 个候选区段（起点 {}，共 {} 个候选）：被跳过的 {} 个候选里的文件将不再出现在盘上的可见目录里。确认可以接受时勾选「允许跳过损坏的末区段」再试。",
+                "盘上末区段损坏，续写要回退到第 {} 个候选区段（起点 {}，共 {} 个候选）：被跳过的 {} 个候选里的文件将不再出现在盘上的可见目录里。确认可以接受时勾选“允许跳过损坏的末区段”再试。",
                 fallback.ordinal,
                 fallback.session_start,
                 fallback.candidates,
@@ -396,7 +396,7 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
                 Lang::Zh => failure.user_text(tail),
                 Lang::En => match failure {
                     BurnFailure::DriveLost => "The burn was interrupted: the drive lost connection during writing (loose cable, power glitch, or unplugged). This session was not finished; existing content on the disc is unaffected. Reconnect the drive and try again, and check the disc before reusing it.".to_string(),
-                    BurnFailure::DeviceBusy => "The device is busy: the drive is in use by another program — most commonly the disc is mounted by the system. Unmount the disc or close the other program, then retry.".to_string(),
+                    BurnFailure::DeviceBusy => "The device is busy: the drive is in use by another program, most commonly the disc is mounted by the system. Unmount the disc or close the other program, then retry.".to_string(),
                     BurnFailure::Other => format!("Burn failed: {tail}"),
                 },
             }
@@ -594,7 +594,7 @@ pub async fn start_build_image(
         volume_id,
         joliet: true,
     };
-    // 阻塞工作放到工作线程；本命令等它结束，把真实的制作结果带回给前端。
+    // 阻塞工作放到工作线程。本命令等它结束，把真实的制作结果带回给前端。
     let built = tauri::async_runtime::spawn_blocking(move || {
         match build_image(Path::new(&src), &output, &spec) {
             Ok(info) => {
@@ -877,7 +877,7 @@ pub fn confirm_close(app: AppHandle, state: State<'_, JobState>) {
     app.exit(0);
 }
 
-/// 刻录/追加共用的阻塞任务输入。append 决定 path 的含义与写入方式；
+/// 刻录/追加共用的阻塞任务输入。append 决定 path 的含义与写入方式。
 /// volume_id 只在追加时有意义。
 struct DiscTask<'a> {
     app: &'a AppHandle,
@@ -1061,7 +1061,7 @@ fn progress_emitter<'a>(app: &'a AppHandle, kind: JobKind) -> impl FnMut(f32) + 
     }
 }
 
-/// 刻录成功后重开设备读区段数；读不到不影响“完成”这个结论。
+/// 刻录成功后重开设备读区段数。读不到不影响“完成”这个结论。
 fn sessions_message(device: &str) -> String {
     let text = optiburn_transport::open(device).ok().and_then(|transport| {
         let mut mmc = MmcDevice::new(transport);
@@ -1323,7 +1323,7 @@ mod tests {
                 Lang::Zh,
                 &JobError::Burn(BurnError::NativeGap(NativeGap::GrowthOnRewritable))
             ),
-            "可覆写介质（DVD-RAM、BD-RE 这类）上的追加暂不支持原生引擎：这类盘可以直接用「刻录」整体重写，或换可追加的盘片。"
+            "可覆写介质（DVD-RAM、BD-RE 这类）上的追加暂不支持原生引擎：这类盘可以直接用“刻录”整体重写，或换可追加的盘片。"
         );
         assert_eq!(
             job_error_text(
@@ -1361,7 +1361,7 @@ mod tests {
         let zh = job_error_text(Lang::Zh, &JobError::DamagedSession { fallback });
         assert_eq!(
             zh,
-            "盘上末区段损坏，续写要回退到第 4 个候选区段（起点 286770，共 6 个候选）：被跳过的 2 个候选里的文件将不再出现在盘上的可见目录里。确认可以接受时勾选「允许跳过损坏的末区段」再试。"
+            "盘上末区段损坏，续写要回退到第 4 个候选区段（起点 286770，共 6 个候选）：被跳过的 2 个候选里的文件将不再出现在盘上的可见目录里。确认可以接受时勾选“允许跳过损坏的末区段”再试。"
         );
         let en = job_error_text(Lang::En, &JobError::DamagedSession { fallback });
         assert!(en.contains("candidate session 4 of 6"), "{en}");

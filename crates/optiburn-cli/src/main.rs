@@ -229,7 +229,7 @@ fn native_gap_text(gap: &optiburn_engine::NativeGap) -> &'static str {
         }
         NativeGap::FinalizedDisc => "盘已封口，无法再写入，请更换盘片。",
         NativeGap::GrowthOnRewritable => {
-            "可覆写介质（DVD-RAM、BD-RE 这类）上的追加暂不支持原生引擎：这类盘可以直接用「刻录」整体重写，或换可追加的盘片。"
+            "可覆写介质（DVD-RAM、BD-RE 这类）上的追加暂不支持原生引擎：这类盘可以直接用“刻录”整体重写，或换可追加的盘片。"
         }
         NativeGap::EmptyGrowSource => "追加的目录是空的，没有可写入的内容。",
     }
@@ -349,8 +349,8 @@ fn ensure_burnable(
         WriteBlock::Finalized => "盘已封口，无法再写入，请更换盘片。".to_string(),
     })?;
     // 追加路径再过一道：盘上有没有可用的 ISO 9660 会话（ADR-0010、ADR-0022）。
-    // 三态分流：末区段可用就放行；末区段损坏但更早区段可读时把回退信息交给调用方
-    // 去要确认；连更早区段都读不出来（纯 UDF 盘、空白盘）按今天的文案拒绝。
+    // 三态分流：末区段可用就放行。末区段损坏但更早区段可读时把回退信息交给调用方
+    // 去要确认。连更早区段都读不出来（纯 UDF 盘、空白盘）按今天的文案拒绝。
     let mut damaged = None;
     if accept_appendable && info.status == DiscStatus::Appendable {
         match iso_session_state(device).map_err(|e| read_error_text("读取末区段格式", &e))? {
@@ -378,7 +378,7 @@ fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
     let Some(report) = report else {
         println!(
             "盘上没有未关闭轨道（没有中断的写入，或它的目录树读不出来）：没有可抢救的内容。\n\
-             盘上若还能看到文件，那是另一种中断形态（残片已被登记成末区段），按普通读盘取即可；\
+             盘上若还能看到文件，那是另一种中断形态（残片已被登记成末区段），按普通读盘取即可。\
              追加时可以选择跳过损坏的残片。"
         );
         return Ok(());
@@ -420,14 +420,14 @@ fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
         if let Some(zip) = &file.zip {
             if zip.rebuilt {
                 println!(
-                    "        已重建为可解的 zip：{} 个完整条目，解压前共 {}；从 {} 起没有保留。",
+                    "        已重建为可解的 zip：{} 个完整条目，解压前共 {}。从 {} 起没有保留。",
                     zip.entries,
                     bytes_text(zip.stored_bytes),
                     zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
                 );
             } else if zip.entries == 0 {
                 println!(
-                    "        中断点落在第一条「{}」里面，没有可保留的完整 zip 条目，文件按原始字节保留。",
+                    "        中断点落在第一条“{}”里面，没有可保留的完整 zip 条目，文件按原始字节保留。",
                     zip.dropped_entry.as_deref().unwrap_or("未知名条目")
                 );
             } else {
@@ -440,7 +440,7 @@ fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
     }
     if report.missing() > 0 {
         println!(
-            "注意：标“没有”的文件只在这个中断的会话里存在才需要抢救；同名文件若在更早的已关闭区段里，用普通读盘取出来更完整。"
+            "注意：标“没有”的文件只在这个中断的会话里存在才需要抢救。同名文件若在更早的已关闭区段里，用普通读盘取出来更完整。"
         );
     }
     Ok(())
@@ -456,7 +456,7 @@ fn repair_command(device: &str, force: bool) -> Result<(), String> {
         println!("修复失败：{error}");
     }
     println!(
-        "驱动器报损坏：{}；已尝试修复：{}；修复后可写：{}",
+        "驱动器报损坏：{}。已尝试修复：{}。修复后可写：{}",
         yes_no(outcome.damaged),
         yes_no(outcome.attempted),
         yes_no(outcome.writable)
@@ -479,8 +479,8 @@ fn yes_no(value: bool) -> &'static str {
 }
 
 /// 没有可用可写地址时的文案（libburn 的两种形态，ADR-0022）：
-/// Damage 置位且 NWA_V 清零是「损坏、未关闭且不可写」，只有 NWA_V 清零是「驱动器
-/// 没报地址」。两种都建议先把数据读出来。
+/// Damage 置位且 NWA_V 清零是“损坏、未关闭且不可写”，只有 NWA_V 清零是“驱动器
+/// 没报地址”。两种都建议先把数据读出来。
 fn write_address_text(last_session_start: u32, damaged: bool) -> String {
     let head = if damaged {
         format!(

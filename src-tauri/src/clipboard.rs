@@ -1,7 +1,7 @@
 //! 把文件放进系统剪贴板，供文件管理器直接粘贴。
 //!
 //! Linux 走 GTK3 剪贴板，同时提供 `text/uri-list` 与 `x-special/gnome-copied-files`
-//! 两个目标；Windows 走 CF_HDROP 文件列表加 Preferred DropEffect（复制语义），粘贴
+//! 两个目标。Windows 走 CF_HDROP 文件列表加 Preferred DropEffect（复制语义），粘贴
 //! 方向读同一个格式。两侧都只写路径，不复制数据，所以剪贴板指向的文件必须在用户
 //! 粘贴前一直存在（暂存生命周期见 ADR-0012）。剪切板内容在应用存活期间有效。
 
@@ -199,7 +199,7 @@ mod win {
         }
     }
 
-    /// 剪贴板必须打开才能写；清空旧的、再放文件列表与复制语义。
+    /// 剪贴板必须打开才能写。清空旧的、再放文件列表与复制语义。
     fn write_entries(files: &[u8], effect: &[u8]) -> Result<(), String> {
         unsafe {
             if EmptyClipboard() == 0 {
@@ -243,7 +243,7 @@ mod win {
                 return Ok(Vec::new());
             }
             let handle = handle as HANDLE;
-            // ifile 传 0xFFFFFFFF 时返回条目数；传条目号时返回该路径的长度（不含 NUL）。
+            // ifile 传 0xFFFFFFFF 时返回条目数。传条目号时返回该路径的长度（不含 NUL）。
             let count = DragQueryFileW(handle, u32::MAX, std::ptr::null_mut(), 0);
             let mut paths = Vec::with_capacity(count as usize);
             for index in 0..count {

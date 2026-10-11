@@ -57,7 +57,7 @@ Windows 上“展开盘上清单”随原生读盘一并可用。“复制选中
 
 ## 补记：Windows 剪贴板实现（2026-10-11）
 
-上一条补记里「Windows 仍整体失败」的那一步补上了，两平台现在同级：
+上一条补记里“Windows 仍整体失败”的那一步补上了，两平台现在同级：
 
 - 写方向：`CF_HDROP`（20 字节 `DROPFILES` 头加宽字符路径、双 NUL 收尾）加
   `Preferred DropEffect`（`DROPEFFECT_COPY`），资源管理器按复制语义粘贴。内存用
@@ -67,6 +67,6 @@ Windows 上“展开盘上清单”随原生读盘一并可用。“复制选中
 - 约定与 Linux 侧相同：剪贴板只放路径，暂存文件在应用存活期间保留（本文第 4 条）。
   依赖只有 Windows 专有的 `windows-sys`（与 transport 同版本），Linux 的 gtk 不变。
 - 验证：Windows 真机上跑一次往返（写剪贴板后读回，含中文路径，一致），命令见
-  `clipboard.rs` 测试里的说明；`DROPFILES` 字节布局另有单元测试钉住。
+  `clipboard.rs` 测试里的说明。`DROPFILES` 字节布局另有单元测试钉住。
 - 悬置：Windows 的挂载占用提示仍是 Linux 专用（系统占用由 SPTI 打开错误表达），
   与本文原文第 4 条一致。GUI 按钮的真机点击由维护者复核，走的是同一个函数。

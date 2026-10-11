@@ -15,7 +15,7 @@ struct ScriptedDrive {
     free_blocks: u32,
     /// READ TRACK INFORMATION 报的下一个可写地址（新区段起点）。
     nwa: u32,
-    /// READ TRACK INFORMATION 报的开放轨道起始地址；给 None 时与 `nwa` 相同。
+    /// READ TRACK INFORMATION 报的开放轨道起始地址。给 None 时与 `nwa` 相同。
     open_track_start: Option<u32>,
     /// 报 Damage 位置位（驱动器认了损坏轨道）。
     damaged: bool,

@@ -355,7 +355,7 @@ pub(crate) fn plan_session(
 }
 
 /// 旧树转成计划树：旧条目的名字按本仓库的命名规则重新编码（Joliet 为 UTF-16BE、
-/// 最多 64 个码元；主命名空间为 Level 2 大写名）。
+/// 最多 64 个码元。主命名空间为 Level 2 大写名）。
 fn from_old(node: DirNode) -> PlanDir {
     let mut dir = match node.name.is_empty() {
         true => PlanDir::root(),

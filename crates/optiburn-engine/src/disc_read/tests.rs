@@ -1,4 +1,6 @@
+use super::salvage::*;
 use super::*;
+use crate::SalvageState;
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 
 /// 内存块源：给手造的区段布局做测试。
@@ -623,7 +625,7 @@ fn last_session_only_switch_parses_its_values() {
 #[test]
 fn a_damaged_last_session_falls_back_to_the_previous_one() {
     // 盘：[起点 1000 的完好会话][起点 2000 的残片]。残片的描述符区是零，读它报
-    // NoIsoSession；候选回退到 1000，并把回退信息报出来。
+    // NoIsoSession。候选回退到 1000，并把回退信息报出来。
     let good = session_bytes(1000, "GOODSESSION", &[("keep.txt", "kept")]);
     let mut disc = disc_with_session(1000, 4096, &good);
     // 残片：起点 2000 处放一段不是 ISO 描述符区的字节，目录结构写着它却读不出来。
@@ -1027,7 +1029,7 @@ fn zip_name_check_survives_multibyte_names() {
 
 #[test]
 fn final_state_treats_an_empty_file_as_complete() {
-    // 零长度文件抽出 0 字节就是完整，不能因为读出来是零就报「一个字节都没写」。
+    // 零长度文件抽出 0 字节就是完整，不能因为读出来是零就报“一个字节都没写”。
     assert_eq!(final_salvage_state(0, 0), SalvageState::Complete);
     assert_eq!(final_salvage_state(2048, 2048), SalvageState::Complete);
     assert_eq!(final_salvage_state(4096, 2048), SalvageState::Complete);

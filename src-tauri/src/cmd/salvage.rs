@@ -89,7 +89,7 @@ fn summary_text(lang: Lang, report: &SalvageReport, dest: &Path) -> String {
         let note = if zip.rebuilt {
             match lang {
                 Lang::Zh => format!(
-                    "「{name}」已重建为可解的 zip：{} 个完整条目，从 {} 起没有保留。",
+                    "“{name}”已重建为可解的 zip：{} 个完整条目，从 {} 起没有保留。",
                     zip.entries,
                     zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
                 ),
@@ -105,7 +105,7 @@ fn summary_text(lang: Lang, report: &SalvageReport, dest: &Path) -> String {
             });
             match lang {
                 Lang::Zh => format!(
-                    "「{name}」的中断点落在第一条「{dropped}」里面，没有可保留的完整 zip 条目，按原始字节保留。"
+                    "“{name}”的中断点落在第一条“{dropped}”里面，没有可保留的完整 zip 条目，按原始字节保留。"
                 ),
                 Lang::En => format!(
                     "The cut inside \"{name}\" falls inside its first entry \"{dropped}\", so no complete zip entry could be kept and the raw bytes were left in place."
@@ -114,7 +114,7 @@ fn summary_text(lang: Lang, report: &SalvageReport, dest: &Path) -> String {
         } else {
             match lang {
                 Lang::Zh => format!(
-                    "「{name}」有 {} 个完整条目，但超出普通 zip 的表达范围，没有重建，按原始字节保留。",
+                    "“{name}”有 {} 个完整条目，但超出普通 zip 的表达范围，没有重建，按原始字节保留。",
                     zip.entries
                 ),
                 Lang::En => format!(
@@ -197,7 +197,7 @@ mod tests {
         let text = summary_text(Lang::Zh, &report, &PathBuf::from("C:/out"));
         assert!(text.starts_with("已抢救 3 个文件到 C:/out：完整 1，半截 1，一个字节都没写 1。"));
         assert!(
-            text.contains("「pack.zip」的中断点落在第一条「Atlas Playbook v0.5.0.apbx」里面"),
+            text.contains("“pack.zip”的中断点落在第一条“Atlas Playbook v0.5.0.apbx”里面"),
             "{text}"
         );
         // 重建成功的分支另给一份说明。

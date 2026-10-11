@@ -129,7 +129,7 @@ export function onCloseBlocked(handler: () => void): Promise<UnlistenFn> {
   return listen("close-blocked", () => handler());
 }
 
-// 倍速留空表示交给驱动自选；小数与超出 u32 的值同样按留空处理：
+// 倍速留空表示交给驱动自选。小数与超出 u32 的值同样按留空处理：
 // 后端反序列化不了，会以英文报错拒绝并透传给界面。
 export function speedOption(value: string): number | null {
   const parsed = Number(value);

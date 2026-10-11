@@ -1,12 +1,12 @@
 //! 截断 zip 的抢救：按本地文件头链走一遍，只保留完整的条目，重建中央目录。
 //!
-//! 中断写入留下的 zip 是「前若干个条目完整、最后一个条目截断、中央目录完全缺失」
-//! 的形态。中央目录在文件尾，因此原始文件既解不开也没法用常规工具修复；这里按
+//! 中断写入留下的 zip 是“前若干个条目完整、最后一个条目截断、中央目录完全缺失”
+//! 的形态。中央目录在文件尾，因此原始文件既解不开也没法用常规工具修复。这里按
 //! 本地头链把完整的条目挑出来，重新写一份带中央目录与 EOCD 的 zip，让常规解压
 //! 工具能直接用。
 //!
-//! 判定「完整」用两条：条目数据按本地头（或数据描述符）给出的长度能在可读范围
-//! 内取全；条目的 CRC32 与数据对得上。第二条能挡住中断点落在数据中间、而下一个
+//! 判定“完整”用两条：条目数据按本地头（或数据描述符）给出的长度能在可读范围
+//! 内取全。条目的 CRC32 与数据对得上。第二条能挡住中断点落在数据中间、而下一个
 //! 本地头又恰好出现在预期位置的情况。
 
 use std::io::Write;
@@ -97,7 +97,7 @@ fn fits_plain_zip(entries: &[Entry]) -> bool {
 type ScanOutcome = Result<Option<(Vec<Entry>, Option<String>)>, BurnError>;
 
 /// 走本地头链。`None` 表示不是 zip 本地头链，或结构本来就是全的（见到中央目录或
-/// EOCD，说明读到的其实是完整文件）；`Some` 表示链是 zip 的链，附带完整条目与
+/// EOCD，说明读到的其实是完整文件）。`Some` 表示链是 zip 的链，附带完整条目与
 /// 中断点落在的那个条目名。
 fn scan_entries(data: &[u8]) -> ScanOutcome {
     if !data.starts_with(b"PK\x03\x04") {
@@ -126,7 +126,7 @@ fn scan_entries(data: &[u8]) -> ScanOutcome {
 /// 解析偏移处的一条本地头，签名不对返回 `None`（链断）。
 ///
 /// 数据描述符（通用位标记 bit 3）的情况：长度字段是 0，真实长度在数据后面的描述符
-/// 里。这里按「下一个本地头的位置倒退」定出数据长度，因此描述符含不含签名都能认。
+/// 里。这里按“下一个本地头的位置倒退”定出数据长度，因此描述符含不含签名都能认。
 fn parse_entry(data: &[u8], offset: usize) -> Result<Option<Entry>, BurnError> {
     let header = data.get(offset..offset + 30);
     let Some(header) = header else {
@@ -271,7 +271,7 @@ fn entry_complete(data: &[u8], entry: &Entry) -> Result<bool, BurnError> {
     }
     let data_start = entry.start + 30 + entry.name.len() + entry.extra_len as usize;
     let payload = &data[data_start..data_start + entry.data_len];
-    // 压缩过的数据要解压才能核对 CRC，这里只核长度；长度对得上、数据读得出来，
+    // 压缩过的数据要解压才能核对 CRC，这里只核长度。长度对得上、数据读得出来，
     // 已经足够判断条目写没写完。
     if entry.method == 0 && entry.crc != 0 {
         return Ok(crc32(payload) == entry.crc);

@@ -55,9 +55,9 @@ pub(crate) fn grow(
 /// xorriso 自己算 ISO 9660/Joliet/UDF 的目录开销与合并盘上旧目录的增量，比把
 /// 源目录文件大小求和准确：小文件多的目录里，每文件半扇区取整加三份目录结构
 /// 会让求和显著低估。实测（1.5.6）：关键行在 stdout，形态 `Image size   : 288s`
-/// （冒号前有对齐空格，数值尾部 `s`，单位 2048 字节块）；数值只含即将提交的新
+/// （冒号前有对齐空格，数值尾部 `s`，单位 2048 字节块）。数值只含即将提交的新
 /// 区段，盘上已有区段不在内，与 READ FORMAT CAPACITIES 算出的可用容量同口径。
-/// 预演在一次性介质上不写入（写入只发生在 `-commit`）；可覆写介质（含 xorriso
+/// 预演在一次性介质上不写入（写入只发生在 `-commit`）。可覆写介质（含 xorriso
 /// 的 stdio 文件目标）在退出时会自动提交，那是目标介质的行为，与 `-print_size`
 /// 无关（实测）。
 /// Linux 侧的修复：交给 xorriso 的 `-close_damaged`（libburn 的
@@ -206,7 +206,7 @@ impl BurnFailure {
 ///
 /// 取消是协作式的：令牌只能在读到一行 stderr 的间隙里被检查，置位就杀掉子进程
 /// 并返回 [`BurnError::Cancelled`]。子进程已自然写完退出时，迟到的取消不再起
-/// 作用——盘已写完，仍按成功返回。
+/// 作用。盘已写完，仍按成功返回。
 ///
 /// 单独抽出来是为了能用本地 shell 脚本当替身测试：`xorriso` 的参数由调用方给，
 /// 这里只管进程、进度、取消与失败摘要。读侧的抽取也复用它。
@@ -242,7 +242,7 @@ pub(crate) fn run(
         }
         tail.push_back(line);
         if cancel.is_cancelled() {
-            // 先杀再收尸，避免留下僵尸进程；退出码反正是 Cancelled，无须再看。
+            // 先杀再收尸，避免留下僵尸进程。退出码反正是 Cancelled，无须再看。
             child.kill()?;
             child.wait()?;
             return Err(BurnError::Cancelled);
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn print_size_args_share_the_grow_table_without_close_or_commit() {
-        // 预演必须与实际提交看到同一份输入（设备、倍速、卷标、映射），只换尾命令；
+        // 预演必须与实际提交看到同一份输入（设备、倍速、卷标、映射），只换尾命令。
         // 封盘开关与预演无关，不携带。
         let job = GrowJob {
             src: PathBuf::from("/tmp/stage"),

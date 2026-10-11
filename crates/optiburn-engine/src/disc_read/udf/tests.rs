@@ -309,7 +309,7 @@ fn find_block_with_tag(image: &[u8], id: u16) -> u32 {
 /// 位置发现，`udf_read_ptagged` 把描述符内容里的地址当物理块用、拿“分区内逻辑块号”
 /// 校验分区内描述符的 tag）：卷结构描述符（tag 标识 1 到 9，位于分区之外）的
 /// tag_location 与内容里的卷空间地址（AVDP 的两个 extent、PD 的
-/// partitionStartingLocation、LVD 的完整性 extent、USD 的分配描述符）都加 `shift`；
+/// partitionStartingLocation、LVD 的完整性 extent、USD 的分配描述符）都加 `shift`。
 /// 分区内描述符（FSD、File Entry、FID）的 tag_location 不动。改过 payload 的重算
 /// CRC，改过 tag 的重算 tag 校验和。
 fn displace_to_disc_absolute(image: &mut [u8], shift: u32) {
@@ -664,7 +664,7 @@ fn disc_absolute_multi_session_fixture_reads() {
 
 #[test]
 fn source_seek_end_works_with_the_unknown_length_sentinel() {
-    // 设备路径的 len 是哨兵值；hadris 读文件前会 `seek(End(0))` 做越界判断，
+    // 设备路径的 len 是哨兵值。hadris 读文件前会 `seek(End(0))` 做越界判断，
     // 哨兵值转 i64 必须仍是正数。
     let mut source = UdfSource::new(
         Box::new(MemoryBlocks(vec![0u8; 4 * SECTOR_BYTES])),

@@ -397,7 +397,7 @@ impl MmcDevice {
 
     /// 尝试关掉被中断写入留下的损坏轨道与区段（libburn 的 `burn_disc_close_damaged`，
     /// xorriso 的 `-close_damaged`）：CD 与 DVD-R 族先下发写参数页（CD 用 TAO，
-    /// DVD-R 用增量写），再关区段；+R 族与 BD-R 不发参数页，关最后一条轨道后再按
+    /// DVD-R 用增量写），再关区段。+R 族与 BD-R 不发参数页，关最后一条轨道后再按
     /// 需要关区段。区段是否留在可追加状态由 `multi` 决定（写参数页的 multi 位）。
     ///
     /// 驱动器不支持这条修复路径时返回错误，调用方按“不可写”报告。
@@ -479,7 +479,7 @@ pub enum WriteBlock {
 }
 
 /// 写前门禁：可追加盘不接受镜像写入（单区段镜像不带前面区段的目录树，会遮住
-/// 已有文件），已封口盘一律拒绝；空盘与随机可写（Other，无多区段遮蔽问题）放行。
+/// 已有文件），已封口盘一律拒绝。空盘与随机可写（Other，无多区段遮蔽问题）放行。
 /// `accept_appendable` 只留给走增长模式的追加路径。
 pub fn approve_write(info: &DiscInformation, accept_appendable: bool) -> Result<(), WriteBlock> {
     match info.status {
@@ -1062,7 +1062,7 @@ mod tests {
         assert_eq!(decode_ascii(b"        "), "");
     }
 
-    /// TEST UNIT READY（CDB 首字节 0x00）先报固定次数的“命令失败”，之后放行；
+    /// TEST UNIT READY（CDB 首字节 0x00）先报固定次数的“命令失败”，之后放行。
     /// 其余命令一律成功。模拟盘片上电识别期。
     struct FlakyReadyTransport {
         failures_left: Rc<Cell<u32>>,

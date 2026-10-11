@@ -79,7 +79,7 @@ impl ReadBackend for XorrisoRead {
         _dest: &Path,
         _cancel: &CancelToken,
     ) -> Result<Option<SalvageReport>, BurnError> {
-        // xorriso 只认 TOC 里登记过的会话；未关闭轨道（中断写入）的内容它看不见。
+        // xorriso 只认 TOC 里登记过的会话。未关闭轨道（中断写入）的内容它看不见。
         Err(BurnError::ReadFailed(
             "xorriso cannot read an unclosed session (this needs the native read path)".to_string(),
         ))
@@ -157,7 +157,7 @@ pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
 /// 里的内容（ADR-0022 补记）。普通读路径与追加门禁不受影响，仍以最后一个已关闭
 /// 会话为准。
 ///
-/// 驱动器不报开放轨道、或它的树读不出来时返回 `Ok(None)`；Linux 的 xorriso 路径
+/// 驱动器不报开放轨道、或它的树读不出来时返回 `Ok(None)`。Linux 的 xorriso 路径
 /// 没有这个能力，返回错误说明。
 pub fn salvage(
     source: &str,
@@ -372,7 +372,7 @@ fn read_side_error(error: BurnError) -> BurnError {
 ///
 /// 盘片内容不能当可信输入：Windows 上 `C:` 这类带盘符前缀的段会让 `Path` 的拼接
 /// 替换掉已累积的路径，把文件抽到暂存目录之外（实测 xorriso 能写出这样的镜像）。
-/// 每段都要查，冒号本身不拒绝，只有「单个 ASCII 字母加冒号」这种盘符形态段不放行，
+/// 每段都要查，冒号本身不拒绝，只有“单个 ASCII 字母加冒号”这种盘符形态段不放行，
 /// `12:30.txt` 这类普通名字照常通过。原生读侧（`disc_read`）落盘文件名也过这层。
 pub(crate) fn safe_relative_path(path: &str) -> Result<PathBuf, BurnError> {
     let mut relative = PathBuf::new();

@@ -22,7 +22,7 @@ const NAV_ITEMS: { id: PageId; label: string; icon: typeof Disc3 }[] = [
   { id: "build", label: t("Create Image", "制作镜像"), icon: FileArchive },
 ];
 
-// 制作镜像没有进度回调，只显示动作本身；其余两种有百分比就带上。
+// 制作镜像没有进度回调，只显示动作本身。其余两种有百分比就带上。
 function jobStatusText(job: ActiveJob): string {
   if (job.kind === "build") {
     return t("Creating image…", "正在制作镜像……");
@@ -66,7 +66,7 @@ export function App() {
     setJob((current) => current ?? { kind, fraction: null });
   }, []);
 
-  // invoke 被立即拒绝时不会有 job-done 事件，用这里解锁并展示原因；
+  // invoke 被立即拒绝时不会有 job-done 事件，用这里解锁并展示原因。
   // 若任务已由事件接管（kind 不匹配），这里不动任何状态。
   const abortJob = useCallback((kind: JobKind, message?: string) => {
     setJob((current) =>

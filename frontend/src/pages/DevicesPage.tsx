@@ -369,7 +369,7 @@ export function DevicesPage({
         title={t("Salvage interrupted write", "抢救中断写入的数据")}
         message={t(
           "If a burn was interrupted, the data written up to the cut is still on the disc but not in its visible directory. This reads it out into a folder you pick, and only reads the disc: it changes nothing on it. The report says which files are complete and which are cut short. Rescue first, repair later: repairing closes the interrupted track and this entry disappears with it.",
-          "如果上一次刻录被中断，写到中断点为止的数据还在盘上，但不在盘的可见目录里。这个动作把它读到您选的目录，全程只读盘面，不改动盘上的数据；结果会说明哪些文件完整、哪些只写了一半。顺序是先抢救、后修复：修复会关掉中断的轨道与区段，这个入口也随之消失。",
+          "如果上一次刻录被中断，写到中断点为止的数据还在盘上，但不在盘的可见目录里。这个动作把它读到您选的目录，全程只读盘面，不改动盘上的数据。结果会说明哪些文件完整、哪些只写了一半。顺序是先抢救、后修复：修复会关掉中断的轨道与区段，这个入口也随之消失。",
         )}
         confirmText={t("Choose a folder…", "选择目录并开始")}
         cancelText={t("Cancel", "取消")}
