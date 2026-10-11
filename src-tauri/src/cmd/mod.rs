@@ -18,6 +18,7 @@ use crate::i18n::{Lang, lang, pick};
 use crate::job::{JobKind, JobState, RunningJob};
 
 pub(crate) mod copy;
+pub(crate) mod salvage;
 pub(crate) mod verify;
 
 /// 一台光驱及其盘片状态，字段与前端 `types.ts` 的 `DeviceInfo` 一一对应。

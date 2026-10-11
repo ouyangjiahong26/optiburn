@@ -33,6 +33,9 @@ function jobStatusText(job: ActiveJob): string {
   if (job.kind === "copy") {
     return t("Copying files from disc…", "正在复制盘上文件……");
   }
+  if (job.kind === "salvage") {
+    return t("Salvaging the unclosed track…", "正在抢救未关闭轨道里的数据……");
+  }
   return job.fraction === null
     ? t(
         job.kind === "burn" ? "Burning…" : "Appending…",
@@ -139,7 +142,8 @@ export function App() {
               <span className="job-status">{jobStatusText(job)}</span>
               {(job.kind === "burn" ||
                 job.kind === "append" ||
-                job.kind === "copy") && (
+                job.kind === "copy" ||
+                job.kind === "salvage") && (
                 <button
                   type="button"
                   className="btn btn-danger"

@@ -87,6 +87,15 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// 抢救未关闭轨道（刻录中断的那一次写入）里的数据，能读的部分抽到目录里
+    Salvage {
+        /// 目标设备，例如 E:
+        #[arg(long)]
+        device: String,
+        /// 抽取目录，抢救出来的文件按盘上路径写进去
+        #[arg(long)]
+        dest: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -139,6 +148,7 @@ fn main() -> ExitCode {
         ),
         Command::Probe => probe_command(),
         Command::Repair { device, force } => repair_command(&device, force),
+        Command::Salvage { device, dest } => salvage_command(&device, &dest),
     };
 
     match outcome {
@@ -359,6 +369,72 @@ fn ensure_burnable(
         println!("盘上已有 {} 个区段，将追加新区段。", info.sessions);
     }
     Ok(damaged)
+}
+
+/// 抢救未关闭轨道里的数据，把每个文件的状态与抽到哪里报出来（ADR-0022 补记）。
+fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
+    let report = optiburn_engine::salvage(device, dest, &CancelToken::default())
+        .map_err(|e| read_error_text("抢救未关闭轨道", &e))?;
+    let Some(report) = report else {
+        println!("盘上没有未关闭轨道（没有中断的写入，或它的目录树读不出来）：没有可抢救的内容。");
+        return Ok(());
+    };
+    println!(
+        "未关闭轨道起点 {}，已经写下去的边界 {}（{} 块，约 {}）。",
+        report.session_start,
+        report.boundary,
+        report.boundary - report.session_start,
+        bytes_text(u64::from(report.boundary - report.session_start) * 2048),
+    );
+    println!(
+        "目录树里有 {} 个文件：完整 {}，半截 {}，一个字节都没写 {}。",
+        report.files.len(),
+        report.complete(),
+        report.truncated(),
+        report.missing()
+    );
+    println!("抢救目录：{}", dest.display());
+    for file in &report.files {
+        match file.state {
+            optiburn_engine::SalvageState::Complete => {
+                println!("  [完整] {}（{}）", file.path, bytes_text(file.size));
+            }
+            optiburn_engine::SalvageState::Truncated { readable_bytes } => println!(
+                "  [半截] {}（能读 {}，原大小 {}）",
+                file.path,
+                bytes_text(readable_bytes.min(file.size)),
+                bytes_text(file.size)
+            ),
+            optiburn_engine::SalvageState::Missing => {
+                println!(
+                    "  [没有] {}（{}，中断点在它之前）",
+                    file.path,
+                    bytes_text(file.size)
+                );
+            }
+        }
+        if let Some(zip) = &file.zip {
+            if zip.entries == 0 {
+                println!(
+                    "        中断点落在第一条「{}」里面，没有可保留的完整 zip 条目，文件按原始字节保留。",
+                    zip.dropped_entry.as_deref().unwrap_or("未知名条目")
+                );
+            } else {
+                println!(
+                    "        已重建为可解的 zip：{} 个完整条目，解压前共 {}；{} 没写完，没有保留。",
+                    zip.entries,
+                    bytes_text(zip.stored_bytes),
+                    zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
+                );
+            }
+        }
+    }
+    if report.missing() > 0 {
+        println!(
+            "注意：标“没有”的文件只在这个中断的会话里存在才需要抢救；同名文件若在更早的已关闭区段里，用普通读盘取出来更完整。"
+        );
+    }
+    Ok(())
 }
 
 /// 尝试修复损坏的轨道与区段，并把修复前后的状态报出来（对齐 xorriso 的

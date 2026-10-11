@@ -410,7 +410,7 @@ fn start_lba(mmc: &mut MmcDevice, status: DiscStatus) -> Result<u32, BurnError> 
 
 /// READ TRACK INFORMATION 的轨道号约定：CD 上用 0xFF 表示“当前可写的那条”
 /// （libburn 对 CD 同样传 0xFF，见其 mmc_read_track_info）。
-const LAST_TRACK: u32 = 0xFF;
+pub(crate) const LAST_TRACK: u32 = 0xFF;
 
 /// 镜像的块数：向上取整到 2048 字节块，末块不足时写零补齐。
 fn image_blocks(job: &BurnJob) -> Result<u64, BurnError> {

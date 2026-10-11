@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::{BurnError, CancelToken, IsoSessionState, TAIL_LINES, XORRISO};
+use crate::{BurnError, CancelToken, IsoSessionState, SalvageReport, TAIL_LINES, XORRISO};
 
 use super::disc_read::NativeRead;
 use super::xorriso::run;
@@ -32,6 +32,13 @@ pub(crate) trait ReadBackend {
         dest: &Path,
         cancel: &CancelToken,
     ) -> Result<(), BurnError>;
+    /// 抢救未关闭轨道里的数据，见 [`crate::salvage`]。
+    fn salvage(
+        &self,
+        source: &str,
+        dest: &Path,
+        cancel: &CancelToken,
+    ) -> Result<Option<SalvageReport>, BurnError>;
 }
 
 /// 选读侧后端：Windows 走原生（那边没有能访问光驱的 xorriso），Linux 维持该侧的
@@ -64,6 +71,20 @@ impl ReadBackend for XorrisoRead {
     /// Linux 侧只有“能不能按 ISO 9660 读”这一个判断，没有候选回退：xorriso 读不到
     /// 就是读不到，因此损坏末区段这条盘在这里归 [`IsoSessionState::Unusable`]
     /// （ADR-0022 的后果节记录了这条平台差异，Windows 侧才有回退）。
+    /// 抢救未关闭轨道：xorriso 只认 TOC 里登记过的会话，看不见未关闭轨道（中断
+    /// 写入）里的内容，这条能力只有原生读侧有（ADR-0022 补记）。
+    fn salvage(
+        &self,
+        _source: &str,
+        _dest: &Path,
+        _cancel: &CancelToken,
+    ) -> Result<Option<SalvageReport>, BurnError> {
+        // xorriso 只认 TOC 里登记过的会话；未关闭轨道（中断写入）的内容它看不见。
+        Err(BurnError::ReadFailed(
+            "xorriso cannot read an unclosed session (this needs the native read path)".to_string(),
+        ))
+    }
+
     fn iso_session_state(&self, device: &str) -> Result<IsoSessionState, BurnError> {
         let (_, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
         if is_blank_image_fallback(&stderr) {
@@ -126,6 +147,24 @@ impl ReadBackend for XorrisoRead {
 /// 非 ASCII 卷标原样输出。
 pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
     read_backend().read_volume_id(device)
+}
+
+/// 抢救未关闭轨道（中断写入）里的数据：列出它的目录树，按"已经写下去的数据边界"
+/// 给每个文件定性（完整、只写了一部分、一个字节都没写），把完整与半截的文件抽到
+/// `dest`。
+///
+/// 这条路径超出 libburn 的能力：xorriso 只认 TOC 里登记过的会话，看不见未关闭轨道
+/// 里的内容（ADR-0022 补记）。普通读路径与追加门禁不受影响，仍以最后一个已关闭
+/// 会话为准。
+///
+/// 驱动器不报开放轨道、或它的树读不出来时返回 `Ok(None)`；Linux 的 xorriso 路径
+/// 没有这个能力，返回错误说明。
+pub fn salvage(
+    source: &str,
+    dest: &Path,
+    cancel: &CancelToken,
+) -> Result<Option<SalvageReport>, BurnError> {
+    read_backend().salvage(source, dest, cancel)
 }
 
 /// 盘上 ISO 9660 会话的可用状态，追加前门禁用它分流（ADR-0022）。

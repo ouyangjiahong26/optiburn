@@ -530,6 +530,87 @@ fn candidates_come_from_the_track_list_newest_first() {
 }
 
 #[test]
+fn salvage_classification_uses_the_written_boundary() {
+    const BOUNDARY: u32 = 1100;
+    // 整段在边界之前：完整。
+    assert_eq!(
+        classify_salvage_state(1000, 2048, BOUNDARY),
+        SalvageState::Complete
+    );
+    // 跨过边界：半截，能读多少算多少。
+    assert_eq!(
+        classify_salvage_state(1099, 4096, BOUNDARY),
+        SalvageState::Truncated {
+            readable_bytes: 2048
+        }
+    );
+    // 起点就在边界之后：一个字节都没写。
+    assert_eq!(
+        classify_salvage_state(1100, 4096, BOUNDARY),
+        SalvageState::Missing
+    );
+    // 零长度文件不需要数据，算完整。
+    assert_eq!(
+        classify_salvage_state(2000, 0, BOUNDARY),
+        SalvageState::Complete
+    );
+}
+
+#[test]
+fn written_boundary_binary_searches_the_first_unreadable_block() {
+    const START: u32 = 301_170;
+    const WRITTEN: u32 = 9_253;
+    let mut reads = 0u32;
+    let mut read = |lba: u32, out: &mut [u8]| {
+        reads += 1;
+        if lba >= START + WRITTEN {
+            return Err(BurnError::ReadFailed("未写位置读失败".to_string()));
+        }
+        out.fill(0xAB);
+        Ok(())
+    };
+    let boundary = written_boundary(&mut read, START, 23_438, &CancelToken::default())
+        .expect("扫描要给出边界");
+    assert_eq!(boundary, START + WRITTEN);
+    // 二分：两万三千多块只读十几次，线性扫要读九千多块。
+    assert!(reads <= 20, "读次数 {reads} 应是对数级");
+}
+
+#[test]
+fn written_boundary_counts_all_zero_blocks_as_written() {
+    // 会话开头的系统区就是全零，文件内容也可以是零：全零不算中断点。
+    let mut read = |lba: u32, out: &mut [u8]| {
+        if lba >= 1700 {
+            return Err(BurnError::ReadFailed("未写位置读失败".to_string()));
+        }
+        out.fill(0);
+        Ok(())
+    };
+    let boundary =
+        written_boundary(&mut read, 1000, 5000, &CancelToken::default()).expect("扫描要给出边界");
+    assert_eq!(boundary, 1700);
+}
+
+#[test]
+fn written_boundary_is_the_start_when_the_first_block_fails() {
+    let mut read = |_lba: u32, _out: &mut [u8]| Err(BurnError::ReadFailed("读失败".to_string()));
+    let boundary =
+        written_boundary(&mut read, 500, 100, &CancelToken::default()).expect("扫描要给出边界");
+    assert_eq!(boundary, 500);
+}
+
+#[test]
+fn written_boundary_reaches_the_session_end_when_everything_reads() {
+    let mut read = |_lba: u32, out: &mut [u8]| {
+        out.fill(7);
+        Ok(())
+    };
+    let boundary =
+        written_boundary(&mut read, 500, 100, &CancelToken::default()).expect("扫描要给出边界");
+    assert_eq!(boundary, 600);
+}
+
+#[test]
 fn last_session_only_switch_parses_its_values() {
     assert!(!last_session_only_value(None), "默认关");
     assert!(!last_session_only_value(Some("")));
@@ -695,4 +776,240 @@ mod hardware_tests {
             entries.first()
         );
     }
+}
+
+/// 手造一个"存储"（不压缩）的 zip：多个条目加中央目录与 EOCD。
+fn build_stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut offsets = Vec::new();
+    for (name, payload) in entries {
+        offsets.push(out.len() as u32);
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // 不压缩
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&zip_recover::crc32(payload).to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(payload);
+    }
+    let directory_offset = out.len() as u32;
+    for ((name, payload), offset) in entries.iter().zip(&offsets) {
+        out.extend_from_slice(b"PK\x01\x02");
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&zip_recover::crc32(payload).to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+    }
+    let directory_size = out.len() as u32 - directory_offset;
+    let count = entries.len() as u16;
+    out.extend_from_slice(b"PK\x05\x06");
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&directory_size.to_le_bytes());
+    out.extend_from_slice(&directory_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+#[test]
+fn truncated_zip_keeps_only_complete_entries() {
+    let zip = build_stored_zip(&[
+        ("a.txt", b"aaaa"),
+        ("b.txt", b"bbbbbbbb"),
+        ("c.txt", b"cccccccccccc"),
+    ]);
+    // 砍在第三个条目的数据中间：前两条完整，第三条不完整，中央目录全丢。
+    let keep = 30 + 5 + 4 + 30 + 5 + 8 + 30 + 5 + 6;
+    let truncated = zip[..keep].to_vec();
+
+    let dir = std::env::temp_dir().join("optiburn-zip-recover-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cut.zip");
+    std::fs::write(&path, &truncated).unwrap();
+
+    let salvaged = zip_recover::recover_truncated_zip(&path)
+        .unwrap()
+        .expect("应重建");
+    assert_eq!(salvaged.entries, 2);
+    assert_eq!(salvaged.stored_bytes, 12);
+    assert_eq!(salvaged.dropped_entry.as_deref(), Some("c.txt"));
+
+    // 重建后的文件应等于"两条条目的原样字节 + 中央目录与 EOCD"。
+    let rebuilt = std::fs::read(&path).unwrap();
+    let complete = build_stored_zip(&[("a.txt", b"aaaa"), ("b.txt", b"bbbbbbbb")]);
+    let eocd = &rebuilt[rebuilt.len() - 22..];
+    assert_eq!(&eocd[..4], b"PK\x05\x06", "末尾要有 EOCD");
+    assert_eq!(
+        u16::from_le_bytes([eocd[10], eocd[11]]),
+        2,
+        "EOCD 报两条条目"
+    );
+    assert_eq!(
+        &rebuilt[..rebuilt.len() - 22],
+        &complete[..complete.len() - 22]
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn intact_zip_is_not_rebuilt() {
+    let zip = build_stored_zip(&[("a.txt", b"aaaa")]);
+    let dir = std::env::temp_dir().join("optiburn-zip-recover-test-3");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("whole.zip");
+    std::fs::write(&path, &zip).unwrap();
+    assert!(zip_recover::recover_truncated_zip(&path).unwrap().is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), zip);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 手造一个带数据描述符（通用位 bit 3）的 zip：本地头的长度字段是零，真实长度在
+/// 数据后的描述符里。`with_signature` 决定描述符带不带 `PK\x07\x08` 签名。
+fn build_descriptor_zip(entries: &[(&str, &[u8])], with_signature: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut offsets = Vec::new();
+    let mut records = Vec::new();
+    for (name, payload) in entries {
+        offsets.push(out.len() as u32);
+        let crc = zip_recover::crc32(payload);
+        out.extend_from_slice(b"PK\x03\x04");
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0b1000u16.to_le_bytes()); // bit 3：长度写在描述符里
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // CRC 与两个长度都是零
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(payload);
+        if with_signature {
+            out.extend_from_slice(b"PK\x07\x08");
+        }
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        records.push((crc, payload.len() as u32));
+    }
+    let directory_offset = out.len() as u32;
+    for (index, (name, _)) in entries.iter().enumerate() {
+        let (crc, size) = records[index];
+        out.extend_from_slice(b"PK\x01\x02");
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&20u16.to_le_bytes());
+        out.extend_from_slice(&0b1000u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&crc.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&offsets[index].to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+    }
+    let directory_size = out.len() as u32 - directory_offset;
+    let count = entries.len() as u16;
+    out.extend_from_slice(b"PK\x05\x06");
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&directory_size.to_le_bytes());
+    out.extend_from_slice(&directory_offset.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+#[test]
+fn descriptor_style_zip_keeps_only_complete_entries() {
+    for with_signature in [true, false] {
+        let zip = build_descriptor_zip(
+            &[
+                ("a.txt", b"aaaa"),
+                ("b.txt", b"bbbbbbbb"),
+                ("c.txt", b"cccccc"),
+            ],
+            with_signature,
+        );
+        // 砍在第三个条目的数据中间（它的本地头 30 + 名字 5 + 数据 6 只留 3 字节）。
+        let keep =
+            zip.len() - 22 - (3 * (46 + 5)) - (6 + 4 + 4 + if with_signature { 4 } else { 0 }) + 3;
+        let cut = zip[..keep].to_vec();
+        let dir = std::env::temp_dir().join("optiburn-zip-descriptor-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cut.zip");
+        std::fs::write(&path, &cut).unwrap();
+
+        let salvaged = zip_recover::recover_truncated_zip(&path)
+            .unwrap()
+            .unwrap_or_else(|| panic!("带签名={with_signature} 时应识别出 zip 链"));
+        assert_eq!(salvaged.entries, 2, "带签名={with_signature}");
+        assert_eq!(salvaged.stored_bytes, 12, "带签名={with_signature}");
+        assert_eq!(salvaged.dropped_entry.as_deref(), Some("c.txt"));
+        // 重建后的 zip 里两条条目的长度字段要靠描述符取得（本地头是零）。
+        let rebuilt = std::fs::read(&path).unwrap();
+        let directory_start = rebuilt
+            .windows(4)
+            .position(|window| window == b"PK\x01\x02")
+            .expect("重建后要有中央目录");
+        let first = &rebuilt[directory_start..];
+        assert_eq!(
+            u32::from_le_bytes([first[20], first[21], first[22], first[23]]),
+            4,
+            "第一条的压缩长度应来自描述符"
+        );
+        assert_eq!(
+            u32::from_le_bytes([first[24], first[25], first[26], first[27]]),
+            4,
+            "第一条的解压长度应来自描述符"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[test]
+fn zip_cut_inside_the_first_entry_reports_it_without_rewriting() {
+    let zip = build_stored_zip(&[("big.bin", &[7u8; 4000])]);
+    let cut = zip[..100].to_vec();
+    let dir = std::env::temp_dir().join("optiburn-zip-first-entry-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cut.zip");
+    std::fs::write(&path, &cut).unwrap();
+
+    let salvaged = zip_recover::recover_truncated_zip(&path)
+        .unwrap()
+        .expect("应识别出 zip 链");
+    assert_eq!(salvaged.entries, 0);
+    assert_eq!(salvaged.dropped_entry.as_deref(), Some("big.bin"));
+    assert_eq!(std::fs::read(&path).unwrap(), cut, "没有完整条目就不重写");
+    std::fs::remove_dir_all(&dir).ok();
 }

@@ -27,7 +27,7 @@ mod xorriso;
 
 pub use native::NativeEngine;
 pub use readback::{
-    DiscEntry, extract_paths, extract_tree, iso_session_state, list_tree, read_volume_id,
+    DiscEntry, extract_paths, extract_tree, iso_session_state, list_tree, read_volume_id, salvage,
 };
 pub use verify::compare_trees;
 pub use xorriso::{BurnFailure, XorrisoEngine};
@@ -133,6 +133,78 @@ pub struct SessionFallback {
     pub candidates: usize,
     /// 选中区段的起点（盘级块号）。
     pub session_start: u32,
+}
+
+/// 抢救未关闭轨道（中断写入）时的文件状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SalvageState {
+    /// 数据完整写在盘上。
+    Complete,
+    /// 只写了一部分，`readable_bytes` 是能读出来的字节数。
+    Truncated { readable_bytes: u64 },
+    /// 一个字节都没写（中断点在这个文件的数据之前）。
+    Missing,
+}
+
+/// 抢救结果里的一条文件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SalvagedFile {
+    pub path: String,
+    pub size: u64,
+    pub state: SalvageState,
+    /// 半截的 `.zip` 被重建后（只保留完整条目）的统计，其他情况为 `None`。
+    pub zip: Option<ZipSalvage>,
+}
+
+/// 截断 zip 的重建结果：把能读出来的部分里完整的条目抽成一个新的 zip。
+///
+/// `entries` 为 0 表示链是 zip 的链但一条完整条目都没有（中断点落在第一条里面），
+/// 这时文件没有被重写，还是抢救出来的原始字节。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZipSalvage {
+    /// 保留下来（数据读全、校验对得上）的条目数。
+    pub entries: u32,
+    /// 保留的条目解压前的总大小。
+    pub stored_bytes: u64,
+    /// 中断点落在的那个条目名，没保留下来。
+    pub dropped_entry: Option<String>,
+}
+
+/// 抢救未关闭轨道（中断写入）的结果（ADR-0022 补记）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SalvageReport {
+    /// 未关闭轨道的起点。
+    pub session_start: u32,
+    /// 已经写下去的数据边界（不含）。
+    pub boundary: u32,
+    /// 目录树里能列出的文件及各自的状态。
+    pub files: Vec<SalvagedFile>,
+}
+
+impl SalvageReport {
+    /// 状态为完整的文件数。
+    pub fn complete(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| file.state == SalvageState::Complete)
+            .count()
+    }
+
+    /// 只写了一部分的文件数。
+    pub fn truncated(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| matches!(file.state, SalvageState::Truncated { .. }))
+            .count()
+    }
+
+    /// 一个字节都没写的文件数。
+    pub fn missing(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| file.state == SalvageState::Missing)
+            .count()
+    }
 }
 
 /// 修复尝试的结果（`optiburn repair`，对齐 xorriso 的 `-close_damaged`，ADR-0022）。
