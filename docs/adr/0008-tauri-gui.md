@@ -60,3 +60,8 @@ ADR-0012 补记）。增长模式（`append`）仍需 xorriso，那是写侧的�
 上一条补记里的“增长模式仍需 xorriso”已解除：Windows 上 `append` 与 GUI 追加页走
 原生增长模式（嫁接式会话生成），不再依赖外部程序。Linux 仍走 xorriso 增长模式。
 UDF 盘读侧另见 ADR-0021。
+
+## 补记：CLI 增至六个子命令（2026-10-11，ADR-0022）
+
+正文里“四个子命令各有对应页面”已过时：CLI 新增 repair 与 salvage（ADR-0022）。
+GUI 页面仍是四个，salvage 的入口收在设备页，repair 只在命令行。
