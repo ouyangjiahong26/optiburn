@@ -73,7 +73,8 @@ npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 
 硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real`（xorriso 引擎）与
 `native_burn_and_read_back_real`（原生引擎）、`native_grow_and_read_back_real`（原生
-增长模式）需要 `OPTIBURN_DEVICE` 与 `OPTIBURN_IMAGE`。
+增长模式）需要 `OPTIBURN_DEVICE` 与 `OPTIBURN_IMAGE`；`cargo test --manifest-path
+src-tauri/Cargo.toml --lib -- --ignored clipboard_round_trip` 会动系统剪贴板（Windows）。
 CI 没有光驱，默认不跑。本机的 Windows 侧接了 USB 光驱，可用它做真机验证。
 
 ## Key Directories

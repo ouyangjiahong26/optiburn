@@ -9,6 +9,7 @@ import { t } from "../i18n";
 import { capacityLabel, formatBytes } from "../format";
 import type { DiscEntry, JobControls } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
 type ListingState =
   | { kind: "loading" }
@@ -30,6 +31,7 @@ export function DevicesPage({
   const [openDevice, setOpenDevice] = useState<string | null>(null);
   const [listing, setListing] = useState<ListingState | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [salvageConfirmOpen, setSalvageConfirmOpen] = useState(false);
   const anchorRef = useRef<string | null>(null);
   const draggingRef = useRef(false);
   // 清单加载的请求序号：迟到的响应按序号丢弃（见 loadListing）。
@@ -164,8 +166,7 @@ export function DevicesPage({
     }
   }
 
-  // 抢救未关闭轨道：先选目标目录，再占任务槽跑到结束。结果（完整、半截、没写
-  // 各多少，半截 zip 怎么处置）随完成消息给出。
+  // 抢救未关闭轨道：说明放在确认框里（执行那一刻），入口只留一行，首屏不铺长文。
   async function handleSalvage() {
     if (openDevice === null || locked) {
       return;
@@ -262,23 +263,17 @@ export function DevicesPage({
               )}
               {openDevice === device.path && (
                 <div className="disc-listing">
-                  {device.status === "appendable" && (
+                  {(device.status === "appendable" || device.status === "other") && (
                     <div className="disc-toolbar">
                       <button
                         type="button"
                         className="btn"
                         disabled={locked}
-                        onClick={() => void handleSalvage()}
+                        onClick={() => setSalvageConfirmOpen(true)}
                       >
                         <LifeBuoy size={11} />
                         {t("Salvage interrupted write", "抢救中断写入的数据")}
                       </button>
-                      <span className="disc-hint">
-                        {t(
-                          "If a burn was interrupted, the data written up to the cut is still on the disc but not in the disc's visible directory. This reads it out into a folder you pick; the report says which files are complete and which are cut short.",
-                          "如果上一次刻录被中断，写到中断点为止的数据还在盘上，但不在盘的可见目录里。这个动作把它读到您选的目录；结果会说明哪些文件完整、哪些只写了一半。",
-                        )}
-                      </span>
                     </div>
                   )}
                   {listing?.kind === "loading" && (
@@ -369,6 +364,21 @@ export function DevicesPage({
           })}
         </ul>
       )}
+      <ConfirmDialog
+        open={salvageConfirmOpen}
+        title={t("Salvage interrupted write", "抢救中断写入的数据")}
+        message={t(
+          "If a burn was interrupted, the data written up to the cut is still on the disc but not in its visible directory. This reads it out into a folder you pick, and only reads the disc: it changes nothing on it. The report says which files are complete and which are cut short. Rescue first, repair later: repairing closes the interrupted track and this entry disappears with it.",
+          "如果上一次刻录被中断，写到中断点为止的数据还在盘上，但不在盘的可见目录里。这个动作把它读到您选的目录，全程只读盘面，不改动盘上的数据；结果会说明哪些文件完整、哪些只写了一半。顺序是先抢救、后修复：修复会关掉中断的轨道与区段，这个入口也随之消失。",
+        )}
+        confirmText={t("Choose a folder…", "选择目录并开始")}
+        cancelText={t("Cancel", "取消")}
+        onConfirm={() => {
+          setSalvageConfirmOpen(false);
+          void handleSalvage();
+        }}
+        onCancel={() => setSalvageConfirmOpen(false)}
+      />
     </div>
   );
 }

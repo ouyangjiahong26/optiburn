@@ -376,7 +376,11 @@ fn salvage_command(device: &str, dest: &Path) -> Result<(), String> {
     let report = optiburn_engine::salvage(device, dest, &CancelToken::default())
         .map_err(|e| read_error_text("抢救未关闭轨道", &e))?;
     let Some(report) = report else {
-        println!("盘上没有未关闭轨道（没有中断的写入，或它的目录树读不出来）：没有可抢救的内容。");
+        println!(
+            "盘上没有未关闭轨道（没有中断的写入，或它的目录树读不出来）：没有可抢救的内容。\n\
+             盘上若还能看到文件，那是另一种中断形态（残片已被登记成末区段），按普通读盘取即可；\
+             追加时可以选择跳过损坏的残片。"
+        );
         return Ok(());
     };
     println!(

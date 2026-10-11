@@ -52,8 +52,8 @@ fn salvage_blocking(device: &str, dest: &Path, cancel: &CancelToken) -> Result<S
     let Some(report) = report else {
         return Ok(pick(
             lang(),
-            "盘上没有未关闭轨道（没有中断的写入，或它的目录树读不出来）：没有可抢救的内容。",
-            "The disc has no unclosed track (no interrupted write, or its directory tree cannot be read): nothing to salvage.",
+            "盘上没有未关闭轨道（没有中断的写入，或它的目录树读不出来）：没有可抢救的内容。盘上若还能看到文件，那是另一种中断形态（残片已被登记成末区段），按普通读盘取即可。",
+            "The disc has no unclosed track (no interrupted write, or its directory tree cannot be read): nothing to salvage. If the disc still lists files, it is the other interrupted shape (the fragment was registered as a session), and ordinary disc reading gets them out.",
         )
         .to_string());
     };

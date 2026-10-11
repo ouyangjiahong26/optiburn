@@ -35,6 +35,15 @@ optiburn-mastering = { path = "../crates/optiburn-mastering" }
 optiburn-mmc = { path = "../crates/optiburn-mmc" }
 optiburn-transport = { path = "../crates/optiburn-transport" }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# 复制盘上文件到系统剪贴板：CF_HDROP 文件列表加 Preferred DropEffect（ADR-0012 补记）。
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_UI_Shell",
+] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # 复制盘上文件到系统剪贴板要用 GTK3 的剪贴板（提供 GNOME 的复制文件目标）。
 # 版本与 tauri 依赖的 gtk 对齐（0.18）。
