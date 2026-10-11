@@ -664,6 +664,16 @@ pub async fn start_burn(
     Ok(())
 }
 
+/// 追加的写入选项：前端一次传齐，字段名就是调用协议。合成一个结构是为了让命令层
+/// 与任务层都留在 clippy 的参数上限以内（选项变多时不必再往下拆参数）。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppendOptions {
+    speed: Option<u32>,
+    close_disc: bool,
+    allow_damaged_last_session: bool,
+}
+
 /// 把待刻录文件追加到盘上（增长模式）：文件先收进暂存目录，再按盘根写入。
 #[tauri::command]
 pub async fn start_append(
@@ -672,9 +682,7 @@ pub async fn start_append(
     files: Vec<String>,
     device: String,
     volume_id: String,
-    speed: Option<u32>,
-    close_disc: bool,
-    allow_damaged_last_session: bool,
+    options: AppendOptions,
 ) -> Result<(), String> {
     if files.is_empty() {
         return Err(pick(lang(), "待刻录列表是空的。", "The file list is empty.").into());
@@ -682,16 +690,7 @@ pub async fn start_append(
     let cancel = begin_job(&state)?;
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
-        let result = run_append_task(
-            &worker,
-            &cancel,
-            files,
-            &device,
-            &volume_id,
-            speed,
-            close_disc,
-            allow_damaged_last_session,
-        );
+        let result = run_append_task(&worker, &cancel, files, &device, &volume_id, options);
         match result {
             Ok(message) => finish_job(&worker, JobKind::Append, "done", None, message),
             Err(e) => {
@@ -710,15 +709,13 @@ fn run_append_task(
     files: Vec<String>,
     device: &str,
     volume_id: &str,
-    speed: Option<u32>,
-    close_disc: bool,
-    allow_damaged_last_session: bool,
+    options: AppendOptions,
 ) -> Result<String, JobError> {
     // 门禁先跑：挂载、封口、末区段格式这些拒绝都发生在把文件拷进暂存之前。
     // 末区段损坏时门禁会带回回退信息：没有用户确认（勾选/参数）就拒绝，确认了
     // 也要在日志里说清跳过了什么（ADR-0022）。
     if let Some(fallback) = check_write_gates(device, true)?
-        && !allow_damaged_last_session
+        && !options.allow_damaged_last_session
     {
         return Err(JobError::DamagedSession { fallback });
     }
@@ -735,9 +732,9 @@ fn run_append_task(
         path: &stage,
         device,
         volume_id,
-        speed,
-        close_disc,
-        allow_damaged_last_session,
+        speed: options.speed,
+        close_disc: options.close_disc,
+        allow_damaged_last_session: options.allow_damaged_last_session,
         cancel,
     });
     let _ = std::fs::remove_dir_all(&stage);

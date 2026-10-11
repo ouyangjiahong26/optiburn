@@ -136,9 +136,11 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
         files,
         device,
         volumeId: volumeId.trim(),
-        speed: speedOption(speed),
-        closeDisc,
-        allowDamagedLastSession: allowDamaged,
+        options: {
+          speed: speedOption(speed),
+          closeDisc,
+          allowDamagedLastSession: allowDamaged,
+        },
       });
     } catch (cause) {
       onJobAbort("append", String(cause));
