@@ -201,8 +201,8 @@ export function App() {
         message={
           discWriting
             ? t(
-                "Stopping now leaves the disc with incomplete contents. Stop anyway?",
-                "停止后盘片内容不完整，确认停止？",
+                "Stopping now leaves the disc with incomplete contents and an unclosed track. On many drives that makes the disc unwritable, so only reading (and rescuing) it will be possible afterwards. Stop anyway?",
+                "停止后盘片内容不完整，留下未关闭的轨道。多数驱动器会因此拒绝再写这张盘，之后只能读盘（以及从里面抢救数据）。确认停止？",
               )
             : t(
                 "The task will not complete, but the disc contents are unaffected. Stop anyway?",
@@ -225,8 +225,8 @@ export function App() {
         message={
           discWriting
             ? t(
-                "A task is running. Stopping now leaves the disc with incomplete contents. Stop and quit anyway?",
-                "有任务正在进行。停止后盘片内容不完整，确认停止并退出？",
+                "A task is running. Stopping now leaves the disc with incomplete contents and an unclosed track, which on many drives makes the disc unwritable. Stop and quit anyway?",
+                "有任务正在进行。停止后盘片内容不完整，留下未关闭的轨道，多数驱动器会因此拒绝再写这张盘。确认停止并退出？",
               )
             : t(
                 "A task is running. The task will not complete, but the disc contents are unaffected. Stop and quit anyway?",
