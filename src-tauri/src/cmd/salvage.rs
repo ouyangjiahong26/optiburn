@@ -19,7 +19,12 @@ pub async fn salvage_disc(
     dest: String,
 ) -> Result<(), String> {
     if dest.trim().is_empty() {
-        return Err(pick(lang(), "没有选择抢救目录。", "No salvage folder was chosen.").into());
+        return Err(pick(
+            lang(),
+            "没有选择抢救目录。",
+            "No salvage folder was chosen.",
+        )
+        .into());
     }
     let cancel = begin_job(&state)?;
     let worker = app.clone();
@@ -99,9 +104,7 @@ fn summary_text(lang: Lang, report: &SalvageReport, dest: &Path) -> String {
                 Lang::Zh => format!(
                     "「{name}」已重建为可解的 zip：{} 个完整条目，{} 没写完没有保留。",
                     zip.entries,
-                    zip.dropped_entry
-                        .as_deref()
-                        .unwrap_or("最后一个条目")
+                    zip.dropped_entry.as_deref().unwrap_or("最后一个条目")
                 ),
                 Lang::En => format!(
                     "\"{name}\" was rebuilt into a readable zip with {} complete entries; the truncated one was dropped.",
@@ -128,10 +131,14 @@ fn salvage_error(device: &str, error: BurnError) -> JobError {
             point,
         };
     }
-    let base = super::engine_error_text(lang(), "抢救未关闭轨道", "salvage the unclosed track", &error);
+    let base = super::engine_error_text(
+        lang(),
+        "抢救未关闭轨道",
+        "salvage the unclosed track",
+        &error,
+    );
     JobError::Input(base)
 }
-
 
 #[cfg(test)]
 mod tests {
