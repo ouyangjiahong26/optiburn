@@ -1,4 +1,4 @@
-// 与 src-tauri 命令层的 DTO 逐字段对应（camelCase）；字段改名等于破坏 IPC 契约。
+// 与 src-tauri 命令层的 DTO 逐字段对应（camelCase）。字段改名等于破坏 IPC 契约。
 
 export type DiscStatus = "empty" | "appendable" | "finalized" | "other";
 
@@ -34,10 +34,16 @@ export type VerifyReport = {
 
 export type DiscProfile = "cd" | "dvd" | "bd";
 
-export type JobKind = "build" | "burn" | "append" | "verify" | "copy";
+export type JobKind = "build" | "burn" | "append" | "verify" | "copy" | "salvage";
 
 // 门禁类失败的标记：后端随 job-done 一起发，前端据此弹引导对话框而不是靠文案匹配。
-export type GateKind = "append" | "finalized" | "mounted" | "noIsoSession" | "capacity";
+export type GateKind =
+  | "append"
+  | "finalized"
+  | "mounted"
+  | "noIsoSession"
+  | "capacity"
+  | "damagedSession";
 
 export type JobOutcome = "done" | "cancelled" | "failed";
 
@@ -50,7 +56,7 @@ export type JobDone = {
   gate?: GateKind;
 };
 
-// 前端自己发起但被立即拒绝的调用不会再来 job-done 事件，就地生成一条结果；
+// 前端自己发起但被立即拒绝的调用不会再来 job-done 事件，就地生成一条结果。
 // seq 用于区分先后，保证对话框之类的消费方对每条结果只反应一次。
 export type JobResult = JobDone & { seq: number };
 

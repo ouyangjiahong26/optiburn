@@ -27,8 +27,11 @@ optiburn：Rust 写的跨平台光盘刻录工具（Linux/Windows × x86_64/arm6
   ADR-0021），Windows 走原生、Linux 维持 xorriso。增长模式按平台分派：Windows 用原生
   嫁接式会话生成器（`grow.rs` 与 `grow/old_session.rs`，生成绝对地址的 ISO 9660 加
   Joliet 区段，旧文件数据块原地引用，ADR-0020），Linux 维持 xorriso。`grow_size` 是
-  增长模式的尺寸预演。
-- `optiburn-cli`：`optiburn build-image | burn | append | probe`。二进制名是 `optiburn`
+  增长模式的尺寸预演。读侧的区段定位有候选回退：末区段损坏时按 `READ TOC` 的轨道
+  起点枚举候选、逐个验证后用最新的可用区段，追加要用户确认（ADR-0022）。抢救
+  （`disc_read/salvage.rs`）从 TOC 之外的未关闭轨道里抽出数据，只有原生读侧有
+  （ADR-0022 补记）。
+- `optiburn-cli`：`optiburn build-image | burn | append | probe | repair | salvage`。二进制名是 `optiburn`
   （`[[bin]] name`），不是 `optiburn-cli`。`burn` 默认多区段不封盘，追加刻录走
   `append`（Windows 原生增长模式，Linux xorriso 增长模式，ADR-0006 与 ADR-0020）。
 
@@ -72,7 +75,8 @@ npm --prefix frontend exec -- tauri build      # 出 NSIS 安装包
 
 硬件相关测试：`cargo test -p optiburn-engine -- --ignored burn_real`（xorriso 引擎）与
 `native_burn_and_read_back_real`（原生引擎）、`native_grow_and_read_back_real`（原生
-增长模式）需要 `OPTIBURN_DEVICE` 与 `OPTIBURN_IMAGE`。
+增长模式）需要 `OPTIBURN_DEVICE` 与 `OPTIBURN_IMAGE`；`cargo test --manifest-path
+src-tauri/Cargo.toml --lib -- --ignored clipboard_round_trip` 会动系统剪贴板（Windows）。
 CI 没有光驱，默认不跑。本机的 Windows 侧接了 USB 光驱，可用它做真机验证。
 
 ## Key Directories
@@ -82,11 +86,11 @@ CI 没有光驱，默认不跑。本机的 Windows 侧接了 USB 光驱，可用
 | `crates/optiburn-transport/` | `lib.rs`（trait + 平台分发）、`linux.rs`（SG_IO）、`windows.rs`（SPTI） |
 | `crates/optiburn-mmc/` | CDB 编解码与响应解析（`write.rs` 是写侧），含黄金 CDB 断言与固定缓冲区解析测试 |
 | `crates/optiburn-mastering/` | `build_image` + profile 映射。`tests/roundtrip.rs` 是 xorriso 对拍 |
-| `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`/`NativeGap`）、`native.rs`（原生 MMC 写引擎，含增长写序列）、`xorriso.rs`（参数与进度解析）、`grow.rs` 与 `grow/`（原生增长的会话生成与旧区段读取）、`disc_read/`（原生读盘：ISO 9660 与 `udf.rs`） |
-| `crates/optiburn-cli/` | `src/main.rs` 四个子命令 |
+| `crates/optiburn-engine/` | `lib.rs`（trait/`BurnJob`/`NativeGap`）、`native.rs`（原生 MMC 写引擎，含增长写序列）、`xorriso.rs`（参数与进度解析）、`grow.rs` 与 `grow/`（原生增长的会话生成与旧区段读取）、`disc_read/`（原生读盘：ISO 9660 与 `udf.rs`，含抢救用的 `salvage.rs` 与 `zip_recover.rs`） |
+| `crates/optiburn-cli/` | `src/main.rs` 六个子命令（含 `repair` 与 `salvage`，前者对齐 xorriso 的 `-close_damaged`） |
 | `src-tauri/` | GUI 的 Rust 侧：Tauri 命令层，调用核心 crate |
 | `frontend/` | GUI 的 React 页面，Vite + TS |
-| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0021） |
+| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0023） |
 | `CONTEXT.md` | 领域术语表（术语/定义/禁用同义词三列），命名一律照它 |
 | `.github/workflows/` | `ci.yml`（job 名即分支保护的 required checks）、`release.yml` |
 

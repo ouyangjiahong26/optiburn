@@ -25,6 +25,35 @@ fn inspect_real_media() {
         profile.media_kind()
     );
     println!("capacity: {capacity:?}");
+    // 轨道与区段：追加能否继续看这几个字段（损坏位置位时 NWA_V 会被清零）。
+    if let Ok(track) = mmc.read_track_information(crate::native::LAST_TRACK) {
+        println!(
+            "track 0xFF: start={} nwa={} nwa_valid={} damaged={} free={} track_blocks={}",
+            track.start_lba,
+            track.next_writable_address,
+            track.nwa_valid,
+            track.damaged,
+            track.free_blocks,
+            track.track_blocks
+        );
+    }
+    if let Ok(Some(session)) = mmc.read_toc_session_info() {
+        println!("session: last_session_start={}", session.last_session_start);
+    }
+    if let Ok(tracks) = mmc.read_toc_tracks() {
+        let listed: Vec<String> = tracks
+            .iter()
+            .map(|track| {
+                format!(
+                    "{}@{}{}",
+                    track.track,
+                    track.start_lba,
+                    if track.is_lead_out { "L" } else { "" }
+                )
+            })
+            .collect();
+        println!("tracks: {}", listed.join(" "));
+    }
 }
 
 #[test]
@@ -78,6 +107,7 @@ fn native_grow_and_read_back_real() {
         speed: None,
         volume_id: "GROWTV1".to_string(),
         close_disc: false,
+        allow_damaged_last_session: false,
     };
     let mut last = 0.0f32;
     grow(

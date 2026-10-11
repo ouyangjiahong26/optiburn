@@ -31,6 +31,7 @@ pub fn run() {
             cmd::copy::list_disc,
             cmd::copy::copy_disc_files,
             cmd::copy::paste_files,
+            cmd::salvage::salvage_disc,
             cmd::verify::start_verify,
             cmd::cancel_job,
             cmd::confirm_close,

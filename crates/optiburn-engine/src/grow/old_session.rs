@@ -129,16 +129,16 @@ fn read_dir_node(
     cancel: &CancelToken,
 ) -> Result<DirNode, BurnError> {
     let (extent, size) = parse_dir_record(record)?;
-    if !size.is_multiple_of(SECTOR_BYTES as u32) {
-        return Err(read_failed(
-            "the last session has a directory whose size is not a block multiple",
-        ));
-    }
     if u64::from(size) > MAX_DIR_BYTES {
         return Err(read_failed(
             "the last session has a directory larger than 64 MiB",
         ));
     }
+    // 目录记录的 data_len 是实际字节数，不一定是块的整数倍（libisofs 与 xorriso 写
+    // 的盘就是这样，2026-10-11 实测一张中断会话的根目录是 426 与 572 字节）。读的
+    // 时候按块向上取整，记录遍历只走到 data_len 为止。
+    let directory_bytes = size as usize;
+    let directory_blocks = size.div_ceil(SECTOR_BYTES as u32);
     if !visited.insert(extent) {
         return Err(unsupported(
             "the last session's directory tree contains a cycle",
@@ -154,12 +154,10 @@ fn read_dir_node(
         })?,
         AddressMode::DiscAbsolute { .. } => mapped_lba(mode, base_lba, extent),
     };
-    start
-        .checked_add(size.div_ceil(SECTOR_BYTES as u32))
-        .ok_or_else(|| {
-            read_failed("the last session has a directory beyond the addressable blocks")
-        })?;
-    let mut data = vec![0u8; size as usize];
+    start.checked_add(directory_blocks).ok_or_else(|| {
+        read_failed("the last session has a directory beyond the addressable blocks")
+    })?;
+    let mut data = vec![0u8; directory_blocks as usize * SECTOR_BYTES];
     read_blocks(read, start, &mut data, cancel)?;
 
     let mut node = DirNode {
@@ -168,7 +166,7 @@ fn read_dir_node(
         files: Vec::new(),
     };
     let mut offset = 0usize;
-    while offset < data.len() {
+    while offset < directory_bytes {
         if cancel.is_cancelled() {
             return Err(BurnError::Cancelled);
         }

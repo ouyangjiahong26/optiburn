@@ -35,7 +35,7 @@ optiburn-cli              命令行：build-image / burn / append / probe
   映射是 Windows 可读性的唯一落点。
 - `optiburn-engine`：`BurnEngine` trait 加两个引擎：`NativeEngine`（原生 MMC 写引擎，
   ADR-0017）与 `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。
-- `optiburn-cli`：四个子命令的入口。
+- `optiburn-cli`：六个子命令的入口。
 
 图形前端在 `src-tauri/`（Tauri 2）与 `frontend/`（React 加 Vite 加 TypeScript），
 不在根 workspace 内，以路径依赖引用核心 crate。核心五个 crate 不引入 GUI 依赖。

@@ -10,7 +10,10 @@ use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
-use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, TAIL_LINES, XORRISO};
+use crate::readback::run_output;
+use crate::{
+    BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, RepairOutcome, TAIL_LINES, XORRISO,
+};
 
 /// 用 `xorriso -as cdrecord` 写盘。
 #[derive(Debug, Default, Clone, Copy)]
@@ -52,11 +55,50 @@ pub(crate) fn grow(
 /// xorriso 自己算 ISO 9660/Joliet/UDF 的目录开销与合并盘上旧目录的增量，比把
 /// 源目录文件大小求和准确：小文件多的目录里，每文件半扇区取整加三份目录结构
 /// 会让求和显著低估。实测（1.5.6）：关键行在 stdout，形态 `Image size   : 288s`
-/// （冒号前有对齐空格，数值尾部 `s`，单位 2048 字节块）；数值只含即将提交的新
+/// （冒号前有对齐空格，数值尾部 `s`，单位 2048 字节块）。数值只含即将提交的新
 /// 区段，盘上已有区段不在内，与 READ FORMAT CAPACITIES 算出的可用容量同口径。
-/// 预演在一次性介质上不写入（写入只发生在 `-commit`）；可覆写介质（含 xorriso
+/// 预演在一次性介质上不写入（写入只发生在 `-commit`）。可覆写介质（含 xorriso
 /// 的 stdio 文件目标）在退出时会自动提交，那是目标介质的行为，与 `-print_size`
 /// 无关（实测）。
+/// Linux 侧的修复：交给 xorriso 的 `-close_damaged`（libburn 的
+/// `burn_disc_close_damaged`），语义与 Windows 侧一致：驱动器报介质损坏时尝试关闭
+/// 未完成的轨道与区段，`force` 无条件尝试。修复后用 `-toc` 复核状态。
+pub(crate) fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnError> {
+    let needed = if force { "force" } else { "as_needed" };
+    let (_, stderr) = run_output(XORRISO, &repair_args(device, needed))?;
+    // xorriso 把“下一轨道损坏”写在 `-toc` 的 Media status 行上（“but next track is
+    // damaged”），修复结果与它一并从输出里取。
+    let (stdout, _) = run_output(XORRISO, &toc_args(device))?;
+    let damaged = stdout.contains("next track is damaged");
+    let scratch = format!("{stdout}\n{stderr}");
+    Ok(RepairOutcome {
+        damaged,
+        attempted: true,
+        writable: !scratch.contains("not writable"),
+        next_writable_address: None,
+        free_bytes: None,
+        error: scratch
+            .contains("Failed to close")
+            .then(|| "xorriso could not close the damaged track/session".to_string()),
+    })
+}
+
+/// 组装 `-close_damaged` 的参数表。
+fn repair_args(device: &str, needed: &str) -> Vec<OsString> {
+    ["-dev", device, "-close_damaged", needed, "-indev", device]
+        .iter()
+        .map(OsString::from)
+        .collect()
+}
+
+/// 组装只读的 `-toc` 参数表。
+fn toc_args(device: &str) -> Vec<OsString> {
+    ["-indev", device, "-toc"]
+        .iter()
+        .map(OsString::from)
+        .collect()
+}
+
 pub(crate) fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
     let (stdout, _) = crate::readback::run_output(XORRISO, &print_size_args(job))?;
     parse_print_size(&stdout)
@@ -164,7 +206,7 @@ impl BurnFailure {
 ///
 /// 取消是协作式的：令牌只能在读到一行 stderr 的间隙里被检查，置位就杀掉子进程
 /// 并返回 [`BurnError::Cancelled`]。子进程已自然写完退出时，迟到的取消不再起
-/// 作用——盘已写完，仍按成功返回。
+/// 作用。盘已写完，仍按成功返回。
 ///
 /// 单独抽出来是为了能用本地 shell 脚本当替身测试：`xorriso` 的参数由调用方给，
 /// 这里只管进程、进度、取消与失败摘要。读侧的抽取也复用它。
@@ -200,7 +242,7 @@ pub(crate) fn run(
         }
         tail.push_back(line);
         if cancel.is_cancelled() {
-            // 先杀再收尸，避免留下僵尸进程；退出码反正是 Cancelled，无须再看。
+            // 先杀再收尸，避免留下僵尸进程。退出码反正是 Cancelled，无须再看。
             child.kill()?;
             child.wait()?;
             return Err(BurnError::Cancelled);
@@ -344,6 +386,7 @@ mod tests {
             speed: Some(8),
             volume_id: "OPTIBURN".to_string(),
             close_disc: false,
+            allow_damaged_last_session: false,
         };
         assert_eq!(
             grow_args(&job),
@@ -372,13 +415,14 @@ mod tests {
             speed: None,
             volume_id: "OPTIBURN".to_string(),
             close_disc: false,
+            allow_damaged_last_session: false,
         };
         assert!(!grow_args(&job).contains(&OsString::from("-speed")));
     }
 
     #[test]
     fn print_size_args_share_the_grow_table_without_close_or_commit() {
-        // 预演必须与实际提交看到同一份输入（设备、倍速、卷标、映射），只换尾命令；
+        // 预演必须与实际提交看到同一份输入（设备、倍速、卷标、映射），只换尾命令。
         // 封盘开关与预演无关，不携带。
         let job = GrowJob {
             src: PathBuf::from("/tmp/stage"),
@@ -386,6 +430,7 @@ mod tests {
             speed: Some(8),
             volume_id: "OPTIBURN".to_string(),
             close_disc: true,
+            allow_damaged_last_session: false,
         };
         assert_eq!(
             print_size_args(&job),
@@ -414,6 +459,7 @@ mod tests {
             speed: None,
             volume_id: "OPTIBURN".to_string(),
             close_disc: true,
+            allow_damaged_last_session: false,
         };
         assert_eq!(
             grow_args(&job),
@@ -495,6 +541,7 @@ mod tests {
             speed: None,
             volume_id: "PRINTSIZE".to_string(),
             close_disc: false,
+            allow_damaged_last_session: false,
         };
 
         let bytes = grow_size(&job).expect("print size must succeed");

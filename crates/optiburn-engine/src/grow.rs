@@ -29,7 +29,7 @@ use crate::{BurnError, CancelToken, NativeGap};
 /// 文件数据的读写分块。
 const FILE_CHUNK: usize = 64 * 1024;
 /// 描述符区的起始逻辑块。
-const DESC_START: u32 = 16;
+pub(crate) const DESC_START: u32 = 16;
 /// 目录递归深度上限（ECMA-119 建议不超过 8 层）。
 const MAX_DEPTH: usize = 8;
 /// 单条目录记录的定长部分加名字与补位后的长度（与 `DirectoryRecord::new` 一致）。
@@ -41,7 +41,7 @@ mod old_session;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use old_session::{DirNode, OldSession, read_old_session};
+pub(crate) use old_session::{DirNode, OldFile, OldSession, read_old_session};
 
 /// 命名空间：主标识（Level 2 大写名）或 Joliet。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,7 +355,7 @@ pub(crate) fn plan_session(
 }
 
 /// 旧树转成计划树：旧条目的名字按本仓库的命名规则重新编码（Joliet 为 UTF-16BE、
-/// 最多 64 个码元；主命名空间为 Level 2 大写名）。
+/// 最多 64 个码元。主命名空间为 Level 2 大写名）。
 fn from_old(node: DirNode) -> PlanDir {
     let mut dir = match node.name.is_empty() {
         true => PlanDir::root(),

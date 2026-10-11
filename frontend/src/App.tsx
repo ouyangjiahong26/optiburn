@@ -22,7 +22,7 @@ const NAV_ITEMS: { id: PageId; label: string; icon: typeof Disc3 }[] = [
   { id: "build", label: t("Create Image", "制作镜像"), icon: FileArchive },
 ];
 
-// 制作镜像没有进度回调，只显示动作本身；其余两种有百分比就带上。
+// 制作镜像没有进度回调，只显示动作本身。其余两种有百分比就带上。
 function jobStatusText(job: ActiveJob): string {
   if (job.kind === "build") {
     return t("Creating image…", "正在制作镜像……");
@@ -32,6 +32,9 @@ function jobStatusText(job: ActiveJob): string {
   }
   if (job.kind === "copy") {
     return t("Copying files from disc…", "正在复制盘上文件……");
+  }
+  if (job.kind === "salvage") {
+    return t("Salvaging the unclosed track…", "正在抢救未关闭轨道里的数据……");
   }
   return job.fraction === null
     ? t(
@@ -63,7 +66,7 @@ export function App() {
     setJob((current) => current ?? { kind, fraction: null });
   }, []);
 
-  // invoke 被立即拒绝时不会有 job-done 事件，用这里解锁并展示原因；
+  // invoke 被立即拒绝时不会有 job-done 事件，用这里解锁并展示原因。
   // 若任务已由事件接管（kind 不匹配），这里不动任何状态。
   const abortJob = useCallback((kind: JobKind, message?: string) => {
     setJob((current) =>
@@ -139,7 +142,8 @@ export function App() {
               <span className="job-status">{jobStatusText(job)}</span>
               {(job.kind === "burn" ||
                 job.kind === "append" ||
-                job.kind === "copy") && (
+                job.kind === "copy" ||
+                job.kind === "salvage") && (
                 <button
                   type="button"
                   className="btn btn-danger"
@@ -197,8 +201,8 @@ export function App() {
         message={
           discWriting
             ? t(
-                "Stopping now leaves the disc with incomplete contents. Stop anyway?",
-                "停止后盘片内容不完整，确认停止？",
+                "Stopping now leaves the disc with incomplete contents and an unclosed track. On many drives that makes the disc unwritable, so only reading (and rescuing) it will be possible afterwards. Stop anyway?",
+                "停止后盘片内容不完整，留下未关闭的轨道。多数驱动器会因此拒绝再写这张盘，之后只能读盘（以及从里面抢救数据）。确认停止？",
               )
             : t(
                 "The task will not complete, but the disc contents are unaffected. Stop anyway?",
@@ -221,8 +225,8 @@ export function App() {
         message={
           discWriting
             ? t(
-                "A task is running. Stopping now leaves the disc with incomplete contents. Stop and quit anyway?",
-                "有任务正在进行。停止后盘片内容不完整，确认停止并退出？",
+                "A task is running. Stopping now leaves the disc with incomplete contents and an unclosed track, which on many drives makes the disc unwritable. Stop and quit anyway?",
+                "有任务正在进行。停止后盘片内容不完整，留下未关闭的轨道，多数驱动器会因此拒绝再写这张盘。确认停止并退出？",
               )
             : t(
                 "A task is running. The task will not complete, but the disc contents are unaffected. Stop and quit anyway?",

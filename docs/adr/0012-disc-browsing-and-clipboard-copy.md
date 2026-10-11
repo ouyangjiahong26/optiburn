@@ -32,7 +32,7 @@
   自动挂载与内核容量问题影响。
 - 逐个文件调用 xorriso 抽取：每个文件都要重新读取盘片元数据，多文件时不可接受。
 - 剪贴板只写路径文本：文件管理器会当文本粘贴，不是文件。
-- Windows 剪贴板实现：本轮不做，命令在非 Linux 平台返回明确错误，等有真机再补。
+- Windows 剪贴板实现：本轮不做（2026-10-11 已补上，见文末补记）。
 
 ## 后果
 
@@ -54,3 +54,19 @@
 Windows 上“展开盘上清单”随原生读盘一并可用。“复制选中文件”在 Windows 仍整体
 失败：抽取这一步走得通了，但最后一步写系统剪贴板按本文决策只在 Linux 实现，
 非 Linux 平台返回明确错误并清掉暂存，前端按钮没有按平台隐藏。
+
+## 补记：Windows 剪贴板实现（2026-10-11）
+
+上一条补记里“Windows 仍整体失败”的那一步补上了，两平台现在同级：
+
+- 写方向：`CF_HDROP`（20 字节 `DROPFILES` 头加宽字符路径、双 NUL 收尾）加
+  `Preferred DropEffect`（`DROPEFFECT_COPY`），资源管理器按复制语义粘贴。内存用
+  `GlobalAlloc` 分配，`SetClipboardData` 成功后归系统所有，失败时自己释放。
+- 读方向（追加页 Ctrl+V）：`IsClipboardFormatAvailable` 判断有无 `CF_HDROP`，
+  `DragQueryFileW` 逐条取路径，句柄归剪贴板所有不释放。
+- 约定与 Linux 侧相同：剪贴板只放路径，暂存文件在应用存活期间保留（本文第 4 条）。
+  依赖只有 Windows 专有的 `windows-sys`（与 transport 同版本），Linux 的 gtk 不变。
+- 验证：Windows 真机上跑一次往返（写剪贴板后读回，含中文路径，一致），命令见
+  `clipboard.rs` 测试里的说明。`DROPFILES` 字节布局另有单元测试钉住。
+- 悬置：Windows 的挂载占用提示仍是 Linux 专用（系统占用由 SPTI 打开错误表达），
+  与本文原文第 4 条一致。GUI 按钮的真机点击由维护者复核，走的是同一个函数。
