@@ -992,7 +992,8 @@ fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), JobError> {
 
 /// 刻录引擎的选择：Windows 上没有可用的 xorriso（MSYS2 的构建没有光驱访问，
 /// 见 ADR-0008 补记），刻录只能走原生引擎。Linux 维持 xorriso，原生引擎在那边
-/// 还没有真机验证过（ADR-0017）。追加（增长模式）只有 xorriso 一条路。
+/// 还没有真机验证过（ADR-0017）。追加（增长模式）同样按平台分派：Windows 原生
+/// 嫁接式（ADR-0020），Linux 走 xorriso。
 fn burn_engine() -> Box<dyn BurnEngine> {
     if cfg!(windows) {
         Box::new(NativeEngine)
