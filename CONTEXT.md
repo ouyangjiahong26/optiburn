@@ -16,6 +16,9 @@
 | 候选区段（Session Candidate） | 回退时逐个尝试的区段起点：`READ TOC` 的轨道起点加末区段起点，去重后从新到旧。每个区段的首条轨道起点就是该区段起点。对应 `disc_read` 的 `session_candidates`。 | 备用区段、回退起点 |
 | 损坏末区段（Damaged Last Session） | 固件把中断刻录的残片登记成末区段，读它的卷描述符区或目录树失败。读盘与会话选择回退到最新的可用候选，追加要求用户确认（ADR-0022）。对应 `IsoSessionState::Damaged`、`SessionFallback`、`GrowJob::allow_damaged_last_session`。 | 坏区段、坏会话、残片区段 |
 | 旧区段（Old Session） | 增长模式要嫁接的盘上末区段：引擎读出它的 Joliet 目录树（`OldSession`），新会话引用它里面文件的数据块。起点用 READ TOC Format 1 报的末区段起始地址（损坏末区段时用回退后的候选）。 | 旧会话、上一条区段、原区段 |
+| 未关闭轨道（Unclosed Track） | 刻录中断停下时留下的轨道：轨道与区段都没关上，因此不进 TOC，xorriso 一类的读取器看不见它，数据却还在盘上。起点取 `READ TRACK INFORMATION` 轨道号 0xFF 报出的地址（实测隐形轨道在这台驱动器上认不出来）。 | 开放轨道、未完成轨道、中断轨道 |
+| 写入边界（Written Boundary） | 未关闭轨道里「已经写下去」的那一段的结尾（不含）：第一个读不出来的块。实测未写位置回读失败（紧邻中断点报 MEDIUM ERROR，再往后报 LBA out of range），边界用二分扫描定位，整块全零不算中断点。 | 中断点、写入终点、断点 |
+| 抢救（Salvage） | 把未关闭轨道里能读的数据读出来的动作：按写入边界给每条文件定性（完整、半截、一个字节都没写），把能读的部分按盘上路径抽到本地目录，半截的 zip 按本地头链与 CRC32 只保留完整条目并重建中央目录与 EOCD。对应 `optiburn_engine::salvage`、CLI 的 `salvage`、`JobKind::Salvage`。不需要源文件，边界与条目完整性都由盘上结构自证（ADR-0022 补记）。 | 恢复、救援、打捞、数据提取 |
 | 图形前端（GUI） | optiburn 的图形入口：`src-tauri` 的命令层加 `frontend` 的 React 页面，与 CLI 平级，共用同一批核心 crate。 | 界面、客户端、UI |
 | 更新信息（update information） | 嵌在 AppImage 里的更新定位串（`gh-releases-zync|…`），AppImageUpdate 据此找到新版本的 `.zsync` 做增量更新。 | 更新数据、更新字符串 |
 | 应用内更新（updater） | `tauri-plugin-updater` 驱动的检查、下载、就地替换通道：更新源是 Release 的 `latest.json`，更新包带 Ed25519 签名。 | 自动更新、自升级 |
