@@ -19,17 +19,17 @@ use super::*;
 const FIXTURE_VOLUME_ID: &str = "UDFONLY";
 
 /// 临时目录守卫：建在系统临时目录，析构时删除。
-struct TempDir(PathBuf);
+pub(crate) struct TempDir(PathBuf);
 
 impl TempDir {
-    fn new(tag: &str) -> Self {
+    pub(crate) fn new(tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!("optiburn-udf-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create temp dir");
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -59,12 +59,12 @@ impl BlockSource for MemoryBlocks {
 }
 
 /// 中文名文件的内容。
-fn zh_content() -> Vec<u8> {
+pub(crate) fn zh_content() -> Vec<u8> {
     "中文内容".as_bytes().to_vec()
 }
 
 /// 跨扇区的二进制内容（第二个扇区的字节与第一个不同，能暴露只读首扇区的实现）。
-fn bin_content() -> Vec<u8> {
+pub(crate) fn bin_content() -> Vec<u8> {
     (0..5000u32).map(|index| (index % 251) as u8).collect()
 }
 
@@ -87,7 +87,7 @@ fn fixture_tree() -> FileTree {
 
 /// 夹具树应有的盘上形态：路径到内容（目录记为 `None`）。键序即路径字节序，
 /// 与 `list_tree` 的排序口径一致。
-fn expected_tree() -> BTreeMap<String, Option<Vec<u8>>> {
+pub(crate) fn expected_tree() -> BTreeMap<String, Option<Vec<u8>>> {
     BTreeMap::from([
         ("/空.txt".to_string(), Some(Vec::new())),
         ("/自述.txt".to_string(), Some(zh_content())),
@@ -102,7 +102,7 @@ fn expected_tree() -> BTreeMap<String, Option<Vec<u8>>> {
 }
 
 /// 用 hadris-cd 造一张 UDF-only（UDF 1.02）镜像，写到临时文件。
-fn write_udf_only_image(tmp: &TempDir) -> PathBuf {
+pub(crate) fn write_udf_only_image(tmp: &TempDir) -> PathBuf {
     let path = tmp.path().join("udf-only.iso");
     let options = OpticalImageOptions::default()
         .volume_id(FIXTURE_VOLUME_ID)

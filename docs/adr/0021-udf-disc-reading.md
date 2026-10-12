@@ -85,6 +85,8 @@ NoIsoSession”。
     `UnsupportedUdf`，那时需要新的夹具或实物盘。
   - `DiscAbsolute` 的映射假定区段起点大于 512（固定发现位置与内容地址不撞车）。
     真实盘的区段起点远大于这个值，夹具用的是 1000 与 4000。
+- Linux 侧经后端回退（ADR-0024）接到这里的原生 UDF 读侧，本 ADR 的 Windows-only
+  落地范围由它补齐。
 
 ## 补记：独立工具对拍（2026-10-11，Ubuntu 主机 + 内核 udf 驱动 + udftools + xorriso）
 

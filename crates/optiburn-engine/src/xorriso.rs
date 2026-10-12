@@ -5,15 +5,12 @@
 //! GPL 边界止于进程边界：本仓库不链接 libburn/libisofs。读侧工具在
 //! [`crate::readback`]（ADR-0010）。
 
-use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
-use crate::readback::run_output;
-use crate::{
-    BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, RepairOutcome, TAIL_LINES, XORRISO,
-};
+use crate::readback::{run_output, tail_of};
+use crate::{BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, RepairOutcome, XORRISO};
 
 /// 用 `xorriso -as cdrecord` 写盘。
 #[derive(Debug, Default, Clone, Copy)]
@@ -30,7 +27,7 @@ impl BurnEngine for XorrisoEngine {
         progress: &mut dyn FnMut(f32),
         cancel: &CancelToken,
     ) -> Result<(), BurnError> {
-        run(XORRISO, &cdrecord_args(job), progress, cancel)
+        run(XORRISO, &cdrecord_args(job), progress, cancel).map(|_| ())
     }
 }
 
@@ -46,7 +43,7 @@ pub(crate) fn grow(
     progress: &mut dyn FnMut(f32),
     cancel: &CancelToken,
 ) -> Result<(), BurnError> {
-    run(XORRISO, &grow_args(job), progress, cancel)
+    run(XORRISO, &grow_args(job), progress, cancel).map(|_| ())
 }
 
 /// 预演增长模式：按与 [`grow`] 相同的参数把 `-commit` 换成 `-print_size`，
@@ -208,6 +205,10 @@ impl BurnFailure {
 /// 并返回 [`BurnError::Cancelled`]。子进程已自然写完退出时，迟到的取消不再起
 /// 作用。盘已写完，仍按成功返回。
 ///
+/// 退出成功时返回收集到的全部 stderr：读侧要用兜底空镜像的信号（出现在输出前几
+/// 行，尾部窗口会丢）判断该不该回退后端（ADR-0024），因此不能只留尾部。失败路径
+/// 仍取尾部 [`crate::TAIL_LINES`] 行做摘要。
+///
 /// 单独抽出来是为了能用本地 shell 脚本当替身测试：`xorriso` 的参数由调用方给，
 /// 这里只管进程、进度、取消与失败摘要。读侧的抽取也复用它。
 pub(crate) fn run(
@@ -215,7 +216,7 @@ pub(crate) fn run(
     args: &[OsString],
     progress: &mut dyn FnMut(f32),
     cancel: &CancelToken,
-) -> Result<(), BurnError> {
+) -> Result<String, BurnError> {
     let mut child = Command::new(program)
         .args(args)
         .stdout(Stdio::null())
@@ -231,16 +232,14 @@ pub(crate) fn run(
             "{program}: cannot capture stderr"
         )));
     };
-    let mut tail: VecDeque<String> = VecDeque::new();
+    let mut collected = String::new();
     for line in BufReader::new(stderr).lines() {
         let line = line?;
         if let Some(fraction) = parse_progress(&line) {
             progress(fraction);
         }
-        if tail.len() == TAIL_LINES {
-            tail.pop_front();
-        }
-        tail.push_back(line);
+        collected.push_str(&line);
+        collected.push('\n');
         if cancel.is_cancelled() {
             // 先杀再收尸，避免留下僵尸进程。退出码反正是 Cancelled，无须再看。
             child.kill()?;
@@ -251,12 +250,10 @@ pub(crate) fn run(
 
     let status = child.wait()?;
     if !status.success() {
-        return Err(BurnError::Failed(
-            tail.into_iter().collect::<Vec<_>>().join("\n"),
-        ));
+        return Err(BurnError::Failed(tail_of(&collected)));
     }
     progress(1.0);
-    Ok(())
+    Ok(collected)
 }
 
 /// 组装 `xorriso -as cdrecord` 的参数表。
@@ -595,6 +592,21 @@ mod tests {
         assert!((seen[0] - 0.25).abs() < 1e-6);
         assert!((seen[1] - 0.97).abs() < 1e-6);
         assert!((seen[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_returns_collected_stderr() {
+        // 读侧要用兜底空镜像的信号（出现在输出前几行）判断该不该回退后端，成功
+        // 路径必须返回完整 stderr，不能只留尾部窗口。
+        let stderr = run(
+            "sh",
+            &os(&["-c", "printf 'No ISO 9660 image at LBA 0.\\n' >&2"]),
+            &mut |_| {},
+            &CancelToken::default(),
+        )
+        .expect("script exits 0");
+        assert!(stderr.contains("No ISO 9660 image at LBA 0."), "{stderr:?}");
     }
 
     #[cfg(unix)]
