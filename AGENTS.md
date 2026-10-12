@@ -91,7 +91,7 @@ CI 没有光驱，默认不跑。本机的 Windows 侧接了 USB 光驱，可用
 | `crates/optiburn-cli/` | `src/main.rs` 六个子命令（含 `repair` 与 `salvage`，前者对齐 xorriso 的 `-close_damaged`） |
 | `src-tauri/` | GUI 的 Rust 侧：Tauri 命令层，调用核心 crate |
 | `frontend/` | GUI 的 React 页面，Vite + TS |
-| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0023） |
+| `docs/` | `ARCHITECTURE.md`、`WINDOWS-COMPAT.md`、`adr/`（0001–0024） |
 | `CONTEXT.md` | 领域术语表（术语/定义/禁用同义词三列），命名一律照它 |
 | `.github/workflows/` | `ci.yml`（job 名即分支保护的 required checks）、`release.yml` |
 

@@ -3,7 +3,7 @@
 //!
 //! 两个读侧后端接在 [`ReadBackend`] 接缝上：[`XorrisoRead`]（子进程）与
 //! [`NativeRead`]（MMC 加 ISO 9660/UDF 解析，ADR-0018）。Linux 默认 xorriso 优先，
-//! 读不到 ISO 9660 时后端回退到原生重试（ADR-0024）；Windows 走原生。分派规则与
+//! 读不到 ISO 9660 时后端回退到原生重试（ADR-0024）。Windows 走原生。分派规则与
 //! 刻录引擎同理由：那边哪条路走得通，不是设备语义差异。
 
 use std::ffi::OsString;
@@ -45,7 +45,7 @@ pub(crate) trait ReadBackend {
 /// 读侧后端的选择：保守开关 `OPTIBURN_READ_BACKEND` 的三值（ADR-0024）。
 ///
 /// `Auto` 是默认：Linux 先走 xorriso，读不到 ISO 9660 时改用原生读侧重试同一次
-/// 操作；Windows 直接走原生。
+/// 操作。Windows 直接走原生。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadBackendMode {
     Auto,
@@ -125,6 +125,26 @@ fn fallback<T>(
     }
 }
 
+/// 门禁状态的两个后端归并（ADR-0024 决策 7）。
+///
+/// xorriso 报 `Unusable` 时问一次原生，只有原生给出 `Damaged`（末区段坏了但更早
+/// 还有可用区段，ADR-0022 的候选回退）才采用它的结论。损坏末区段的盘在 xorriso
+/// 侧正是“读不到 ISO 9660”的兜底空镜像形态，也就是 `Unusable`，不在 `Err` 上，
+/// 只看 `Err` 就永远报不出 `Damaged`。其余形态一律保持 xorriso 的答案：纯 UDF 盘
+/// 两侧都是 `Unusable`，语义不变，原生打不开设备时也不把一次分类变成错误。
+fn merge_session_state(
+    primary: Result<IsoSessionState, BurnError>,
+    secondary: impl FnOnce() -> Result<IsoSessionState, BurnError>,
+) -> Result<IsoSessionState, BurnError> {
+    match primary {
+        Ok(IsoSessionState::Unusable) => match secondary() {
+            Ok(IsoSessionState::Damaged(fallback)) => Ok(IsoSessionState::Damaged(fallback)),
+            _ => Ok(IsoSessionState::Unusable),
+        },
+        other => fallback(other, secondary),
+    }
+}
+
 const XORRISO_READ: XorrisoRead = XorrisoRead;
 const NATIVE_READ: NativeRead = NativeRead;
 const FALLBACK_READ: FallbackRead = FallbackRead;
@@ -143,14 +163,9 @@ impl ReadBackend for FallbackRead {
     }
 
     fn iso_session_state(&self, source: &str) -> Result<IsoSessionState, BurnError> {
-        let primary = XORRISO_READ.iso_session_state(source);
-        match primary {
-            // 空镜像兜底信号已被 xorriso 侧吸收成 `Unusable`，两侧语义相同，不重试
-            // （ADR-0024 决策 7）。损坏末区段走到这里时 xorriso 侧是 `Err`，仍会
-            // 落到原生侧，借它的候选回退报出 `Damaged`。
-            Ok(IsoSessionState::Unusable) => Ok(IsoSessionState::Unusable),
-            other => fallback(other, || NATIVE_READ.iso_session_state(source)),
-        }
+        merge_session_state(XORRISO_READ.iso_session_state(source), || {
+            NATIVE_READ.iso_session_state(source)
+        })
     }
 
     fn list_tree(&self, source: &str) -> Result<Vec<DiscEntry>, BurnError> {
@@ -963,7 +978,7 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
 
     #[test]
     fn read_backend_wiring_is_pinned() {
-        // Linux 的 auto 是 xorriso 优先加后端回退，不是整体切原生；Windows 是原生。
+        // Linux 的 auto 是 xorriso 优先加后端回退，不是整体切原生。Windows 是原生。
         let auto = read_backend_name(read_backend_mode_value(None).unwrap()).unwrap();
         assert_eq!(
             auto,
@@ -985,6 +1000,54 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
         assert_eq!(ReadBackendMode::Auto.as_str(), "auto");
         assert_eq!(ReadBackendMode::Xorriso.as_str(), "xorriso");
         assert_eq!(ReadBackendMode::Native.as_str(), "native");
+    }
+
+    #[test]
+    fn session_state_asks_native_only_for_a_damaged_answer() {
+        let damaged = crate::SessionFallback {
+            skipped: 1,
+            ordinal: 3,
+            candidates: 4,
+            session_start: 293970,
+        };
+        // xorriso 报 Unusable（损坏末区段的兜底空镜像形态或纯 UDF 盘）时问原生：
+        // 只有原生报出更早的可用区段才采用，损坏末区段因此在 Linux 上报 Damaged。
+        assert_eq!(
+            merge_session_state(Ok(IsoSessionState::Unusable), || Ok(
+                IsoSessionState::Damaged(damaged)
+            ))
+            .unwrap(),
+            IsoSessionState::Damaged(damaged)
+        );
+        // 纯 UDF 盘两侧都是 Unusable，门禁口径不变。
+        assert_eq!(
+            merge_session_state(Ok(IsoSessionState::Unusable), || Ok(
+                IsoSessionState::Unusable
+            ))
+            .unwrap(),
+            IsoSessionState::Unusable
+        );
+        // 原生打不开设备（没权限、非 Linux 设备串）时保持 xorriso 的分类，不把
+        // 一次分类变成错误。
+        assert_eq!(
+            merge_session_state(Ok(IsoSessionState::Unusable), || Err(
+                BurnError::ReadFailed("no permission".to_string())
+            ))
+            .unwrap(),
+            IsoSessionState::Unusable
+        );
+        // xorriso 能读时压根不碰原生。
+        assert_eq!(
+            merge_session_state(Ok(IsoSessionState::Usable), || panic!("must not be called"))
+                .unwrap(),
+            IsoSessionState::Usable
+        );
+        // 读侧报错仍走常规后端回退。
+        assert_eq!(
+            merge_session_state(Err(BurnError::NoIsoSession), || Ok(IsoSessionState::Usable))
+                .unwrap(),
+            IsoSessionState::Usable
+        );
     }
 
     #[cfg(unix)]
@@ -1067,7 +1130,7 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
             b"top level notes"
         );
 
-        // 镜像文件没有未关闭轨道，抢救给 Ok(None)；门禁把纯 UDF 盘归 Unusable。
+        // 镜像文件没有未关闭轨道，抢救给 Ok(None)。门禁把纯 UDF 盘归 Unusable。
         assert!(
             FallbackRead
                 .salvage(source, &tmp.path().join("salvage"), &cancel)
