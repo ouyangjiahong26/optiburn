@@ -12,6 +12,8 @@ use super::*;
 use crate::disc_read::{BlockSource, is_joliet_root, open_session_view, walk_list};
 use crate::readback::DiscEntry;
 
+mod names;
+
 /// 内存块源：给手造的盘与合成盘做测试。
 struct MemoryBlocks(Vec<u8>);
 
@@ -680,23 +682,6 @@ fn file_against_directory_is_a_conflict() {
     assert!(
         matches!(&error, BurnError::GrowConflict(detail)
             if detail == "/相同名字: a new file replaces an existing directory"),
-        "{error:?}"
-    );
-}
-
-#[test]
-fn primary_namespace_collision_is_reported() {
-    let tmp = TempDir::new("collision");
-    let src = tmp.path().join("src");
-    std::fs::create_dir_all(&src).expect("create source dir");
-    // 两个中文名在 Level 2 主命名空间里都变成下划线，必须在合并时拦住。
-    std::fs::write(src.join("中文甲.txt"), b"a").expect("write first");
-    std::fs::write(src.join("中文乙.txt"), b"b").expect("write second");
-    let error = plan_session(None, &src, "COLLIDE".to_string(), 0)
-        .expect_err("the primary namespace cannot hold both names");
-    assert!(
-        matches!(&error, BurnError::GrowConflict(detail)
-            if detail.contains("primary namespace") && detail.contains("中文甲.txt")),
         "{error:?}"
     );
 }
