@@ -513,7 +513,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "optiburn-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "clap",
  "optiburn-engine",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "optiburn-engine"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "hadris-cd",
  "hadris-iso",
@@ -537,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "optiburn-mastering"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "hadris-cd",
  "hadris-udf",
@@ -546,7 +546,7 @@ dependencies = [
 
 [[package]]
 name = "optiburn-mmc"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "optiburn-transport",
  "thiserror",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "optiburn-transport"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "libc",
  "thiserror",

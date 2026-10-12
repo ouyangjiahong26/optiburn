@@ -7,9 +7,21 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-12
+
+**中文**
+
 ### 修复
 
 - Windows 追加时为重复的 ISO 9660 短名分配编号，保留 Joliet 中文文件名。盘上已有的长中文文档名转换后相同，也能继续追加其他文件，旧文件的数据块仍原地引用。
+
+**English**
+
+### FIX
+
+- **Duplicate ISO 9660 short names are numbered on Windows appends**: appends now number duplicate ISO 9660 short names and keep the Joliet Chinese names. Long Chinese document names already on the disc that convert to the same short name no longer block appending further files, and the old files' data blocks are still referenced in place.
+
+**Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.6...v0.1.7
 
 ## [0.1.6] - 2026-10-12
 
