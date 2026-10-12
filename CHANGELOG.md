@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-12
+
 **中文**
 
 ### FEAT
@@ -50,6 +52,8 @@
 - **Discs written by other writers no longer fail on directory sizes**: reading an older session (the grow graft source and the salvage source) used to require the directory record's data_len to be a multiple of the block size, while libisofs-family writers (xorriso and friends) store the exact byte count. A measured interrupted session had root directories of 426 and 572 bytes, and such discs were unreadable before (both salvage and append failed). The reader now rounds the read up to blocks and walks records up to the exact length.
 - **The missing-xorriso error no longer leaks engine internals**: `MissingTool` carries only the tool name, and user-facing guidance now lives in one shared Chinese copy (engine, used by CLI and GUI) plus an English mirror in the GUI. The read paths (device page browsing, copying, read-back verification) previously did not map this error, so Windows users saw "读取盘片失败：missing tool: xorriso (sudo apt install xorriso)"; they now get the same text as the burn path.
 - **Docs: no usable xorriso on Windows**: the MSYS2 package (`pacman -S xorriso`) is built without libcdio and has no drive access; on hardware `-devices` reports no MMC transport and device arguments fall into libburn's stdio pseudo-drive. Disc reading on Windows is still unavailable, burning is covered by the native engine shipped in the same release. README, its Chinese mirror, the docs site and the ARCHITECTURE platform table are updated, and the evidence is recorded in the ADR-0008 addendum.
+
+**Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.5...v0.1.6
 
 ## [0.1.5] - 2026-10-10
 
