@@ -37,6 +37,7 @@ const fn record_len(name_len: usize) -> usize {
     (name_len + 34) & !1
 }
 
+mod names;
 mod old_session;
 #[cfg(test)]
 mod tests;
@@ -350,6 +351,7 @@ pub(crate) fn plan_session(
     if !any_file {
         return Err(BurnError::NativeGap(NativeGap::EmptyGrowSource));
     }
+    names::assign_primary_ids(&mut root);
     validate_dir(&root, "/")?;
     SessionPlan::layout(root, volume_id, base_lba)
 }
