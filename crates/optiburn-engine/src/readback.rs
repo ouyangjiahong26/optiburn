@@ -1,9 +1,10 @@
 //! 读侧与回读工具：读盘上目录树与卷标、抽取到本地，供设备页浏览与回读校验
 //! （ADR-0010）。只读访问一律用 `-drive_access shared` 打开，独占冲突不在这里发生。
 //!
-//! 两个读侧后端接在 [`ReadBackend`] 接缝上：[`XorrisoRead`]（子进程，Linux 的
-//! 默认）与 [`NativeRead`]（MMC 加 ISO 9660 解析，ADR-0018，Windows 的默认）。
-//! 分派规则与刻录引擎同理由：那边哪条路走得通，不是设备语义差异。
+//! 两个读侧后端接在 [`ReadBackend`] 接缝上：[`XorrisoRead`]（子进程）与
+//! [`NativeRead`]（MMC 加 ISO 9660/UDF 解析，ADR-0018）。Linux 默认 xorriso 优先，
+//! 读不到 ISO 9660 时后端回退到原生重试（ADR-0024）；Windows 走原生。分派规则与
+//! 刻录引擎同理由：那边哪条路走得通，不是设备语义差异。
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -41,18 +42,170 @@ pub(crate) trait ReadBackend {
     ) -> Result<Option<SalvageReport>, BurnError>;
 }
 
-/// 选读侧后端：Windows 走原生（那边没有能访问光驱的 xorriso），Linux 维持该侧的
-/// xorriso。这是维护者决策而不是“原生走不通”：本机没有 Linux 光驱做真机对拍，
-/// 切换的收益不足以承担一次全量回归（ADR-0018 后果节）。与 `burn_engine` 同一条
-/// 规则。
-fn read_backend() -> &'static dyn ReadBackend {
-    const XORRISO_READ: XorrisoRead = XorrisoRead;
-    const NATIVE_READ: NativeRead = NativeRead;
-    if cfg!(windows) {
-        &NATIVE_READ
-    } else {
-        &XORRISO_READ
+/// 读侧后端的选择：保守开关 `OPTIBURN_READ_BACKEND` 的三值（ADR-0024）。
+///
+/// `Auto` 是默认：Linux 先走 xorriso，读不到 ISO 9660 时改用原生读侧重试同一次
+/// 操作；Windows 直接走原生。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadBackendMode {
+    Auto,
+    Xorriso,
+    Native,
+}
+
+impl ReadBackendMode {
+    /// 开关值原样回写，用于 `probe` 的诊断行。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReadBackendMode::Auto => "auto",
+            ReadBackendMode::Xorriso => "xorriso",
+            ReadBackendMode::Native => "native",
+        }
     }
+}
+
+/// 读侧后端模式：从环境变量 `OPTIBURN_READ_BACKEND` 读（保守开关，ADR-0024 决策 3）。
+pub fn read_backend_mode() -> Result<ReadBackendMode, BurnError> {
+    read_backend_mode_value(std::env::var("OPTIBURN_READ_BACKEND").ok().as_deref())
+}
+
+/// 开关的取值判定：空值与 `auto` 都算默认。抽出来是为了能不碰进程环境测（形状照
+/// [`crate::disc_read`] 的 `last_session_only_value`）。
+pub(crate) fn read_backend_mode_value(value: Option<&str>) -> Result<ReadBackendMode, BurnError> {
+    match value {
+        None | Some("") | Some("auto") => Ok(ReadBackendMode::Auto),
+        Some("xorriso") => Ok(ReadBackendMode::Xorriso),
+        Some("native") => Ok(ReadBackendMode::Native),
+        Some(other) => Err(BurnError::ReadFailed(format!(
+            "unknown OPTIBURN_READ_BACKEND value {other:?}: expected auto, xorriso, or native"
+        ))),
+    }
+}
+
+/// 模式对应的实际后端名，供 `probe` 报读侧后端现状（ADR-0024 决策 4）。名字与
+/// [`selected_read_backend`] 的分派一一对应。
+pub fn read_backend_name(mode: ReadBackendMode) -> Result<&'static str, BurnError> {
+    match mode {
+        // Windows 上唯一能取得的 xorriso 不含光驱访问（ADR-0008 补记），显式要求
+        // 用它等于要求一个用不了的后端，直接拒绝并给出退路。
+        ReadBackendMode::Xorriso if cfg!(windows) => Err(BurnError::ReadFailed(
+            "no usable xorriso build on Windows (ADR-0008); unset OPTIBURN_READ_BACKEND or set auto/native"
+                .to_string(),
+        )),
+        ReadBackendMode::Xorriso => Ok("xorriso"),
+        ReadBackendMode::Native => Ok("native"),
+        ReadBackendMode::Auto => Ok(if cfg!(windows) {
+            "native"
+        } else {
+            "xorriso+native"
+        }),
+    }
+}
+
+/// 后端回退的触发判定：只有“xorriso 跑了但读不到”的两类错误才换原生重试。
+///
+/// `MissingTool`、`Cancelled`、`BlankMedium`、`UnsafePath`、`Io` 换一边也一样，
+/// 不触发：缺工具要维持安装提示，真空白盘与不安全路径与后端无关（ADR-0024
+/// 决策 1、2）。
+fn should_fallback(error: &BurnError) -> bool {
+    matches!(error, BurnError::NoIsoSession | BurnError::ReadFailed(_))
+}
+
+/// 先跑 `primary`，命中 [`should_fallback`] 时改用 `secondary` 重试同一次操作。
+///
+/// 两个后端都失败时以 `secondary` 的错误为准（ADR-0024 决策 4：两平台同盘同文案，
+/// 不并列 xorriso 的输出）。
+fn fallback<T>(
+    primary: Result<T, BurnError>,
+    secondary: impl FnOnce() -> Result<T, BurnError>,
+) -> Result<T, BurnError> {
+    match primary {
+        Err(error) if should_fallback(&error) => secondary(),
+        other => other,
+    }
+}
+
+const XORRISO_READ: XorrisoRead = XorrisoRead;
+const NATIVE_READ: NativeRead = NativeRead;
+const FALLBACK_READ: FallbackRead = FallbackRead;
+
+/// 后端回退的组合后端：Linux `auto` 模式用它（ADR-0024）。
+///
+/// 六个能力一律先问 xorriso，命中触发信号时用原生读侧重试。后端回退的事实不进
+/// 任何面向用户输出：真机排查用保守开关做 A/B 对跑。
+struct FallbackRead;
+
+impl ReadBackend for FallbackRead {
+    fn read_volume_id(&self, source: &str) -> Result<String, BurnError> {
+        fallback(XORRISO_READ.read_volume_id(source), || {
+            NATIVE_READ.read_volume_id(source)
+        })
+    }
+
+    fn iso_session_state(&self, source: &str) -> Result<IsoSessionState, BurnError> {
+        let primary = XORRISO_READ.iso_session_state(source);
+        match primary {
+            // 空镜像兜底信号已被 xorriso 侧吸收成 `Unusable`，两侧语义相同，不重试
+            // （ADR-0024 决策 7）。损坏末区段走到这里时 xorriso 侧是 `Err`，仍会
+            // 落到原生侧，借它的候选回退报出 `Damaged`。
+            Ok(IsoSessionState::Unusable) => Ok(IsoSessionState::Unusable),
+            other => fallback(other, || NATIVE_READ.iso_session_state(source)),
+        }
+    }
+
+    fn list_tree(&self, source: &str) -> Result<Vec<DiscEntry>, BurnError> {
+        fallback(XORRISO_READ.list_tree(source), || {
+            NATIVE_READ.list_tree(source)
+        })
+    }
+
+    fn extract_tree(
+        &self,
+        source: &Path,
+        dest: &Path,
+        cancel: &CancelToken,
+    ) -> Result<(), BurnError> {
+        fallback(XORRISO_READ.extract_tree(source, dest, cancel), || {
+            NATIVE_READ.extract_tree(source, dest, cancel)
+        })
+    }
+
+    fn extract_paths(
+        &self,
+        source: &str,
+        paths: &[String],
+        dest: &Path,
+        cancel: &CancelToken,
+    ) -> Result<(), BurnError> {
+        fallback(
+            XORRISO_READ.extract_paths(source, paths, dest, cancel),
+            || NATIVE_READ.extract_paths(source, paths, dest, cancel),
+        )
+    }
+
+    fn salvage(
+        &self,
+        source: &str,
+        dest: &Path,
+        cancel: &CancelToken,
+    ) -> Result<Option<SalvageReport>, BurnError> {
+        // xorriso 侧恒 `ReadFailed`，自然落到原生，Linux 抢救由此打通（ADR-0024
+        // 决策 6）。
+        fallback(XORRISO_READ.salvage(source, dest, cancel), || {
+            NATIVE_READ.salvage(source, dest, cancel)
+        })
+    }
+}
+
+/// 按读侧后端模式选后端（ADR-0024 决策 3）。
+fn selected_read_backend() -> Result<&'static dyn ReadBackend, BurnError> {
+    let name = read_backend_name(read_backend_mode()?)?;
+    let backend: &'static dyn ReadBackend = match name {
+        "xorriso" => &XORRISO_READ,
+        "native" => &NATIVE_READ,
+        _ => &FALLBACK_READ,
+    };
+    Ok(backend)
 }
 
 /// xorriso 读侧后端：包住子进程调用，行为与本模块改造前一致。
@@ -61,16 +214,21 @@ struct XorrisoRead;
 impl ReadBackend for XorrisoRead {
     fn read_volume_id(&self, device: &str) -> Result<String, BurnError> {
         let (stdout, stderr) = run_output(XORRISO, &pvd_info_args(device))?;
-        if has_no_real_volume_id(&stderr) {
+        // 兜底空镜像（读不到 ISO 9660）与真空白盘分开：后者是 0 区段，后端回退
+        // 到原生也一样（ADR-0024 决策 2），归 `BlankMedium`。
+        if is_blank_image_fallback(&stderr) {
             return Err(BurnError::NoIsoSession);
+        }
+        if reports_blank_medium(&stderr) {
+            return Err(BurnError::BlankMedium);
         }
         parse_volume_id(&stdout)
             .ok_or_else(|| BurnError::ReadFailed("xorriso did not report a Volume Id".to_string()))
     }
 
-    /// Linux 侧只有“能不能按 ISO 9660 读”这一个判断，没有候选回退：xorriso 读不到
-    /// 就是读不到，因此损坏末区段这条盘在这里归 [`IsoSessionState::Unusable`]
-    /// （ADR-0022 的后果节记录了这条平台差异，Windows 侧才有回退）。
+    /// xorriso 侧只有“能不能按 ISO 9660 读”这一个判断，没有候选回退：读不到就是
+    /// 读不到（Linux 的候选回退由 [`FallbackRead`] 落到原生侧实现，ADR-0024）。
+    ///
     /// 抢救未关闭轨道：xorriso 只认 TOC 里登记过的会话，看不见未关闭轨道（中断
     /// 写入）里的内容，这条能力只有原生读侧有（ADR-0022 补记）。
     fn salvage(
@@ -80,6 +238,7 @@ impl ReadBackend for XorrisoRead {
         _cancel: &CancelToken,
     ) -> Result<Option<SalvageReport>, BurnError> {
         // xorriso 只认 TOC 里登记过的会话。未关闭轨道（中断写入）的内容它看不见。
+        // `ReadFailed` 是后端回退的触发信号，抢救因此落到原生侧。
         Err(BurnError::ReadFailed(
             "xorriso cannot read an unclosed session (this needs the native read path)".to_string(),
         ))
@@ -111,7 +270,14 @@ impl ReadBackend for XorrisoRead {
         dest: &Path,
         cancel: &CancelToken,
     ) -> Result<(), BurnError> {
-        run(XORRISO, &extract_args(source, dest), &mut |_| {}, cancel).map_err(read_side_error)
+        let stderr = run(XORRISO, &extract_args(source, dest), &mut |_| {}, cancel)
+            .map_err(read_side_error)?;
+        // 兜底空镜像时 xorriso 照常成功，但抽出来的是空目录：判成读不到，交给
+        // 后端回退重抽，否则调用方会把“纯 UDF 盘”当成空盘（ADR-0024 决策 1）。
+        if is_blank_image_fallback(&stderr) {
+            return Err(BurnError::NoIsoSession);
+        }
+        Ok(())
     }
 
     fn extract_paths(
@@ -130,13 +296,17 @@ impl ReadBackend for XorrisoRead {
             }
             targets.push((path.clone(), target));
         }
-        run(
+        let stderr = run(
             XORRISO,
             &extract_paths_args(device, &targets),
             &mut |_| {},
             cancel,
         )
-        .map_err(read_side_error)
+        .map_err(read_side_error)?;
+        if is_blank_image_fallback(&stderr) {
+            return Err(BurnError::NoIsoSession);
+        }
+        Ok(())
     }
 }
 
@@ -146,7 +316,7 @@ impl ReadBackend for XorrisoRead {
 /// xorriso 路径的解析依赖英文消息，统一加 `LC_ALL=C`，本机实测该 locale 下
 /// 非 ASCII 卷标原样输出。
 pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
-    read_backend().read_volume_id(device)
+    selected_read_backend()?.read_volume_id(device)
 }
 
 /// 抢救未关闭轨道（中断写入）里的数据：列出它的目录树，按“已经写下去的数据边界”
@@ -158,14 +328,14 @@ pub fn read_volume_id(device: &str) -> Result<String, BurnError> {
 /// 会话为准。
 ///
 /// 盘上没有未关闭轨道（镜像文件、空盘、驱动器不报开放轨道）时返回 `Ok(None)`；
-/// 目录树读不出来按读盘错误上抛，不并进 `None`。Linux 的 xorriso 路径没有这个
-/// 能力，返回错误说明。
+/// 目录树读不出来按读盘错误上抛，不并进 `None`。xorriso 路径没有这个能力，恒返回
+/// 错误；Linux 默认（`auto`）随后端回退落到原生读侧，抢救因此可用（ADR-0024）。
 pub fn salvage(
     source: &str,
     dest: &Path,
     cancel: &CancelToken,
 ) -> Result<Option<SalvageReport>, BurnError> {
-    read_backend().salvage(source, dest, cancel)
+    selected_read_backend()?.salvage(source, dest, cancel)
 }
 
 /// 盘上 ISO 9660 会话的可用状态，追加前门禁用它分流（ADR-0022）。
@@ -177,9 +347,10 @@ pub fn salvage(
 /// [`IsoSessionState::Damaged`] 是末区段损坏（固件把残片登记成区段，或目录结构
 /// 不完整）但更早区段仍可读的盘：调用方必须把被跳过区段里的文件会从可见视图消失
 /// 这件事告知用户，得到确认后把 [`GrowJob::allow_damaged_last_session`] 置位再提交
-/// （ADR-0022）。Linux 的 xorriso 路径没有候选回退，这类盘在那边归 `Unusable`。
+/// （ADR-0022）。Linux 默认（`auto`）在 xorriso 侧报错时回退到原生读侧，损坏末
+/// 区段因此也走候选回退报出 `Damaged`（ADR-0024）。
 pub fn iso_session_state(source: &str) -> Result<IsoSessionState, BurnError> {
-    read_backend().iso_session_state(source)
+    selected_read_backend()?.iso_session_state(source)
 }
 
 /// 把镜像或设备的目录树抽取到本地目录，供回读校验与复制使用（ADR-0010）。
@@ -188,12 +359,12 @@ pub fn iso_session_state(source: &str) -> Result<IsoSessionState, BurnError> {
 /// 目录。xorriso 会尽力还原时间戳，但抽出的文件 ctime 必然是新值，所以校验只在
 /// 本地按名字与内容对比，不比较属性。
 pub fn extract_tree(source: &Path, dest: &Path, cancel: &CancelToken) -> Result<(), BurnError> {
-    read_backend().extract_tree(source, dest, cancel)
+    selected_read_backend()?.extract_tree(source, dest, cancel)
 }
 
 /// 列出盘上最后一区段的目录树，用于 GUI 的盘片浏览。
 pub fn list_tree(device: &str) -> Result<Vec<DiscEntry>, BurnError> {
-    read_backend().list_tree(device)
+    selected_read_backend()?.list_tree(device)
 }
 
 /// 判断 xorriso 是否因为盘上没有 ISO 9660 而兜底造了一个空镜像。
@@ -205,14 +376,13 @@ fn is_blank_image_fallback(stderr: &str) -> bool {
     stderr.contains("Creating blank image") || stderr.contains("No ISO 9660 image")
 }
 
-/// 读卷标时视为“没有真实卷标”的两种形态：读不出 ISO 9660 的兜底空镜像，或本身
-/// 是空白介质（0 区段，xorriso 不读 ISO 头，stderr 报 `Media status : is blank`，
-/// stdout 报合成的默认卷标 `ISOIMAGE`，实测 1.5.6）。
+/// xorriso 是否报空白介质（0 区段）：它不读 ISO 头，stderr 出 `Media status : is
+/// blank`，stdout 报合成的默认卷标 `ISOIMAGE`（实测 1.5.6）。
 ///
-/// 不并入 [`is_blank_image_fallback`]：末区段门禁要用那个函数放行空盘（首刻），
-/// 只有卷标预填需要把空盘一并挡掉。
-fn has_no_real_volume_id(stderr: &str) -> bool {
-    is_blank_image_fallback(stderr) || stderr.contains("Media status : is blank")
+/// 与 [`is_blank_image_fallback`] 分开：末区段门禁要用那个函数放行空盘（首刻），
+/// 读卷标则把空盘归 [`BurnError::BlankMedium`]，后端回退不碰它（ADR-0024 决策 2）。
+fn reports_blank_medium(stderr: &str) -> bool {
+    stderr.contains("Media status : is blank")
 }
 
 /// 组装读卷标的参数表。
@@ -248,8 +418,14 @@ fn parse_volume_id(stdout: &str) -> Option<String> {
 }
 
 /// 组装抽取参数表。路径按 `OsStr` 原样传递，不做有损转换。
+///
+/// 带 `-drive_access shared`：盘被桌面环境自动挂载时独占打开会失败（实测
+/// 2026-10-12，udisks2 挂载的 CD-R 上 xorriso 报 `Cannot open busy device`），
+/// shared 才能抽。与 [`extract_paths_args`] 同一口径。
 fn extract_args(source: &Path, dest: &Path) -> Vec<OsString> {
     vec![
+        OsString::from("-drive_access"),
+        OsString::from("shared"),
         OsString::from("-indev"),
         source.as_os_str().to_os_string(),
         OsString::from("-osirrox"),
@@ -356,7 +532,7 @@ pub fn extract_paths(
     dest: &Path,
     cancel: &CancelToken,
 ) -> Result<(), BurnError> {
-    read_backend().extract_paths(device, paths, dest, cancel)
+    selected_read_backend()?.extract_paths(device, paths, dest, cancel)
 }
 
 /// 读侧提取失败：写盘语义的 [`BurnError::Failed`] 归一成 [`BurnError::ReadFailed`]，
@@ -421,8 +597,11 @@ fn extract_paths_args(device: &str, targets: &[(String, PathBuf)]) -> Vec<OsStri
 
 /// 跑一个只读查询并收集 stdout 与 stderr。
 ///
-/// 文案解析依赖英文关键行，固定 `LC_ALL=C`。本机实测该 locale 下中文卷标与路径
-/// 原样输出。失败时取 stderr 尾部做摘要。xorriso 增长模式的尺寸预演
+/// 文案解析依赖英文关键行，固定 `LC_ALL=C`。实测（2026-10-12，xorriso 1.5.6）该
+/// locale 下中文卷标原样输出，但 Joliet 的非 ASCII 名会被换成替代名（libisofs 报
+/// `Cannot convert from charset UTF-16BE to ANSI_X3.4-1968`，`/中文追加.txt` 变
+/// `/__e______._t_x...`），原生读侧按 Joliet 读得出原名。取舍见 ADR-0024 补记。
+/// 失败时取 stderr 尾部做摘要。xorriso 增长模式的尺寸预演
 /// （[`crate::xorriso::grow_size`]）也复用它。
 pub(crate) fn run_output(program: &str, args: &[OsString]) -> Result<(String, String), BurnError> {
     let output = Command::new(program)
@@ -444,8 +623,9 @@ pub(crate) fn run_output(program: &str, args: &[OsString]) -> Result<(String, St
     ))
 }
 
-/// 取文本最后 [`TAIL_LINES`] 个非空行，作为失败摘要。
-fn tail_of(text: &str) -> String {
+/// 取文本最后 [`TAIL_LINES`] 个非空行，作为失败摘要。`xorriso::run` 的失败路径
+/// 复用它。
+pub(crate) fn tail_of(text: &str) -> String {
     let lines: Vec<&str> = text
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -457,6 +637,14 @@ fn tail_of(text: &str) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    // 后端回退的夹具集成测试复用 UDF 读侧的夹具（ADR-0024），与 xorriso 一样只在
+    // unix 上跑。
+    #[cfg(unix)]
+    use crate::disc_read::udf::tests::{
+        TempDir, bin_content, expected_tree, write_udf_only_image, zh_content,
+    };
+    #[cfg(unix)]
+    use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 
     /// 期望参数表：与实现同样用 `OsString`，避免为断言再把路径窄化回 `String`。
     fn os(args: &[&str]) -> Vec<OsString> {
@@ -498,6 +686,8 @@ Preparer Id  : XORRISO
         assert_eq!(
             extract_args(Path::new("/tmp/a.iso"), Path::new("/tmp/out")),
             os(&[
+                "-drive_access",
+                "shared",
                 "-indev",
                 "/tmp/a.iso",
                 "-osirrox",
@@ -711,15 +901,232 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
     }
 
     #[test]
-    fn blank_media_reports_no_real_volume_id() {
-        // 实测空白介质（0 区段）：没有兜底行，stderr 报 is blank，stdout 是合成的
-        // ISOIMAGE。门禁不能跟着拒空盘（首刻要放行），所以这层判断只用在读卷标。
+    fn blank_image_and_blank_medium_signals_are_distinct() {
+        // 兜底空镜像：读不到 ISO 9660，后端回退的触发信号。
+        let fallback = "libisoburn: WARNING : No ISO 9660 image at LBA 1388208.\n\
+                        libisoburn: WARNING : Creating blank image.\n";
+        assert!(is_blank_image_fallback(fallback));
+        assert!(!reports_blank_medium(fallback));
+        // 真空白盘（0 区段）：没有兜底行，stderr 报 is blank，stdout 是合成的
+        // ISOIMAGE。门禁不能跟着拒空盘（首刻要放行），读卷标归 BlankMedium，后端
+        // 回退不碰它（ADR-0024 决策 2）。
         let blank = "Media current: DVD-R sequential recording\nMedia status : is blank\n";
         assert!(!is_blank_image_fallback(blank));
-        assert!(has_no_real_volume_id(blank));
-        assert!(has_no_real_volume_id(
-            "libisoburn: WARNING : Creating blank image.\n"
+        assert!(reports_blank_medium(blank));
+    }
+
+    #[test]
+    fn read_backend_mode_values_and_unknown() {
+        assert_eq!(
+            read_backend_mode_value(None).unwrap(),
+            ReadBackendMode::Auto
+        );
+        assert_eq!(
+            read_backend_mode_value(Some("")).unwrap(),
+            ReadBackendMode::Auto
+        );
+        assert_eq!(
+            read_backend_mode_value(Some("auto")).unwrap(),
+            ReadBackendMode::Auto
+        );
+        assert_eq!(
+            read_backend_mode_value(Some("xorriso")).unwrap(),
+            ReadBackendMode::Xorriso
+        );
+        assert_eq!(
+            read_backend_mode_value(Some("native")).unwrap(),
+            ReadBackendMode::Native
+        );
+        // 未知值要报错并列出合法取值，不能静默落回默认。
+        let err = read_backend_mode_value(Some("nope")).expect_err("unknown value must fail");
+        let BurnError::ReadFailed(message) = &err else {
+            panic!("{err:?}");
+        };
+        assert!(message.contains("auto, xorriso, or native"), "{message}");
+    }
+
+    #[test]
+    fn fallback_triggers_only_on_missing_iso_signals() {
+        assert!(should_fallback(&BurnError::NoIsoSession));
+        assert!(should_fallback(&BurnError::ReadFailed("boom".to_string())));
+        // 这些换一边也一样或与后端无关，不能借后端回退掩盖。
+        for error in [
+            BurnError::MissingTool("xorriso".to_string()),
+            BurnError::Cancelled,
+            BurnError::BlankMedium,
+            BurnError::UnsafePath("/C:".to_string()),
+            BurnError::Io(std::io::Error::other("io")),
+        ] {
+            assert!(!should_fallback(&error), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn read_backend_wiring_is_pinned() {
+        // Linux 的 auto 是 xorriso 优先加后端回退，不是整体切原生；Windows 是原生。
+        let auto = read_backend_name(read_backend_mode_value(None).unwrap()).unwrap();
+        assert_eq!(
+            auto,
+            if cfg!(windows) {
+                "native"
+            } else {
+                "xorriso+native"
+            }
+        );
+        assert_eq!(
+            read_backend_name(ReadBackendMode::Native).unwrap(),
+            "native"
+        );
+        // Windows 上没有能访问光驱的 xorriso，显式要求它是错误（ADR-0024 决策 3）。
+        assert_eq!(
+            read_backend_name(ReadBackendMode::Xorriso).is_err(),
+            cfg!(windows)
+        );
+        assert_eq!(ReadBackendMode::Auto.as_str(), "auto");
+        assert_eq!(ReadBackendMode::Xorriso.as_str(), "xorriso");
+        assert_eq!(ReadBackendMode::Native.as_str(), "native");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn xorriso_side_reports_no_session_on_udf_only() {
+        let tmp = TempDir::new("readback-xorriso-udf");
+        let image = write_udf_only_image(&tmp);
+        let source = image.to_str().expect("utf-8 temp path");
+        let cancel = CancelToken::default();
+
+        // 卷标与列举：xorriso 兜底空镜像后照常成功，按 stderr 信号识破。
+        assert!(matches!(
+            XorrisoRead.read_volume_id(source),
+            Err(BurnError::NoIsoSession)
         ));
+        assert!(matches!(
+            XorrisoRead.list_tree(source),
+            Err(BurnError::NoIsoSession)
+        ));
+
+        // 整树抽取同样成功但只抽出一个空目录，按信号判成读不到。
+        let tree_out = tmp.path().join("xorriso-tree-out");
+        assert!(matches!(
+            XorrisoRead.extract_tree(&image, &tree_out, &cancel),
+            Err(BurnError::NoIsoSession)
+        ));
+        assert_eq!(count_files(&tree_out), 0, "兜底空镜像抽不出文件");
+
+        // 按路径抽取：xorriso 找不到文件直接以退出码 5 失败（实测 1.5.6），报
+        // ReadFailed，同样是后端回退的触发信号。
+        let paths_out = tmp.path().join("xorriso-paths-out");
+        let err = XorrisoRead
+            .extract_paths(source, &["/自述.txt".to_string()], &paths_out, &cancel)
+            .expect_err("a path that does not exist in the blank image must fail");
+        assert!(matches!(err, BurnError::ReadFailed(_)), "{err:?}");
+        assert!(should_fallback(&err), "读侧报错要能触发后端回退");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fallback_reads_udf_only_image() {
+        let tmp = TempDir::new("readback-fallback-udf");
+        let image = write_udf_only_image(&tmp);
+        let source = image.to_str().expect("utf-8 temp path");
+        let cancel = CancelToken::default();
+
+        // 卷标：xorriso 读不到，后端回退到原生读出真卷标。
+        assert_eq!(FallbackRead.read_volume_id(source).unwrap(), "UDFONLY");
+
+        // 列举：路径集合等于 UDF 夹具的期望树。
+        let mut listed = FallbackRead.list_tree(source).expect("list the UDF disc");
+        listed.sort_by(|a, b| a.path.cmp(&b.path));
+        let expected: Vec<String> = expected_tree().keys().cloned().collect();
+        assert_eq!(
+            listed.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
+            expected
+        );
+
+        // 整树抽取：中文名与跨扇区二进制逐字节一致。
+        let tree_out = tmp.path().join("fallback-tree-out");
+        FallbackRead
+            .extract_tree(&image, &tree_out, &cancel)
+            .expect("extract the tree");
+        assert_eq!(
+            std::fs::read(tree_out.join("自述.txt")).unwrap(),
+            zh_content()
+        );
+        assert_eq!(
+            std::fs::read(tree_out.join("资料/照片/清单.bin")).unwrap(),
+            bin_content()
+        );
+
+        // 按路径抽取：只抽要的那一个。
+        let paths_out = tmp.path().join("fallback-paths-out");
+        FallbackRead
+            .extract_paths(source, &["/资料/说明.md".to_string()], &paths_out, &cancel)
+            .expect("extract by path");
+        assert_eq!(
+            std::fs::read(paths_out.join("资料/说明.md")).unwrap(),
+            b"top level notes"
+        );
+
+        // 镜像文件没有未关闭轨道，抢救给 Ok(None)；门禁把纯 UDF 盘归 Unusable。
+        assert!(
+            FallbackRead
+                .salvage(source, &tmp.path().join("salvage"), &cancel)
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            FallbackRead.iso_session_state(source).unwrap(),
+            IsoSessionState::Unusable
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fallback_leaves_legit_empty_iso_alone() {
+        // 合法空目录的 ISO 盘：抽取成功但零文件、读卷标得真值，不触发后端回退。
+        let tmp = TempDir::new("readback-empty-iso");
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).expect("create empty source dir");
+        let image = tmp.path().join("empty.iso");
+        build_image(
+            &src,
+            &image,
+            &ImageSpec {
+                profile: DiscProfile::Dvd,
+                volume_id: "EMPTY".to_string(),
+                joliet: true,
+            },
+        )
+        .expect("build the empty image");
+        let source = image.to_str().expect("utf-8 temp path");
+
+        assert_eq!(FallbackRead.read_volume_id(source).unwrap(), "EMPTY");
+        let tree_out = tmp.path().join("empty-tree-out");
+        FallbackRead
+            .extract_tree(&image, &tree_out, &CancelToken::default())
+            .expect("extract the empty tree");
+        assert_eq!(count_files(&tree_out), 0);
+    }
+
+    /// 递归数目标目录里的文件数（目录不算）。
+    #[cfg(unix)]
+    fn count_files(root: &Path) -> usize {
+        fn walk(dir: &Path, count: &mut usize) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, count);
+                } else {
+                    *count += 1;
+                }
+            }
+        }
+        let mut count = 0;
+        walk(root, &mut count);
+        count
     }
 
     #[test]

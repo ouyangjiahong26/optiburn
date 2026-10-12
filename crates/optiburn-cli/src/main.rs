@@ -6,7 +6,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{
     BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, IsoSessionState,
-    NativeEngine, SessionFallback, XorrisoEngine, grow, grow_size, iso_session_state,
+    NativeEngine, ReadBackendMode, SessionFallback, XorrisoEngine, grow, grow_size,
+    iso_session_state, read_backend_mode,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 use optiburn_mmc::{DiscCapacity, DiscStatus, MmcDevice, MmcError, WriteBlock};
@@ -606,6 +607,16 @@ fn capacity_text(capacity: &DiscCapacity) -> String {
     }
 }
 
+/// 读侧后端的说明文字，供 `probe` 诊断行（ADR-0024 决策 4）。
+fn backend_text(mode: ReadBackendMode) -> String {
+    match mode {
+        ReadBackendMode::Auto if cfg!(windows) => "原生读侧".to_string(),
+        ReadBackendMode::Auto => "xorriso 优先，读不到 ISO 9660 时后端回退到原生".to_string(),
+        ReadBackendMode::Xorriso => "只用 xorriso（退回改动前行为）".to_string(),
+        ReadBackendMode::Native => "只用原生读侧".to_string(),
+    }
+}
+
 fn probe_command() -> Result<(), String> {
     let devices = optiburn_transport::list_optical_devices();
     if devices.is_empty() {
@@ -613,11 +624,19 @@ fn probe_command() -> Result<(), String> {
         return Ok(());
     }
 
+    // 读侧后端来自环境变量，与具体设备无关，循环外算一次；开关值非法时把原因原样
+    // 报出来（此时读盘能力就用不了，属于用户要处理的输入错误）。
+    let backend = match read_backend_mode() {
+        Ok(mode) => format!("读侧后端：{}（{}）", mode.as_str(), backend_text(mode)),
+        Err(error) => format!("读侧后端：{error}"),
+    };
+
     for text in devices {
         let transport = match optiburn_transport::open(&text) {
             Ok(transport) => transport,
             Err(e) => {
                 println!("{text} | 打开失败：{e}");
+                println!("{backend}");
                 continue;
             }
         };
@@ -640,6 +659,7 @@ fn probe_command() -> Result<(), String> {
         // 容量是概览字段，读不到就整段省略，不与上面的错误口径混在一起。
         let capacity = capacity_text(&device.read_disc_capacity());
         println!("{text} | {identity} | {disc}{capacity}");
+        println!("{backend}");
     }
     Ok(())
 }
@@ -666,6 +686,21 @@ mod tests {
         let err = burn_command(Path::new("/tmp/x.iso"), "/dev/sr0", "cdrdao", None, false)
             .expect_err("only xorriso exists in v0");
         assert_eq!(err, "引擎 cdrdao 尚未实现");
+    }
+
+    #[test]
+    fn backend_text_names_the_read_side() {
+        assert_eq!(
+            backend_text(ReadBackendMode::Xorriso),
+            "只用 xorriso（退回改动前行为）"
+        );
+        assert_eq!(backend_text(ReadBackendMode::Native), "只用原生读侧");
+        let auto = backend_text(ReadBackendMode::Auto);
+        if cfg!(windows) {
+            assert_eq!(auto, "原生读侧");
+        } else {
+            assert_eq!(auto, "xorriso 优先，读不到 ISO 9660 时后端回退到原生");
+        }
     }
 
     #[test]

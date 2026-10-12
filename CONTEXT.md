@@ -30,6 +30,7 @@
 | Joliet | ISO 9660 的补充卷描述符扩展，提供 Unicode（含中文）长文件名，Windows 原生读取。对应 `JolietLevel`。 | 长文件名扩展 |
 | Rock Ridge | ISO 9660 的 POSIX 属性扩展（权限、符号链接、大小写），Linux/Unix 更愿意读它。镜像构建不启用，增长模式的写入会带上（实测，ADR-0010）。 | RR、RRIP |
 | UDF Bridge | 同一份镜像里同时存在 ISO 9660 与 UDF 两个文件系统、且共享同一份文件数据区的布局。 | 混合镜像、hybrid ISO、双文件系统 |
+| 纯 UDF 盘（UDF-only Disc） | 末区段只有 UDF 文件系统、没有 ISO 9660 描述符的盘。与 UDF Bridge 盘相对。 | UDF 盘、纯 UDF |
 | ISO 9660 Level | 主命名空间的名字长度规则：Level 1 是 8.3，Level 2 是 30 字符，Level 3（ISO 9660:1999）允许多区段与更长名字。 | ISO 级别、版本 |
 | El Torito | 让光盘可引导的引导记录扩展。v0 未启用。 | 引导记录、boot catalog |
 | CDB（Command Descriptor Block） | 下发给设备的命令字节块，长度 6/10/12/16 字节，本仓库上限 16。 | 命令块、命令包 |
@@ -48,6 +49,8 @@
 | UDF 卷识别序列（VRS） | UDF 盘从逻辑块 16 起的识别结构（`BEA01` / `NSR02` 或 `NSR03` / `TEA01`），UDF Bridge 盘的这一区段里还有 ISO 9660 的 `CD001` 描述符。读侧按它判断“这一区段有没有 UDF”。 | 卷识别区、VRS 扇区 |
 | 锚点（AVDP） | UDF 的 Anchor Volume Descriptor Pointer：定位主卷描述符序列的入口，固定出现在块 256（区段内相对）与盘的末端位置。它的 tag_location 字段是判断该区段用哪种地址约定的依据（ADR-0021）。 | 锚描述符、AVDP 扇区 |
 | 读盘（Disc Reading） | 读出盘上末区段内容的五个能力：卷标、末区段是否 ISO 9660、目录树列举、整树抽取、按路径抽取。接在 `ReadBackend` 接缝上，后端是 xorriso 子进程或原生解析（ISO 9660 见 ADR-0018，UDF 见 ADR-0021）。 | 读碟、光盘读取 |
+| 后端回退（Backend Fallback） | 读盘时 xorriso 读不到 ISO 9660（输出报空镜像兜底或读侧报错），改用原生读侧重试同一次操作的动作。与损坏末区段的候选区段回退（`SessionFallback`）是两回事。 | 回退、降级、兜底、切后端 |
+| 保守开关（Conservative Switch） | 置位后退回改动前行为的环境变量，用于对照与止损。现有 `OPTIBURN_LAST_SESSION_ONLY` 与 `OPTIBURN_READ_BACKEND`。 | 逃生开关、兼容开关 |
 | 盘片容量（DiscCapacity） | 总容量与可用容量两个口径，可用容量优先取 READ TRACK INFORMATION 的剩余块数，退回 READ FORMAT CAPACITIES 的格式化容量（ADR-0019）。对应 `DiscCapacity`、`read_disc_capacity`。 | 光盘大小、介质容量、容量信息 |
 | 可用容量（free） | 盘片容量里还能写入的量，写前容量门禁的比较基准。顺序介质上是剩余块数乘 2048 字节（ADR-0019）。 | 剩余空间、可用空间、自由空间 |
 | 格式化容量（FormatCapacity） | READ FORMAT CAPACITIES 报出的两个数值：未格式化介质的最大可格式化容量（描述符类型 1）与已格式化介质的当前格式化容量（类型 2）。对应 `FormatCapacity`、`read_format_capacities`。 | 介质容量、盘片大小 |

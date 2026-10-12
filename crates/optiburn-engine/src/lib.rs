@@ -9,7 +9,8 @@
 //!
 //! 除写盘外还有读侧：读盘上卷标、列目录树、抽取到本地，以及本地目录树的内容
 //! 对比（回读校验，见 ADR-0010）。读侧同样有两个后端（xorriso 子进程与原生
-//! MMC 加 ISO 9660 解析，ADR-0018），Windows 走原生、Linux 维持 xorriso。
+//! MMC 加 ISO 9660 解析，ADR-0018），Linux 默认 xorriso 优先，读不到 ISO 9660 时
+//! 后端回退到原生（保守开关 `OPTIBURN_READ_BACKEND`，ADR-0024），Windows 走原生。
 //!
 //! 增长模式（`append`/追加页）同样分平台：Windows 用原生引擎读旧区段、生成
 //! 绝对地址约定的新区段（ADR-0020），Linux 维持 xorriso 的增长模式。
@@ -27,7 +28,8 @@ mod xorriso;
 
 pub use native::NativeEngine;
 pub use readback::{
-    DiscEntry, extract_paths, extract_tree, iso_session_state, list_tree, read_volume_id, salvage,
+    DiscEntry, ReadBackendMode, extract_paths, extract_tree, iso_session_state, list_tree,
+    read_backend_mode, read_backend_name, read_volume_id, salvage,
 };
 pub use verify::compare_trees;
 pub use xorriso::{BurnFailure, XorrisoEngine};
@@ -250,6 +252,9 @@ pub enum BurnError {
     /// 盘上最后一区段不是 ISO 9660（例如 UDF 盘），相关读取与续写不可用。
     #[error("no ISO 9660 image at the last session")]
     NoIsoSession,
+    /// 真空白盘（0 区段）。与“读不到 ISO 9660”分开，后端回退不碰它（ADR-0024）。
+    #[error("the medium is blank")]
+    BlankMedium,
     /// 读侧子进程失败（列目录、读卷标等），与刻录失败区分开，动作语境由调用方给出。
     #[error("{0}")]
     ReadFailed(String),

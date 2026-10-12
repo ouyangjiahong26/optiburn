@@ -182,6 +182,13 @@ pub(crate) fn engine_error_text(
                 format!("This disc uses a UDF structure that this tool cannot read yet: {detail}")
             }
         },
+        // 空盘不是某个动作失败，给一句自足的说明。
+        BurnError::BlankMedium => pick(
+            lang,
+            "盘是空盘，还没有写入内容。",
+            "The disc is blank; nothing has been written to it yet.",
+        )
+        .to_string(),
         other => match lang {
             Lang::Zh => format!("{action_zh}失败：{other}"),
             Lang::En => format!("{action_en} failed: {other}"),

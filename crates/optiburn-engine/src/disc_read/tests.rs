@@ -5,6 +5,33 @@ use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 
 mod salvage_tests;
 
+#[test]
+fn classify_source_recognizes_device_paths_on_both_platforms() {
+    // Windows 盘符与 Linux 的设备路径都是光驱；漏判会让后端回退在 Linux 上永远
+    // 打不开设备（ADR-0024）。
+    assert!(matches!(
+        classify_source(Path::new("/dev/sr0")),
+        SourceKind::Device(text) if text == "/dev/sr0"
+    ));
+    assert!(matches!(
+        classify_source(Path::new("E:")),
+        SourceKind::Device(_)
+    ));
+    assert!(matches!(
+        classify_source(Path::new("/tmp/a.iso")),
+        SourceKind::Image(_)
+    ));
+    assert!(matches!(
+        classify_source(Path::new("image.iso")),
+        SourceKind::Image(_)
+    ));
+    // 只有 `/dev/` 前缀算设备，`/devices/...` 这类普通路径不误判。
+    assert!(matches!(
+        classify_source(Path::new("/devices/a.iso")),
+        SourceKind::Image(_)
+    ));
+}
+
 /// 内存块源：给手造的区段布局做测试。
 struct MemoryBlocks(Vec<u8>);
 

@@ -494,4 +494,4 @@ fn udf_error(error: hadris_udf::Error, cancel: &CancelToken) -> BurnError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -34,7 +34,7 @@ use crate::readback::{DiscEntry, ReadBackend, safe_relative_path};
 use crate::{BurnError, CancelToken, IsoSessionState, SalvageReport, SessionFallback};
 
 mod salvage;
-mod udf;
+pub(crate) mod udf;
 mod zip_recover;
 
 /// 一次填补内部缓冲的块数，与 MMC 读侧的单命令上限对齐（64 KiB）。
@@ -218,8 +218,13 @@ impl Seek for SessionSource {
     }
 }
 
-/// 读侧的来源：Windows 盘符形态（单个字母加冒号）是光驱，其余按镜像文件。
-/// 设备串的形态出自 `optiburn_transport::open` 与 `list_optical_devices`。
+/// 读侧的来源：Windows 盘符形态（单个字母加冒号）与 Linux 的设备路径
+/// （`/dev/` 下，`list_optical_devices` 的产物）都是光驱，其余按镜像文件。
+///
+/// 只看 `/dev/` 前缀而不查文件类型：判定要确定且不受挂载、权限影响，设备串的形态
+/// 出自 `optiburn_transport::open` 与 `list_optical_devices`。漏判会让 Linux 上
+/// 原生读侧把设备当镜像文件（块设备 `stat` 长度是 0，直接归 `NoIsoSession`），
+/// 后端回退于是永远打不开设备（ADR-0024）。
 pub(super) enum SourceKind {
     Device(String),
     Image(PathBuf),
@@ -228,7 +233,8 @@ pub(super) enum SourceKind {
 pub(super) fn classify_source(source: &Path) -> SourceKind {
     let text = source.to_str().unwrap_or_default();
     let bytes = text.as_bytes();
-    if bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+    let drive_letter = bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if drive_letter || text.starts_with("/dev/") {
         SourceKind::Device(text.to_string())
     } else {
         SourceKind::Image(source.to_path_buf())
