@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, IsoSessionState,
-    NativeEngine, NativeGap, SessionFallback, XorrisoEngine, grow, grow_size, iso_session_state,
-    read_volume_id,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, CapacityGate, GrowJob,
+    IsoSessionState, NativeEngine, NativeGap, SessionFallback, XorrisoEngine, capacity_gate, grow,
+    grow_size, iso_session_state, read_volume_id,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
@@ -81,9 +81,10 @@ enum JobError {
     },
     /// 追加路径上末区段不是 ISO 9660（例如 UDF 盘），续写会遮住原有内容。
     NoIsoSession,
-    /// 待写入量超过盘上可用容量，写前容量门禁拒绝（ADR-0019）。
+    /// 待写入量加区段开销余量超过盘上可用容量，写前容量门禁拒绝（ADR-0019）。
     Capacity {
         needed: u64,
+        headroom: u64,
         free: u64,
     },
     /// 待刻录列表或暂存阶段的输入问题，文案已由下层给出。
@@ -287,15 +288,20 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
             "The last session on this disc is not ISO 9660 (e.g. a UDF disc written by Windows): appending an ISO session would leave systems that mount the last session seeing only the new content. This tool cannot append to such discs yet, use a blank disc instead.",
         )
         .into(),
-        JobError::Capacity { needed, free } => {
+        JobError::Capacity {
+            needed,
+            headroom,
+            free,
+        } => {
             let needed = copy::human_bytes(lang, *needed);
+            let overhead = copy::human_bytes(lang, *headroom);
             let available = copy::human_bytes(lang, *free);
             match lang {
                 Lang::Zh => format!(
-                    "这张盘放不下本次写入：待写入约 {needed}，盘上可用容量约 {available}。请减少待写内容或更换盘片。"
+                    "这张盘放不下本次写入：待写入约 {needed}，区段开销（lead-in 与 lead-out）还要约 {overhead}，盘上可用容量约 {available}。请减少待写内容或更换盘片。"
                 ),
                 Lang::En => format!(
-                    "The disc cannot hold this write: about {needed} to write, {available} free on the disc. Remove some files or use another disc."
+                    "The disc cannot hold this write: about {needed} to write, about {overhead} more for the session overhead (lead-in and lead-out), {available} free on the disc. Remove some files or use another disc."
                 ),
             }
         }
@@ -921,7 +927,7 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             allow_damaged_last_session: task.allow_damaged_last_session,
         };
         let needed = grow_size(&job).map_err(job_error_of_burn)?;
-        ensure_fits(task.device, needed)?;
+        ensure_fits(task.device, needed, task.close_disc)?;
         grow(&job, &mut progress, task.cancel)
     } else {
         // 与 CLI 相同：默认多区段，显式要求才封盘。
@@ -942,7 +948,7 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
                 )),
             })?
             .len();
-        ensure_fits(task.device, needed)?;
+        ensure_fits(task.device, needed, task.close_disc)?;
         burn_engine().burn(&job, &mut progress, task.cancel)
     };
     result.map_err(job_error_of_burn)?;
@@ -954,7 +960,15 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
 /// 映射，其余折成 [`JobError::Burn`]。
 fn job_error_of_burn(error: BurnError) -> JobError {
     match error {
-        BurnError::NotEnoughSpace { needed, free } => JobError::Capacity { needed, free },
+        BurnError::NotEnoughSpace {
+            needed,
+            headroom,
+            free,
+        } => JobError::Capacity {
+            needed,
+            headroom,
+            free,
+        },
         BurnError::GrowUnsupported(detail) => JobError::GrowUnsupported(detail),
         BurnError::GrowConflict(detail) => JobError::GrowConflict(detail),
         BurnError::DamagedLastSession { fallback } => JobError::DamagedSession { fallback },
@@ -970,31 +984,30 @@ fn job_error_of_burn(error: BurnError) -> JobError {
     }
 }
 
-/// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝（ADR-0019）。
+/// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝（ADR-0019）。余量与比较
+/// 收在 [`capacity_gate`]（按介质与动作分档，优先用盘上实测几何）。
 ///
-/// 可用容量取 [`MmcDevice::read_disc_capacity`]（顺序介质上是 READ TRACK
-/// INFORMATION 的剩余块数）。读不到时放行：门禁是尽力而为的预检，不该成为
-/// 新的故障点，真放不下由引擎写入失败兜底。区段开销余量与 CLI 共用
-/// [`optiburn_engine::SESSION_OVERHEAD`]。
-fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), JobError> {
-    let transport = optiburn_transport::open(device).map_err(|e| JobError::Open {
-        device: device.to_string(),
-        source: e,
-    })?;
-    let mut mmc = MmcDevice::new(transport);
-    let capacity = mmc.read_disc_capacity();
-    // 查完立刻释放句柄：刻录引擎随后要以独占方式打开设备。
-    drop(mmc);
-    let Some(free) = capacity.free else {
-        return Ok(());
-    };
-    if needed_bytes + optiburn_engine::SESSION_OVERHEAD > free {
-        return Err(JobError::Capacity {
-            needed: needed_bytes,
+/// 可用容量读不到时放行：门禁是尽力而为的预检，不该成为新的故障点，真放不下由
+/// 引擎写入失败兜底。
+fn ensure_fits(device: &str, needed_bytes: u64, closing: bool) -> Result<(), JobError> {
+    match capacity_gate(device, needed_bytes, closing) {
+        Ok(CapacityGate::Fits | CapacityGate::Unknown) => Ok(()),
+        Err(BurnError::Mmc(MmcError::Transport(source))) => Err(JobError::Open {
+            device: device.to_string(),
+            source,
+        }),
+        Err(BurnError::Mmc(other)) => Err(JobError::Disc(other)),
+        Err(BurnError::NotEnoughSpace {
+            needed,
+            headroom,
             free,
-        });
+        }) => Err(JobError::Capacity {
+            needed,
+            headroom,
+            free,
+        }),
+        Err(other) => Err(JobError::Burn(other)),
     }
-    Ok(())
 }
 
 /// 刻录引擎的选择：Windows 上没有可用的 xorriso（MSYS2 的构建没有光驱访问，
@@ -1244,23 +1257,29 @@ mod tests {
                 Lang::Zh,
                 &JobError::Capacity {
                     needed: 4700372992,
+                    headroom: 16777216,
                     free: 4284481536,
                 }
             ),
-            "这张盘放不下本次写入：待写入约 4.4 GB，盘上可用容量约 4.0 GB。请减少待写内容或更换盘片。"
+            "这张盘放不下本次写入：待写入约 4.4 GB，区段开销（lead-in 与 lead-out）还要约 16.0 MB，盘上可用容量约 4.0 GB。请减少待写内容或更换盘片。"
         );
         assert_eq!(
             job_error_text(
                 Lang::En,
                 &JobError::Capacity {
                     needed: 4700372992,
+                    headroom: 16777216,
                     free: 4284481536,
                 }
             ),
-            "The disc cannot hold this write: about 4.4 GB to write, 4.0 GB free on the disc. Remove some files or use another disc."
+            "The disc cannot hold this write: about 4.4 GB to write, about 16.0 MB more for the session overhead (lead-in and lead-out), 4.0 GB free on the disc. Remove some files or use another disc."
         );
         assert_eq!(
-            gate_of(&JobError::Capacity { needed: 1, free: 1 }),
+            gate_of(&JobError::Capacity {
+                needed: 1,
+                headroom: 1,
+                free: 1
+            }),
             Some("capacity")
         );
         assert_eq!(
@@ -1350,6 +1369,7 @@ mod tests {
         assert_eq!(
             gate_of(&JobError::Capacity {
                 needed: 100,
+                headroom: 50,
                 free: 50
             }),
             Some("capacity")

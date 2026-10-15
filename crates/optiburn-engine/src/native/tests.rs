@@ -793,7 +793,11 @@ fn grow_gate_reports_not_enough_space_before_writing() {
     )
     .expect_err("100 blocks cannot hold a session");
     assert!(
-        matches!(error, BurnError::NotEnoughSpace { free, .. } if free == 100 * 2048),
+        matches!(
+            error,
+            BurnError::NotEnoughSpace { headroom, free, .. }
+                if headroom == 11845 * 2048 && free == 100 * 2048
+        ),
         "{error:?}"
     );
     assert!(
@@ -842,4 +846,130 @@ fn grow_size_matches_the_planned_session() {
     let plan = crate::grow::plan_session(None, src.path(), "GROWTV1".into(), 0)
         .expect("plan the same session");
     assert_eq!(size, plan.total_bytes());
+}
+
+/// 造一个最小可解析的 PVD 块：类型 1、标准标识 `CD001`、版本 1，卷空间大小按
+/// 双端序各写一份（两半必须相等且非零，见 `parse_pvd_volume_space`）。
+fn pvd_block(volume_space: u32) -> [u8; SECTOR_BYTES] {
+    let mut block = [0u8; SECTOR_BYTES];
+    block[0] = 1;
+    block[1..6].copy_from_slice(b"CD001");
+    block[6] = 1;
+    block[80..84].copy_from_slice(&volume_space.to_le_bytes());
+    block[84..88].copy_from_slice(&volume_space.to_be_bytes());
+    block
+}
+
+/// 在末区段起点加 16 块处放一段可读的 PVD，并把 NWA 摆到卷空间之后 `gap` 块。
+fn drive_with_measured_gap(profile: u16, volume_space: u32, gap: u32) -> ScriptedDrive {
+    let mut drive = ScriptedDrive::new(profile, 0b01);
+    drive.last_session_start = 0x1000;
+    drive.nwa = 0x1000 + volume_space + gap;
+    let mut disc = vec![0u8; 0x1200 * SECTOR_BYTES];
+    disc[0x1010 * SECTOR_BYTES..0x1011 * SECTOR_BYTES].copy_from_slice(&pvd_block(volume_space));
+    drive.disc = disc;
+    drive
+}
+
+#[test]
+fn session_headroom_prefers_the_measured_gap_on_cd() {
+    let mut mmc = MmcDevice::new(Box::new(drive_with_measured_gap(
+        CurrentProfile::CD_R,
+        0x100,
+        7335,
+    )));
+    assert_eq!(
+        crate::capacity::session_headroom(&mut mmc, MediaKind::Cd, DiscStatus::Appendable, false),
+        7335 * 2048
+    );
+}
+
+#[test]
+fn session_headroom_prefers_the_measured_gap_on_non_cd() {
+    let mut mmc = MmcDevice::new(Box::new(drive_with_measured_gap(
+        CurrentProfile::DVD_R,
+        0x200,
+        5000,
+    )));
+    assert_eq!(
+        crate::capacity::session_headroom(
+            &mut mmc,
+            MediaKind::DvdMinus,
+            DiscStatus::Appendable,
+            false
+        ),
+        5000 * 2048
+    );
+}
+
+#[test]
+fn session_headroom_falls_back_when_the_gap_is_unreadable() {
+    // 空盘：没有上一区段可量，取首区段默认值。
+    let mut mmc = MmcDevice::new(Box::new(ScriptedDrive::new(CurrentProfile::CD_R, 0b00)));
+    assert_eq!(
+        crate::capacity::session_headroom(&mut mmc, MediaKind::Cd, DiscStatus::Empty, false),
+        11845 * 2048
+    );
+    // 可追加盘但卷描述符区读不出来（合成盘片数据为空）：取非首区段默认值。
+    let mut mmc = MmcDevice::new(Box::new(ScriptedDrive::new(CurrentProfile::CD_R, 0b01)));
+    assert_eq!(
+        crate::capacity::session_headroom(&mut mmc, MediaKind::Cd, DiscStatus::Appendable, false),
+        7335 * 2048
+    );
+}
+
+#[test]
+fn session_headroom_never_drops_below_the_spec_floor() {
+    // 实测差额只有 100 块时按规范下限 6750 块兜底。
+    let mut mmc = MmcDevice::new(Box::new(drive_with_measured_gap(
+        CurrentProfile::CD_R,
+        0x100,
+        100,
+    )));
+    assert_eq!(
+        crate::capacity::session_headroom(&mut mmc, MediaKind::Cd, DiscStatus::Appendable, false),
+        6750 * 2048
+    );
+}
+
+#[test]
+fn session_headroom_closing_uses_the_lead_out() {
+    let mut mmc = MmcDevice::new(Box::new(ScriptedDrive::new(CurrentProfile::CD_R, 0b00)));
+    assert_eq!(
+        crate::capacity::session_headroom(&mut mmc, MediaKind::Cd, DiscStatus::Empty, true),
+        6750 * 2048
+    );
+    let mut mmc = MmcDevice::new(Box::new(ScriptedDrive::new(CurrentProfile::CD_R, 0b01)));
+    assert_eq!(
+        crate::capacity::session_headroom(&mut mmc, MediaKind::Cd, DiscStatus::Appendable, true),
+        2250 * 2048
+    );
+}
+
+#[test]
+fn session_headroom_defaults_to_16_mib_for_non_cd() {
+    // 没有 DVD/BD 实测介质，读不出差额时沿用 16 MiB（已知缺口）。
+    let mut mmc = MmcDevice::new(Box::new(ScriptedDrive::new(CurrentProfile::DVD_R, 0b01)));
+    assert_eq!(
+        crate::capacity::session_headroom(
+            &mut mmc,
+            MediaKind::DvdMinus,
+            DiscStatus::Appendable,
+            false
+        ),
+        16 * 1024 * 1024
+    );
+    let mut mmc = MmcDevice::new(Box::new(ScriptedDrive::new(
+        CurrentProfile::DVD_PLUS_R,
+        0b01,
+    )));
+    assert_eq!(
+        crate::capacity::session_headroom(
+            &mut mmc,
+            MediaKind::PlusOrBdR,
+            DiscStatus::Appendable,
+            true
+        ),
+        16 * 1024 * 1024
+    );
 }

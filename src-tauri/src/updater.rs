@@ -25,13 +25,13 @@ fn self_update_supported() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::self_update_supported;
-
     // 只测 Linux 分支：Windows 是常量真，没有可观察行为。
     // 本 crate 的其它测试不读 APPIMAGE，临时改动再恢复不会串到邻居。
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_self_update_follows_appimage_env() {
+        use super::self_update_supported;
+
         let saved = std::env::var_os("APPIMAGE");
         // SAFETY: 测试串行运行在本进程内，且本文件是 APPIMAGE 的唯一读写方。
         unsafe { std::env::remove_var("APPIMAGE") };

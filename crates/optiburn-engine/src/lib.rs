@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod capacity;
 mod disc_read;
 mod grow;
 mod native;
@@ -26,6 +27,7 @@ mod readback;
 mod verify;
 mod xorriso;
 
+pub use capacity::{CapacityGate, capacity_gate};
 pub use native::NativeEngine;
 pub use readback::{
     DiscEntry, ReadBackendMode, extract_paths, extract_tree, iso_session_state, list_tree,
@@ -80,11 +82,6 @@ pub fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
 pub(crate) const XORRISO: &str = "xorriso";
 /// 子进程失败时保留多少行 stderr 作为摘要。
 pub(crate) const TAIL_LINES: usize = 10;
-/// 容量门禁的区段开销余量（ADR-0019）：待写入量（[`grow_size`] 的预演字节数
-/// 或镜像大小）只算数据区，不含区段 lead-in/lead-out 与链接区。CD 每区段最大约
-/// 15 MB，DVD/BD 约 2 MB，取覆盖最坏情形的 16 MB。CLI 与 GUI 的写前容量门禁
-/// 共用这一个常量，避免两端口径漂移。
-pub const SESSION_OVERHEAD: u64 = 16 * 1024 * 1024;
 
 /// 一次镜像刻录任务的输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,9 +264,15 @@ pub enum BurnError {
     /// 原生引擎做不到这次请求，原因见 [`NativeGap`]，文案由 CLI 与 GUI 分别给出。
     #[error("native engine gap: {0}")]
     NativeGap(NativeGap),
-    /// 盘上剩余空间放不下待写入的新区段（原生增长模式的门禁，ADR-0020）。
-    #[error("not enough space for the new session: needs {needed} bytes, {free} free")]
-    NotEnoughSpace { needed: u64, free: u64 },
+    /// 盘上剩余空间放不下待写入的新区段（写前容量门禁，ADR-0019）。
+    #[error(
+        "not enough space for the new session: needs {needed} bytes, {headroom} bytes of session overhead, {free} free"
+    )]
+    NotEnoughSpace {
+        needed: u64,
+        headroom: u64,
+        free: u64,
+    },
     /// 盘上旧区段的形状不支持嫁接式增长（无 Joliet、启动记录、多 extent 文件等）。
     #[error("cannot grow this disc with the native engine: {0}")]
     GrowUnsupported(String),

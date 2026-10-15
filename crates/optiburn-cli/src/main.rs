@@ -5,9 +5,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, IsoSessionState,
-    NativeEngine, ReadBackendMode, SessionFallback, XorrisoEngine, grow, grow_size,
-    iso_session_state, read_backend_mode, read_backend_name,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, CapacityGate, GrowJob,
+    IsoSessionState, NativeEngine, ReadBackendMode, SessionFallback, XorrisoEngine, capacity_gate,
+    grow, grow_size, iso_session_state, read_backend_mode, read_backend_name,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 use optiburn_mmc::{DiscCapacity, DiscStatus, MmcDevice, MmcError, WriteBlock};
@@ -199,7 +199,11 @@ fn burn_error_text(error: &BurnError) -> String {
         }
         BurnError::Mmc(other) => format!("设备命令失败：{other}"),
         BurnError::NativeGap(gap) => native_gap_text(gap).to_string(),
-        BurnError::NotEnoughSpace { needed, free } => capacity_refusal_text(*needed, *free),
+        BurnError::NotEnoughSpace {
+            needed,
+            headroom,
+            free,
+        } => capacity_refusal_text(*needed, *headroom, *free),
         BurnError::GrowUnsupported(detail) => {
             format!("这张盘暂时没法用原生引擎追加：{detail}。Linux 上可以改用 xorriso 引擎。")
         }
@@ -264,7 +268,7 @@ fn burn_command(
     let image_bytes = std::fs::metadata(image)
         .map_err(|e| format!("读取镜像 {} 大小失败：{e}", image.display()))?
         .len();
-    ensure_fits(device, image_bytes)?;
+    ensure_fits(device, image_bytes, close_disc)?;
     let job = BurnJob {
         image: image.to_path_buf(),
         device: device.to_string(),
@@ -304,7 +308,7 @@ fn append_command(
         allow_damaged_last_session,
     };
     let needed = grow_size(&job).map_err(|e| burn_error_text(&e))?;
-    ensure_fits(device, needed)?;
+    ensure_fits(device, needed, close_disc)?;
 
     println!("追加 {} 到 {}。", src.display(), device);
     let mut progress = |fraction: f32| eprint!("\r{:>5.1}%", fraction * 100.0);
@@ -527,34 +531,32 @@ fn damaged_session_text(fallback: SessionFallback, confirmed: bool) -> String {
 }
 
 /// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝，避免写到一半废一张盘
-/// （ADR-0019）。区段开销余量共用 [`optiburn_engine::SESSION_OVERHEAD`]。
+/// （ADR-0019）。余量与比较收在 [`capacity_gate`]（按介质与动作分档，优先用盘上
+/// 实测几何）。
 ///
-/// 可用容量取 [`MmcDevice::read_disc_capacity`]（顺序介质上是 READ TRACK
-/// INFORMATION 的剩余块数）。读不到时打印提示后放行：门禁是尽力而为的预检，
-/// 不该成为新的故障点，真放不下由引擎写入失败兜底。
-fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), String> {
-    let transport =
-        optiburn_transport::open(device).map_err(|e| format!("打开 {device} 失败：{e}"))?;
-    let mut mmc = MmcDevice::new(transport);
-    let capacity = mmc.read_disc_capacity();
-    // 查完立刻释放句柄：刻录引擎随后要以独占方式打开设备。
-    drop(mmc);
-    let Some(free) = capacity.free else {
-        println!("未能读到盘片的可用容量，跳过容量检查。");
-        return Ok(());
-    };
-    if needed_bytes + optiburn_engine::SESSION_OVERHEAD > free {
-        return Err(capacity_refusal_text(needed_bytes, free));
+/// 可用容量读不到时打印提示后放行：门禁是尽力而为的预检，不该成为新的故障点，
+/// 真放不下由引擎写入失败兜底。
+fn ensure_fits(device: &str, needed_bytes: u64, closing: bool) -> Result<(), String> {
+    match capacity_gate(device, needed_bytes, closing) {
+        Ok(CapacityGate::Fits) => Ok(()),
+        Ok(CapacityGate::Unknown) => {
+            println!("未能读到盘片的可用容量，跳过容量检查。");
+            Ok(())
+        }
+        Err(BurnError::Mmc(MmcError::Transport(error))) => {
+            Err(format!("打开 {device} 失败：{error}"))
+        }
+        Err(error) => Err(burn_error_text(&error)),
     }
-    Ok(())
 }
 
 /// 容量门禁拒绝的文案：写前的预检与引擎内的门禁（原生增长模式）共用一份，
-/// 两处口径不漂移。
-fn capacity_refusal_text(needed: u64, free: u64) -> String {
+/// 两处口径不漂移。区段开销是数据区之外新区段自己要占的空间（lead-in 与 lead-out）。
+fn capacity_refusal_text(needed: u64, headroom: u64, free: u64) -> String {
     format!(
-        "这张盘放不下本次写入：待写入约 {}，盘上可用容量约 {}。请减少待写内容或更换盘片。",
+        "这张盘放不下本次写入：待写入约 {}，区段开销（lead-in 与 lead-out）还要约 {}，盘上可用容量约 {}。请减少待写内容或更换盘片。",
         bytes_text(needed),
+        bytes_text(headroom),
         bytes_text(free),
     )
 }
@@ -768,11 +770,12 @@ mod tests {
     fn growth_and_capacity_failures_are_chinese() {
         let text = burn_error_text(&BurnError::NotEnoughSpace {
             needed: 40 * 1024 * 1024,
+            headroom: 15 * 1024 * 1024,
             free: 8 * 1024 * 1024,
         });
         assert_eq!(
             text,
-            "这张盘放不下本次写入：待写入约 40.0 MB，盘上可用容量约 8.0 MB。请减少待写内容或更换盘片。"
+            "这张盘放不下本次写入：待写入约 40.0 MB，区段开销（lead-in 与 lead-out）还要约 15.0 MB，盘上可用容量约 8.0 MB。请减少待写内容或更换盘片。"
         );
         assert!(!text.contains("not enough space"), "{text}");
 
