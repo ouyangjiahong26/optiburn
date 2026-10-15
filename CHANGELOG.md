@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+**中文**
+
+### 修复
+
+- **写前容量门禁不再用一个 16 MB 常数（ADR-0019 修订）**：区段开销按动作与介质取值。保持可追加的追加优先用盘上实测几何（末区段的下一可写地址与它的数据量之差，本机 CD-R 上 7335 块约 15 MB），读不到时用 CD 默认值（首区段 11845 块、非首区段 7335 块）并取标准下限兜底。封盘不再按大数拦（首区段 6750 块、后续区段 2250 块，ECMA-394 的导出区下限），同一张盘上可用 11547 块（22.6 MB）时写下过 4536 块的封盘区段，按旧口径会被误拒。拒绝文案把待写入、区段开销、可用容量三个数字摊开，不再出现“待写入 8.3 MB、可用 22.6 MB”这种看不出原因的消息。DVD 与 BD 仍沿用 16 MB 兜底（没有本机实测），封盘那次另按 ECMA-349 的导出区下限 5120 扇区兜底，实测依据见 ADR-0019 修订。
+
+**English**
+
+### FIX
+
+- **The write gate no longer uses a flat 16 MB session overhead (ADR-0019 revision)**: the overhead is now per action and per media. Appends that keep the disc appendable prefer the disc's own geometry (the next writable address minus the last session's data size, 7335 blocks or about 15 MB on the measured CD-R), fall back to a CD default (11845 blocks for the first session, 7335 for later ones) and never go below the spec floor. Finalizing writes are no longer held to the large figure (6750 blocks for the first session, 2250 for later ones, ECMA-394's lead-out minimum); a 4536-block finalizing session was written on a disc with 11547 blocks (22.6 MB) free, which the old rule refused. The refusal text now shows three numbers (to write, session overhead, free), so it no longer reads like "8.3 MB to write, 22.6 MB free" with no explanation. DVD and BD keep the 16 MB fallback (no hardware measurement yet), with ECMA-349's 5120-sector lead-out minimum as a floor for finalizing writes; the evidence is recorded in the ADR-0019 revision.
+
 ## [0.1.7] - 2026-10-12
 
 **中文**

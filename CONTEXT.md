@@ -53,5 +53,6 @@
 | 保守开关（Conservative Switch） | 置位后退回改动前行为的环境变量，用于对照与止损。现有 `OPTIBURN_LAST_SESSION_ONLY` 与 `OPTIBURN_READ_BACKEND`。 | 逃生开关、兼容开关 |
 | 盘片容量（DiscCapacity） | 总容量与可用容量两个口径，可用容量优先取 READ TRACK INFORMATION 的剩余块数，退回 READ FORMAT CAPACITIES 的格式化容量（ADR-0019）。对应 `DiscCapacity`、`read_disc_capacity`。 | 光盘大小、介质容量、容量信息 |
 | 可用容量（free） | 盘片容量里还能写入的量，写前容量门禁的比较基准。顺序介质上是剩余块数乘 2048 字节（ADR-0019）。 | 剩余空间、可用空间、自由空间 |
+| 区段开销（Session Overhead） | 数据区之外新区段自身要占的地址空间：本区段的 lead-out 与（保持可追加时）下一区段的 lead-in。写前容量门禁把它与待写入量相加再与可用容量比较。对应 `optiburn-engine::capacity`（ADR-0019 修订）。 | 预留空间、保护大小、安全空间 |
 | 格式化容量（FormatCapacity） | READ FORMAT CAPACITIES 报出的两个数值：未格式化介质的最大可格式化容量（描述符类型 1）与已格式化介质的当前格式化容量（类型 2）。对应 `FormatCapacity`、`read_format_capacities`。 | 介质容量、盘片大小 |
 | 预演（print size） | 增长模式提交前算出即将写入的新区段大小（字节），与可用容量同口径。Linux 用 `xorriso -print_size`，Windows 用原生会话计划的尺寸，两端都收在 `grow_size`。 | 大小估算、dry-run |
