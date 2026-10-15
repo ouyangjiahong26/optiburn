@@ -1,9 +1,10 @@
 //! 写前容量门禁的区段开销余量（ADR-0019 决策 3 的修订）。
 //!
 //! 待写入量（[`crate::grow_size`] 的预演字节数或镜像大小）只算数据区，不含区段
-//! 的 lead-in/lead-out 与链接区。余量按介质与动作分档：CD 有免费的规范值可用
-//! （ECMA-394 §5.7.1 的导出区与 libburn 的会话 lead-in），非 CD 没有，沿用改动前
-//! 的 16 MiB。读得到盘上相邻区段的实测差额时优先用实测值，量不出再退回默认值。
+//! 的 lead-in/lead-out 与链接区。余量按介质与动作分档：CD 有可引用的标准值
+//! （ECMA-394 §5.7.1 的导出区与 libburn 的会话 lead-in），非 CD 只有 DVD+R 族有，
+//! 其余沿用改动前的 16 MiB。读得到盘上相邻区段的实测差额时优先用实测值，量不出
+//! 再退回默认值。
 //!
 //! 实测路径只读：READ TOC Format 1 取末区段起点，READ TRACK INFORMATION 取下一
 //! 个可写地址，READ(10) 读末区段的卷描述符区。任何一步读不到就退回默认值，整条路
@@ -20,8 +21,8 @@ const CD_APPEND_FIRST_FLOOR_BLOCKS: u64 = 11_250;
 const CD_APPEND_FLOOR_BLOCKS: u64 = 6_750;
 
 /// 盘上读不到实测差额时 CD 保持可追加的默认余量（块）。2026-10-15 在本机
-/// （HL-DT-ST DVDRAM GP70N 加 CD-R 80min，盘上 10 个区段）量出的相邻区段差值：
-/// 首区段到第二区段 11845 块，其余区段 7335 到 7346 块，取其中偏保守的一档。
+/// （HL-DT-ST DVDRAM GP70N 加三张 CD-R 80 分钟）量出的相邻区段差值：首区段到第二
+/// 区段 11402 到 11845 块，其余区段 6902 到 7346 块，各取观测区间偏上的一档。
 const CD_APPEND_FIRST_DEFAULT_BLOCKS: u64 = 11_845;
 const CD_APPEND_DEFAULT_BLOCKS: u64 = 7_335;
 
@@ -30,7 +31,13 @@ const CD_APPEND_DEFAULT_BLOCKS: u64 = 7_335;
 const CD_CLOSE_FIRST_BLOCKS: u64 = 6_750;
 const CD_CLOSE_BLOCKS: u64 = 2_250;
 
-/// 非 CD 介质读不到实测差额时的默认余量：BD 的 zone 尺寸没有免费的规范值，本机也
+/// 非 CD 封盘那一次要写的 lead-out 下限（块）：DVD+R 的导出区最少 5120 扇区
+/// （ECMA-349 §20，含 Guard Zone 2 的 4096 下限）。实测差额量到的是会话之间的转换
+/// （Intro 加 Closure），封盘用不上，按这个下限兜底；BD-R 没有公开的标准值，走
+/// [`NON_CD_DEFAULT_BYTES`]。
+const NON_CD_CLOSE_FLOOR_BLOCKS: u64 = 5_120;
+
+/// 非 CD 介质读不到实测差额时的默认余量：BD 的 zone 尺寸没有公开的标准值，本机也
 /// 没有 DVD/BD 介质可实测，沿用改动前的 16 MiB。这是已知缺口，有对应盘片时应像
 /// CD 一样改成实测加兜底。
 const NON_CD_DEFAULT_BYTES: u64 = 16 * 1024 * 1024;
@@ -72,10 +79,24 @@ pub fn capacity_gate(device: &str, needed: u64, closing: bool) -> Result<Capacit
     let Some(kind) = profile.media_kind() else {
         return Ok(CapacityGate::Unknown);
     };
+    guard_fits(&mut mmc, kind, info.status, closing, needed)
+}
+
+/// 待写入量加区段开销余量必须放得下，否则给出双方共用的 [`BurnError::NotEnoughSpace`]。
+/// 引擎内的增长门禁与调用方的写前门禁都走这里，判据与拒绝载荷只有一份。
+///
+/// 可用容量读不到时返回 [`CapacityGate::Unknown`] 不下结论，由调用方按 ADR-0019 放行。
+pub(crate) fn guard_fits(
+    mmc: &mut MmcDevice,
+    kind: MediaKind,
+    status: DiscStatus,
+    closing: bool,
+    needed: u64,
+) -> Result<CapacityGate, BurnError> {
     let Some(free) = mmc.read_disc_capacity().free else {
         return Ok(CapacityGate::Unknown);
     };
-    let headroom = session_headroom(&mut mmc, kind, info.status, closing);
+    let headroom = session_headroom(mmc, kind, status, closing);
     if needed.saturating_add(headroom) > free {
         return Err(BurnError::NotEnoughSpace {
             needed,
@@ -114,7 +135,13 @@ pub(crate) fn session_headroom(
             }
         }
         MediaKind::DvdMinus | MediaKind::PlusOrBdR => {
-            measured_gap_blocks(mmc).unwrap_or(NON_CD_DEFAULT_BYTES / SECTOR_BYTES as u64)
+            let measured =
+                measured_gap_blocks(mmc).unwrap_or(NON_CD_DEFAULT_BYTES / SECTOR_BYTES as u64);
+            if closing {
+                measured.max(NON_CD_CLOSE_FLOOR_BLOCKS)
+            } else {
+                measured
+            }
         }
         // 随机可写介质（DVD-RAM、BD-RE）按块覆写，没有区段的 lead-in/lead-out。
         MediaKind::RandomWritable => 0,

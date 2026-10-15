@@ -873,14 +873,15 @@ fn drive_with_measured_gap(profile: u16, volume_space: u32, gap: u32) -> Scripte
 
 #[test]
 fn session_headroom_prefers_the_measured_gap_on_cd() {
+    // 差额取一个与默认值（7335）和下限（6750）都不同的数，量不到差额时这条会挂。
     let mut mmc = MmcDevice::new(Box::new(drive_with_measured_gap(
         CurrentProfile::CD_R,
         0x100,
-        7335,
+        7100,
     )));
     assert_eq!(
         crate::capacity::session_headroom(&mut mmc, MediaKind::Cd, DiscStatus::Appendable, false),
-        7335 * 2048
+        7100 * 2048
     );
 }
 
@@ -971,5 +972,56 @@ fn session_headroom_defaults_to_16_mib_for_non_cd() {
             true
         ),
         16 * 1024 * 1024
+    );
+}
+
+#[test]
+fn session_headroom_keeps_the_lead_out_floor_when_closing_on_non_cd() {
+    // 实测差额量到的是会话之间的转换（DVD+R 的 Intro 加 Closure），封盘那一次要写
+    // 导出区，按 ECMA-349 §20 的 5120 扇区下限兜底。
+    let mut mmc = MmcDevice::new(Box::new(drive_with_measured_gap(
+        CurrentProfile::DVD_PLUS_R,
+        0x200,
+        2048,
+    )));
+    assert_eq!(
+        crate::capacity::session_headroom(
+            &mut mmc,
+            MediaKind::PlusOrBdR,
+            DiscStatus::Appendable,
+            true
+        ),
+        5120 * 2048
+    );
+    // 不封盘时仍按实测差额。
+    let mut mmc = MmcDevice::new(Box::new(drive_with_measured_gap(
+        CurrentProfile::DVD_PLUS_R,
+        0x200,
+        2048,
+    )));
+    assert_eq!(
+        crate::capacity::session_headroom(
+            &mut mmc,
+            MediaKind::PlusOrBdR,
+            DiscStatus::Appendable,
+            false
+        ),
+        2048 * 2048
+    );
+}
+
+#[test]
+fn session_headroom_is_zero_on_random_writable_media() {
+    // DVD-RAM、BD-RE 按块覆写，没有区段的 lead-in/lead-out。这条档位实际走不到增长
+    // 路径（引擎更早处拒绝），写前门禁上这类盘通常也读不到可用容量。
+    let mut mmc = MmcDevice::new(Box::new(ScriptedDrive::new(CurrentProfile::DVD_RAM, 0b11)));
+    assert_eq!(
+        crate::capacity::session_headroom(
+            &mut mmc,
+            MediaKind::RandomWritable,
+            DiscStatus::Other(0b11),
+            false
+        ),
+        0
     );
 }

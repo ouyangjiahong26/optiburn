@@ -534,13 +534,13 @@ fn damaged_session_text(fallback: SessionFallback, confirmed: bool) -> String {
 /// （ADR-0019）。余量与比较收在 [`capacity_gate`]（按介质与动作分档，优先用盘上
 /// 实测几何）。
 ///
-/// 可用容量读不到时打印提示后放行：门禁是尽力而为的预检，不该成为新的故障点，
-/// 真放不下由引擎写入失败兜底。
+/// 盘片信息、介质族或可用容量读不到时打印提示后放行：门禁是尽力而为的预检，
+/// 不该成为新的故障点，真放不下由引擎写入失败兜底。
 fn ensure_fits(device: &str, needed_bytes: u64, closing: bool) -> Result<(), String> {
     match capacity_gate(device, needed_bytes, closing) {
         Ok(CapacityGate::Fits) => Ok(()),
         Ok(CapacityGate::Unknown) => {
-            println!("未能读到盘片的可用容量，跳过容量检查。");
+            println!("未能读到盘片信息或可用容量，跳过容量检查。");
             Ok(())
         }
         Err(BurnError::Mmc(MmcError::Transport(error))) => {

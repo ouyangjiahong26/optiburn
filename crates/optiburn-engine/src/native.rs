@@ -24,7 +24,6 @@ use optiburn_mmc::{
     wait_until_ready_for,
 };
 
-use crate::capacity::session_headroom;
 use crate::{
     BurnEngine, BurnError, BurnJob, CancelToken, GrowJob, NativeGap, RepairOutcome, SessionFallback,
 };
@@ -166,7 +165,8 @@ pub(crate) fn grow_with_device(
         0
     };
     let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
-    guard_grow_capacity(mmc, kind, info.status, job.close_disc, plan.total_bytes())?;
+    // 引擎内也走一遍口径与调用方写前门禁同源的容量判据（ADR-0019）。
+    crate::capacity::guard_fits(mmc, kind, info.status, job.close_disc, plan.total_bytes())?;
 
     mmc.set_write_parameters(kind, !job.close_disc)?;
     // 会话镜像先落到本地临时文件再按块写盘：生成要按源文件随机读，边生成边下发
@@ -323,31 +323,6 @@ fn read_graft_source(
         }
     }
     Err(newest_error)
-}
-
-/// 增长会话的容量门禁（ADR-0019 的口径）：驱动器报得出可用容量就让新会话加上
-/// 区段开销必须放得下。口径与调用方的写前门禁同源：可用容量取
-/// [`MmcDevice::read_disc_capacity`]，余量取 [`session_headroom`]。读不到可用容量
-/// 时跳过，让驱动器的写错误兜底。
-fn guard_grow_capacity(
-    mmc: &mut MmcDevice,
-    kind: MediaKind,
-    status: DiscStatus,
-    closing: bool,
-    needed: u64,
-) -> Result<(), BurnError> {
-    let Some(free) = mmc.read_disc_capacity().free else {
-        return Ok(());
-    };
-    let headroom = session_headroom(mmc, kind, status, closing);
-    if needed.saturating_add(headroom) > free {
-        return Err(BurnError::NotEnoughSpace {
-            needed,
-            headroom,
-            free,
-        });
-    }
-    Ok(())
 }
 
 /// 增长会话的临时镜像：生成完的文件在所有返回路径上都被删掉。

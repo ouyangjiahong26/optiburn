@@ -987,8 +987,8 @@ fn job_error_of_burn(error: BurnError) -> JobError {
 /// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝（ADR-0019）。余量与比较
 /// 收在 [`capacity_gate`]（按介质与动作分档，优先用盘上实测几何）。
 ///
-/// 可用容量读不到时放行：门禁是尽力而为的预检，不该成为新的故障点，真放不下由
-/// 引擎写入失败兜底。
+/// 盘片信息、介质族或可用容量读不到时放行：门禁是尽力而为的预检，不该成为新的
+/// 故障点，真放不下由引擎写入失败兜底。
 fn ensure_fits(device: &str, needed_bytes: u64, closing: bool) -> Result<(), JobError> {
     match capacity_gate(device, needed_bytes, closing) {
         Ok(CapacityGate::Fits | CapacityGate::Unknown) => Ok(()),
