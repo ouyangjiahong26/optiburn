@@ -107,15 +107,20 @@ hadris-cd 的选项组装、输出文件必须以读写方式打开（hadris 写
 
 接口：两种引擎接在同一个 `BurnEngine::{name, burn}` 接缝上（`XorrisoEngine` 子进程、
 `NativeEngine` 自己发 MMC 命令，见 ADR-0017），输入 `BurnJob`：镜像、设备、倍速、是否
-多区段。追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘）同样按
-平台分派：Windows 用原生增长模式（`native::grow` 读旧区段、生成新区段，生成器在
-`grow.rs` 与 `grow/old_session.rs`，见 ADR-0020），Linux 维持 xorriso 增长模式。
-原生引擎拒绝时会给出结构化的 `NativeGap`。进度都通过 `&mut dyn FnMut(f32)` 回调。
+多区段。追加刻录 `grow`（输入 `GrowJob`：源目录、设备、倍速、卷标、是否封盘）默认走
+原生增长（`native::grow` 读旧区段、生成新区段，生成器在 `grow.rs` 与
+`grow/old_session.rs`，见 ADR-0020），Windows 与 Linux 都一样。Linux 上每次写入前
+按设备事实解析实际后端：随机可写介质、Profile 不在支持名单、指定倍速三条命中时回退
+xorriso 增长模式（ADR-0027）。界面与 `OPTIBURN_GROW_BACKEND` 可以显式选择后端，显式
+选择不回退。原生引擎拒绝时会给出结构化的 `NativeGap`。进度都通过
+`&mut dyn FnMut(f32)` 回调。
 另有读侧的五个能力 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
 `last_session_is_iso`，接在 `ReadBackend` 接缝上（`XorrisoRead` 子进程与 `NativeRead`
 原生块读加 ISO 9660/UDF 解析，Windows 默认原生，见 ADR-0018 与 ADR-0021），
 `grow_size`（增长模式预演，返回即将写入的新区段字节数，供写前容量门禁比较。
-Linux 是 `xorriso -print_size`，Windows 是原生会话计划的尺寸），以及
+默认是原生会话计划的尺寸，回退到 xorriso 时是 `xorriso -print_size`，见 ADR-0027），
+`append_gate_session_state`（写前门禁的末区段判定，
+读法跟随写盘引擎，见 ADR-0025），以及
 `compare_trees`（按文件名与内容单向对比，见 ADR-0010）。容量门禁的区段开销余量
 共用常量 `SESSION_OVERHEAD`。
 
@@ -160,8 +165,8 @@ ADR-0021。
   `READ FORMAT CAPACITIES` 兜底，`probe` 与 GUI 设备页/追加页显示，写盘前容量
   门禁，见 ADR-0019）。ATIP 读取仍缺，容量不依赖它。
 - 后续：BD-R 伪覆盖、Windows 上的 IMAPI2 校验（仅校验，不接管写入，
-  见 ADR-0005）。多区段追加两条路都已覆盖：Linux 走 xorriso 增长模式（ADR-0006），
-  Windows 走原生增长模式（ADR-0020）。
+  见 ADR-0005）。多区段追加默认走原生增长（ADR-0020、ADR-0027），Linux 上按设备
+  事实回退 xorriso 增长模式（ADR-0006）。
 
 ## 平台支持现状
 
@@ -169,7 +174,7 @@ ADR-0021。
 |---|---|---|
 | `build-image` | 可用 | 可用 |
 | `burn`（`--engine xorriso` 或 `native`） | 可用（xorriso 需要写设备权限，native 未在 Linux 真机验证） | 可用（`native`，GUI 默认，2026-10-10 在 CD-R 上真机验证，DVD/BD 各族待介质） |
-| `append`（xorriso 增长模式 / 原生增长模式） | 可用（xorriso），前置检查按盘片状态自动路由 | 可用（原生增长模式，ADR-0020）：唯一能取得的 xorriso 不含光驱访问（ADR-0008 补记），Windows 走原生会话生成器 |
+| `append`（原生增长 / xorriso 增长模式） | 可用。默认走原生增长（写前 1.6 秒，实测 2026-10-15：改默认前同一张盘是 51.0 秒），随机可写介质、未知介质类型或指定倍速时回退 xorriso（ADR-0027）。DVD±R 与 BD-R 的原生写序列未经真机验证，遇到问题在追加页选“xorriso 增长模式”或用 `OPTIBURN_GROW_BACKEND=xorriso` 退回 | 可用（原生增长模式，ADR-0020）：唯一能取得的 xorriso 不含光驱访问（ADR-0008 补记），Windows 走原生会话生成器 |
 | `probe` | 可用（`/dev/sr*`） | 可用（枚举盘符，2026-10-10 在 USB 光驱上实测） |
 | 读盘（浏览、回读校验、卷标、末区段门禁） | 可用（xorriso 优先，读不到 ISO 9660 时后端回退到原生，纯 UDF 盘可读：合成盘夹具与设备路径（多区段 CD-R，2026-10-12，验证的是回退接线与抢救）已实测，纯 UDF 实物盘待补，ADR-0024。`OPTIBURN_READ_BACKEND=xorriso` 可退回） | 可用（`native`，GUI 默认，2026-10-10 在 CD-R 上真机验证，两种区段地址约定都实测读通。UDF 盘的读侧见 ADR-0021，损坏末区段的回退见 ADR-0022，ADR-0024 起 Linux 侧经后端回退也可用。复制到剪贴板两平台都可用，见 ADR-0012） |
 | 原生 MMC 传输 | 可用（`SG_IO`） | 可用（SPTI，2026-10-10 在 USB 光驱上实测） |

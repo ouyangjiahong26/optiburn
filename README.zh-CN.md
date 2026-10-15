@@ -19,7 +19,7 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Wind
 |---|---|
 | `optiburn build-image` | 可用。生成 ISO 9660 + Joliet + UDF Bridge 镜像，测试中与 xorriso 对拍验证。 |
 | `optiburn burn` | Linux 可用（`xorriso` 或 `--engine native`），Windows 可用（`--engine native`，图形前端默认，2026-10-10 在 CD-R 上真机验证，DVD/BD 各族待介质）。默认多区段（盘保持可追加），`--close-disc` 才封盘。 |
-| `optiburn append` | Linux 可用（xorriso 增长模式），Windows 可用（原生增长模式，ADR-0020）：引擎读出末区段的目录树，把源目录嫁接上去，新区段只写目录结构与新文件数据，旧文件的数据块原地引用。追加目录并合并已有区段，旧文件保持可见。 |
+| `optiburn append` | Linux 与 Windows 都可用，默认走原生增长（ADR-0020、ADR-0027）：引擎读出末区段的目录树，把源目录嫁接上去，新区段只写目录结构与新文件数据，旧文件的数据块原地引用。追加目录并合并已有区段，旧文件保持可见。Linux 上按设备事实回退 xorriso 增长模式，判据只有随机可写介质、未知介质类型、指定倍速三条。追加页可选“增长模式后端”，CLI 用 `OPTIBURN_GROW_BACKEND`。2026-10-15 真机（多区段 CD-R）：默认档写前从 51.0 秒降到 1.6 秒。DVD±R 与 BD-R 的原生写序列未经真机验证，遇到问题用 xorriso 回退。 |
 | `optiburn probe` | Linux（`/dev/sr*`）与 Windows（盘符）可用。找不到设备时报“未发现光驱”（退出码 0）。 |
 | `optiburn repair` / `optiburn salvage` | 中断刻录的抢救。`repair` 按 libburn 的 `burn_disc_close_damaged` 顺序关掉损坏的轨道与区段（ADR-0022），盘可以继续写。`salvage` 读标准读取器看不见的未关闭轨道（没进 TOC）里的数据：列出它的目录树，按写入边界给每条文件定性（完整、半截、一个字节都没写），把能读的部分按盘上路径抽出来。半截的 `.zip` 只保留完整条目并重建中央目录与 EOCD，常规解压工具能直接用。中断点落在第一条里面时按原始字节保留并报出是哪一条。不需要源文件：边界与条目完整性都由盘上结构自证。2026-10-11 在一张被中断写入的盘上真机验证。 |
 | 读盘 | 可用。读侧（卷标、末区段格式门禁、目录树列举、抽取）接在 `ReadBackend` 接缝上：Linux 走 xorriso，Windows 走原生 MMC 加 ISO 9660 与 UDF 解析（ADR-0018、ADR-0021，2026-10-10 在 CD-R 上真机验证，两种区段地址约定都读通）。 |

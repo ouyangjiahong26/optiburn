@@ -10,7 +10,9 @@
 | 母盘制作（Mastering） | 把目录树组织成镜像的过程：目录结构连同文件数据写成 ISO 9660/Joliet/UDF 元数据齐备的镜像。对应 crate `optiburn-mastering`。 | 打包、构建镜像、制作镜像 |
 | 区段（Session） | 一次写入操作在盘上形成的完整 lead-in/数据/lead-out 单位。多区段盘上 Windows 只挂载最后一个区段。 | 会话、分节 |
 | 区段地址约定（Session Addressing） | 目录记录里 extent 的解释规则：区段相对（自家原生引擎，独立镜像原样落盘）或盘级绝对（xorriso 增长模式，libisofs 的 ms_block 位移）。读侧按根目录首记录是否自引用探测。UDF 侧另有三种定位（单段、区段相对、盘级绝对，按 AVDP 的 tag_location 区分，ADR-0021）。 | 地址空间、寻址模式 |
-| 增长模式（Grow） | 追加刻录的方式：引擎读出盘上已有区段的目录树，把源目录内容并入后作为新区段提交，旧文件保持可见。对应 `GrowJob`、`optiburn_engine::grow`、CLI 的 `append`。Linux 走 xorriso，Windows 走原生嫁接式实现（ADR-0020）。 | 续刻、增量刻录、追加镜像 |
+| 增长模式（Grow） | 追加刻录的方式：引擎读出盘上已有区段的目录树，把源目录内容并入后作为新区段提交，旧文件保持可见。对应 `GrowJob`、`optiburn_engine::grow`、CLI 的 `append`。默认走原生嫁接式实现，Linux 上按设备事实回退 xorriso（ADR-0020、ADR-0027）。 | 续刻、增量刻录、追加镜像 |
+| 增长模式后端（Grow Backend） | 增长模式这次由谁执行：`native`（原生增长）或 `xorriso`（子进程增长模式）。写前门禁的末区段判定、尺寸预演、写入三条跟随同一个后端。默认档按设备事实解析（ADR-0027），也可以由界面或保守开关 `OPTIBURN_GROW_BACKEND` 显式选择。 | 写后端、引擎模式、增长引擎 |
+| 增长后端回退（Grow Backend Fallback） | 默认档下因为设备事实改用 xorriso 增长模式的动作：判据只有随机可写介质、未知介质类型、指定倍速三条，只看驱动器的静态事实与调用方请求，不看写入过程中的报错（ADR-0027）。与读侧的“后端回退”是两回事。 | 回退、降级、兜底、切后端 |
 | 嫁接式增长（Grafting） | 原生增长模式的写法：新区段只写目录结构与新文件数据，旧文件的数据块原地引用，既不重读也不重写。对应 `grow.rs` 的会话生成器。 | 合入式追加、增量合并 |
 | 增长会话（Growth Session） | 增长模式生成并写下的那一个新区段：ISO 9660 加 Joliet（不带 UDF 描述符），目录记录里的地址是盘级绝对地址。对应 `SessionPlan`。 | 追加区段、新区段镜像 |
 | 候选区段（Session Candidate） | 回退时逐个尝试的区段起点：`READ TOC` 的轨道起点加末区段起点，去重后从新到旧。每个区段的首条轨道起点就是该区段起点。对应 `disc_read` 的 `session_candidates`。 | 备用区段、回退起点 |
@@ -50,7 +52,8 @@
 | 锚点（AVDP） | UDF 的 Anchor Volume Descriptor Pointer：定位主卷描述符序列的入口，固定出现在块 256（区段内相对）与盘的末端位置。它的 tag_location 字段是判断该区段用哪种地址约定的依据（ADR-0021）。 | 锚描述符、AVDP 扇区 |
 | 读盘（Disc Reading） | 读出盘上末区段内容的五个能力：卷标、末区段是否 ISO 9660、目录树列举、整树抽取、按路径抽取。接在 `ReadBackend` 接缝上，后端是 xorriso 子进程或原生解析（ISO 9660 见 ADR-0018，UDF 见 ADR-0021）。 | 读碟、光盘读取 |
 | 后端回退（Backend Fallback） | 读盘时 xorriso 读不到 ISO 9660（输出报空镜像兜底或读侧报错），改用原生读侧重试同一次操作的动作。与损坏末区段的候选区段回退（`SessionFallback`）是两回事。 | 回退、降级、兜底、切后端 |
-| 保守开关（Conservative Switch） | 置位后退回改动前行为的环境变量，用于对照与止损。现有 `OPTIBURN_LAST_SESSION_ONLY` 与 `OPTIBURN_READ_BACKEND`。 | 逃生开关、兼容开关 |
+| 保守开关（Conservative Switch） | 置位后退回改动前行为的环境变量，用于对照与止损。现有 `OPTIBURN_LAST_SESSION_ONLY`、`OPTIBURN_READ_BACKEND` 与 `OPTIBURN_GROW_BACKEND`。 | 逃生开关、兼容开关 |
+| 阶段计时（stage timing） | 写盘前各段耗时的诊断输出：`OPTIBURN_TIMING` 置位后 CLI 与 GUI 命令层的 `burn`、`append` 每段完成往 stderr 打一行（`阶段 尺寸预演：4.2 秒`，GUI 多一段暂存拷贝）。用来在真机上分辨等待花在哪一段，见 ADR-0025。 | 性能日志、耗时统计 |
 | 盘片容量（DiscCapacity） | 总容量与可用容量两个口径，可用容量优先取 READ TRACK INFORMATION 的剩余块数，退回 READ FORMAT CAPACITIES 的格式化容量（ADR-0019）。对应 `DiscCapacity`、`read_disc_capacity`。 | 光盘大小、介质容量、容量信息 |
 | 可用容量（free） | 盘片容量里还能写入的量，写前容量门禁的比较基准。顺序介质上是剩余块数乘 2048 字节（ADR-0019）。 | 剩余空间、可用空间、自由空间 |
 | 格式化容量（FormatCapacity） | READ FORMAT CAPACITIES 报出的两个数值：未格式化介质的最大可格式化容量（描述符类型 1）与已格式化介质的当前格式化容量（类型 2）。对应 `FormatCapacity`、`read_format_capacities`。 | 介质容量、盘片大小 |

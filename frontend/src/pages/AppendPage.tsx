@@ -17,6 +17,7 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
   const [device, setDevice] = useState("");
   const [volumeId, setVolumeId] = useState("OPTIBURN");
   const [speed, setSpeed] = useState("");
+  const [backend, setBackend] = useState("auto");
   const [closeDisc, setCloseDisc] = useState(false);
   const [allowDamaged, setAllowDamaged] = useState(false);
   const [verify, setVerify] = useState<VerifyReport | null>(null);
@@ -140,6 +141,7 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
           speed: speedOption(speed),
           closeDisc,
           allowDamagedLastSession: allowDamaged,
+          backend,
         },
       });
     } catch (cause) {
@@ -299,6 +301,23 @@ export function AppendPage({ locked, result, active, onJobStart, onJobAbort }: D
               setVolumeId(event.target.value);
             }}
           />
+        </FormRow>
+        <FormRow
+          label={t("Growth backend", "增长模式后端")}
+          hint={t(
+            "Follow default uses native growth and falls back to xorriso for random-writable media, unknown media types or a requested speed.",
+            "跟随默认用原生增长，随机可写介质、未知介质类型或指定倍速时自动回退 xorriso。",
+          )}
+        >
+          <select
+            value={backend}
+            disabled={locked}
+            onChange={(event) => setBackend(event.target.value)}
+          >
+            <option value="auto">{t("Follow default", "跟随默认")}</option>
+            <option value="native">{t("Native growth", "原生增长")}</option>
+            <option value="xorriso">{t("xorriso grow mode", "xorriso 增长模式")}</option>
+          </select>
         </FormRow>
         <FormRow label={t("Speed", "倍速")} htmlFor="append-speed">
           <input

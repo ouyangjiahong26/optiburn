@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowJob, IsoSessionState,
-    NativeEngine, NativeGap, SessionFallback, XorrisoEngine, grow, grow_size, iso_session_state,
-    read_volume_id,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowBackendMode, GrowJob,
+    GrowSuitability, IsoSessionState, NativeEngine, NativeGap, SessionFallback, XorrisoEngine,
+    append_gate_session_state, grow, grow_backend_choice, grow_backend_mode_value, grow_size,
+    read_volume_id, resolve_grow_backend,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
@@ -631,6 +632,34 @@ pub async fn start_build_image(
     built
 }
 
+/// 阶段计时：把“点下去到开始写数据之间”的等待拆成可读的几段。
+///
+/// 开关名与取值判定收在引擎里（[`optiburn_engine::stage_timing_enabled`]），CLI 与
+/// GUI 命令层共用一个口径。默认关闭，输出面向排查的人，不上面向用户的界面，阶段名
+/// 与 CLI 保持同一份文字，两边输出可以对着看。GUI 的窗口比 CLI 多一段暂存拷贝
+/// （把待刻录文件收进临时目录），默认档其余几段各自要起一个 xorriso 子进程，
+/// 慢在哪一段只能靠真机上的计时分辨。
+struct StageTimer {
+    enabled: bool,
+}
+
+impl StageTimer {
+    fn from_env() -> Self {
+        Self {
+            enabled: optiburn_engine::stage_timing_enabled(),
+        }
+    }
+
+    fn stage<T>(&self, name: &str, run: impl FnOnce() -> T) -> T {
+        let started = std::time::Instant::now();
+        let outcome = run();
+        if self.enabled {
+            eprintln!("阶段 {name}：{:.1} 秒", started.elapsed().as_secs_f64());
+        }
+        outcome
+    }
+}
+
 /// 把镜像写到盘上。立即返回，进度与结果走 `job-progress` / `job-done` 事件。
 #[tauri::command]
 pub async fn start_burn(
@@ -645,21 +674,40 @@ pub async fn start_burn(
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
         let image = PathBuf::from(image);
-        let result = check_write_gates(&device, false).and_then(|_| {
-            run_disc_task(DiscTask {
-                app: &worker,
-                kind: JobKind::Burn,
-                append: false,
-                path: &image,
-                device: &device,
-                // 卷标只在追加时有意义。
-                volume_id: "",
-                speed,
-                close_disc,
-                allow_damaged_last_session: false,
-                cancel: &cancel,
-            })
+        let timer = StageTimer::from_env();
+        // 镜像刻录仍按平台分派（ADR-0027 决定不动这条），门禁只管盘片状态与挂载。
+        let mode = resolve_grow_backend(None).map_err(|error| {
+            JobError::Input(engine_error_text(
+                lang(),
+                "选择增长后端",
+                "Selecting the growth backend",
+                &error,
+            ))
         });
+        let result = match mode {
+            Ok(mode) => timer
+                .stage("写前门禁", || {
+                    check_write_gates(mode, speed.is_some(), &device, false)
+                })
+                .and_then(|_| {
+                    run_disc_task(DiscTask {
+                        app: &worker,
+                        kind: JobKind::Burn,
+                        append: false,
+                        path: &image,
+                        device: &device,
+                        // 卷标只在追加时有意义。
+                        volume_id: "",
+                        speed,
+                        close_disc,
+                        allow_damaged_last_session: false,
+                        mode,
+                        cancel: &cancel,
+                        timer: &timer,
+                    })
+                }),
+            Err(error) => Err(error),
+        };
         match result {
             Ok(message) => finish_job(&worker, JobKind::Burn, "done", None, message),
             Err(e) => {
@@ -679,6 +727,41 @@ pub struct AppendOptions {
     speed: Option<u32>,
     close_disc: bool,
     allow_damaged_last_session: bool,
+    /// 增长模式后端选择：`auto`（缺省，跟随环境开关与平台默认）、`native`、`xorriso`
+    /// （ADR-0027）。界面上的“跟随默认 / 原生增长 / xorriso 增长”。
+    backend: Option<String>,
+}
+
+/// 界面选择到后端选择的映射：`auto` 与缺省都表示“跟随默认”，此时让环境开关生效。
+fn append_backend_choice(value: Option<&str>) -> Result<Option<GrowBackendMode>, JobError> {
+    match grow_backend_mode_value(value) {
+        Ok(GrowBackendMode::Auto) => Ok(None),
+        Ok(explicit) => Ok(Some(explicit)),
+        Err(error) => Err(JobError::Input(engine_error_text(
+            lang(),
+            "选择增长后端",
+            "Selecting the growth backend",
+            &error,
+        ))),
+    }
+}
+
+/// 增长后端从原生态回落时的说明：中文取自引擎的 [`GrowSuitability::user_text`]，
+/// 英文在这里补一份（引擎没有英文文案）。
+fn fallback_notice(reason: GrowSuitability) -> String {
+    let english = match reason {
+        GrowSuitability::Rewritable => {
+            "Random-writable media does not support native growth, so this run uses xorriso grow mode and prepares more slowly."
+        }
+        GrowSuitability::UnsupportedProfile => {
+            "The profile reported by the drive is outside the native growth range, so this run uses xorriso grow mode."
+        }
+        GrowSuitability::WriteSpeed => {
+            "A write speed was requested and the native engine cannot set one yet, so this run uses xorriso grow mode."
+        }
+        GrowSuitability::Native | GrowSuitability::Unknown => "",
+    };
+    pick(lang(), reason.user_text(), english).to_string()
 }
 
 /// 把待刻录文件追加到盘上（增长模式）：文件先收进暂存目录，再按盘根写入。
@@ -709,6 +792,48 @@ pub async fn start_append(
     Ok(())
 }
 
+/// 一次追加在写入前的判据与门禁结论。
+struct AppendPreflight {
+    /// 门禁判定、尺寸预演与写入共用的后端选择。
+    mode: GrowBackendMode,
+    /// 从原生态回落的原因（没有回落就是 `None`）。
+    fallback: Option<GrowSuitability>,
+    /// 末区段损坏时回退到更早区段的信息（ADR-0022），由调用方决定要不要用户确认。
+    damaged: Option<SessionFallback>,
+}
+
+/// 解析后端选择（界面选择优先，其次环境开关，最后平台默认，ADR-0027）并过写前门禁。
+///
+/// 门禁先跑：挂载、封口、末区段格式这些拒绝都发生在把文件拷进暂存之前。实际生效的
+/// 后端由设备事实决定，回落原因带回去说给用户，免得以为坏了。
+fn append_preflight(
+    options: &AppendOptions,
+    device: &str,
+    timer: &StageTimer,
+) -> Result<AppendPreflight, JobError> {
+    let backend_error = |error: BurnError| {
+        JobError::Input(engine_error_text(
+            lang(),
+            "选择增长后端",
+            "Selecting the growth backend",
+            &error,
+        ))
+    };
+    let mode = resolve_grow_backend(append_backend_choice(options.backend.as_deref())?)
+        .map_err(backend_error)?;
+    let fallback = grow_backend_choice(mode, device, options.speed.is_some())
+        .map_err(backend_error)?
+        .fallback;
+    let damaged = timer.stage("写前门禁", || {
+        check_write_gates(mode, options.speed.is_some(), device, true)
+    })?;
+    Ok(AppendPreflight {
+        mode,
+        fallback,
+        damaged,
+    })
+}
+
 /// 追加任务主体：先过写前门禁，再把待刻录文件收进暂存目录，写入完成或失败后都清掉暂存。
 fn run_append_task(
     app: &AppHandle,
@@ -718,16 +843,15 @@ fn run_append_task(
     volume_id: &str,
     options: AppendOptions,
 ) -> Result<String, JobError> {
-    // 门禁先跑：挂载、封口、末区段格式这些拒绝都发生在把文件拷进暂存之前。
-    // 末区段损坏时门禁会带回回退信息：没有用户确认（勾选/参数）就拒绝，确认了
-    // 也要在日志里说清跳过了什么（ADR-0022）。
-    if let Some(fallback) = check_write_gates(device, true)?
+    let timer = StageTimer::from_env();
+    let preflight = append_preflight(&options, device, &timer)?;
+    if let Some(fallback) = preflight.damaged
         && !options.allow_damaged_last_session
     {
         return Err(JobError::DamagedSession { fallback });
     }
     let stage = unique_temp_dir("optiburn-stage").map_err(JobError::Input)?;
-    if let Err(message) = stage_files(lang(), &files, &stage) {
+    if let Err(message) = timer.stage("暂存拷贝", || stage_files(lang(), &files, &stage)) {
         // 暂存阶段的失败同样要清目录，不留用户文件的副本。
         let _ = std::fs::remove_dir_all(&stage);
         return Err(JobError::Input(message));
@@ -742,10 +866,16 @@ fn run_append_task(
         speed: options.speed,
         close_disc: options.close_disc,
         allow_damaged_last_session: options.allow_damaged_last_session,
+        mode: preflight.mode,
         cancel,
+        timer: &timer,
     });
     let _ = std::fs::remove_dir_all(&stage);
-    result
+    // 回落原因与完成消息并排给用户，写在结果横幅里。
+    result.map(|message| match preflight.fallback {
+        Some(reason) => format!("{} {}", fallback_notice(reason), message),
+        None => message,
+    })
 }
 
 /// 把待刻录文件收进暂存目录，盘根就是这些文件的文件名。
@@ -898,7 +1028,11 @@ struct DiscTask<'a> {
     close_disc: bool,
     /// 追加时允许在末区段损坏的盘上回退续写（ADR-0022），门禁在调用方先跑。
     allow_damaged_last_session: bool,
+    /// 增长模式后端选择（ADR-0027），门禁判定、尺寸预演与写入共用。
+    mode: GrowBackendMode,
     cancel: &'a CancelToken,
+    /// 阶段计时（ADR-0025），由调用方建一次，贯穿整条写前流程。
+    timer: &'a StageTimer,
 }
 
 /// 刻录/追加的阻塞主体：跑引擎，完成后读一次区段数放进完成消息。
@@ -920,9 +1054,15 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             close_disc: task.close_disc,
             allow_damaged_last_session: task.allow_damaged_last_session,
         };
-        let needed = grow_size(&job).map_err(job_error_of_burn)?;
-        ensure_fits(task.device, needed)?;
-        grow(&job, &mut progress, task.cancel)
+        let needed = task
+            .timer
+            .stage("尺寸预演", || grow_size(task.mode, &job))
+            .map_err(job_error_of_burn)?;
+        task.timer
+            .stage("容量检查", || ensure_fits(task.device, needed))?;
+        task.timer.stage("写入", || {
+            grow(task.mode, &job, &mut progress, task.cancel)
+        })
     } else {
         // 与 CLI 相同：默认多区段，显式要求才封盘。
         let job = BurnJob {
@@ -942,8 +1082,11 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
                 )),
             })?
             .len();
-        ensure_fits(task.device, needed)?;
-        burn_engine().burn(&job, &mut progress, task.cancel)
+        task.timer
+            .stage("容量检查", || ensure_fits(task.device, needed))?;
+        task.timer.stage("写入", || {
+            burn_engine().burn(&job, &mut progress, task.cancel)
+        })
     };
     result.map_err(job_error_of_burn)?;
     Ok(sessions_message(task.device))
@@ -1015,7 +1158,12 @@ fn burn_engine() -> Box<dyn BurnEngine> {
 /// 白拷之前。刻录由 start_burn 的任务闭包先跑。
 /// 查写前门禁。返回“末区段损坏时回退到更早区段”的信息（`None` 表示没有这种情况），
 /// 由调用方决定要不要用户确认（ADR-0022）。
-fn check_write_gates(device: &str, append: bool) -> Result<Option<SessionFallback>, JobError> {
+fn check_write_gates(
+    mode: GrowBackendMode,
+    speed_requested: bool,
+    device: &str,
+    append: bool,
+) -> Result<Option<SessionFallback>, JobError> {
     // 挂载占用必挂：libburn 拿不到独占设备时只回英文报错，这里先换成卸载指引。
     if let Some(point) = optiburn_transport::mounted_at(device) {
         return Err(JobError::Mounted {
@@ -1027,9 +1175,10 @@ fn check_write_gates(device: &str, append: bool) -> Result<Option<SessionFallbac
     // 镜像路径不接受可追加盘（单区段镜像会遮住已有区段的文件），增长模式放行。
     approve_write(&info, append).map_err(JobError::Gate)?;
     // 追加路径再过一道：盘上有没有可用的 ISO 9660 会话（ADR-0010、ADR-0022）。
+    // 判定问的是将要写盘的引擎能不能读它（ADR-0025），不是笼统的读侧分派。
     let mut damaged = None;
     if append && info.status == DiscStatus::Appendable {
-        match iso_session_state(device).map_err(|e| match e {
+        match append_gate_session_state(mode, device, speed_requested).map_err(|e| match e {
             // 盘上 UDF 结构读不了：与“末区段格式”不是一回事，文案由 job_error_text 给。
             BurnError::UnsupportedUdf(detail) => JobError::UnsupportedUdf(detail),
             other => JobError::Input(engine_error_text(
@@ -1086,6 +1235,25 @@ fn sessions_message(device: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 增长后端的选择映射：缺省与 `auto` 都表示“跟随默认”（让环境开关生效），
+    /// 显式值原样透传，非法值报错（ADR-0027）。断言用 `ok().flatten()`：
+    /// `JobError` 不带 Debug，测试里只关心成功形态。
+    #[test]
+    fn append_backend_choice_maps_auto_to_the_environment() {
+        assert_eq!(append_backend_choice(None).ok().flatten(), None);
+        assert_eq!(append_backend_choice(Some("")).ok().flatten(), None);
+        assert_eq!(append_backend_choice(Some("auto")).ok().flatten(), None);
+        assert_eq!(
+            append_backend_choice(Some("native")).ok().flatten(),
+            Some(GrowBackendMode::Native)
+        );
+        assert_eq!(
+            append_backend_choice(Some("xorriso")).ok().flatten(),
+            Some(GrowBackendMode::Xorriso)
+        );
+        assert!(append_backend_choice(Some("cdrecord")).is_err());
+    }
 
     #[test]
     fn profile_mapping_covers_three_media() {

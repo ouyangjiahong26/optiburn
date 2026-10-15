@@ -368,6 +368,14 @@ pub fn iso_session_state(source: &str) -> Result<IsoSessionState, BurnError> {
     selected_read_backend()?.iso_session_state(source)
 }
 
+/// 末区段状态的原生读法，不走读侧后端分派。
+///
+/// 写盘引擎是原生时，写前门禁要问的就是原生读侧（ADR-0025）：读侧开关取
+/// `xorriso` 时门禁也不该去起一个子进程，判定与写盘方必须一致。
+pub fn native_iso_session_state(source: &str) -> Result<IsoSessionState, BurnError> {
+    NATIVE_READ.iso_session_state(source)
+}
+
 /// 把镜像或设备的目录树抽取到本地目录，供回读校验与复制使用（ADR-0010）。
 ///
 /// xorriso 路径的 `-osirrox on` 打开抽取权限，`-extract / <目标>` 把整树落到目标
@@ -1070,6 +1078,55 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
             merge_session_state(Err(BurnError::NoIsoSession), || Ok(IsoSessionState::Usable))
                 .unwrap(),
             IsoSessionState::Usable
+        );
+    }
+
+    /// 门禁的判定跟随写盘引擎（ADR-0025）：写盘方是原生时直接问原生读侧，写盘方是
+    /// xorriso 时走读侧分派（xorriso 优先加后端回退，ADR-0024 决策 7）。
+    ///
+    /// 断言的是“换读法不改结论”：两种夹具（ISO 盘、纯 UDF 盘）两侧给同一答案，
+    /// 开关改变的是这次查询由谁回答（写前窗口里起不起子进程），不是判定口径。
+    /// 起不起子进程只能在接了光驱的机器上看（CLI 的 `OPTIBURN_TIMING` 计时）。
+    #[cfg(unix)]
+    #[test]
+    fn gate_answers_are_the_same_under_both_writing_backends() {
+        let tmp = TempDir::new("readback-gate-backend");
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).expect("create the source dir");
+        std::fs::write(src.join("说明.txt"), b"gate fixture").expect("write the sample file");
+        let image = tmp.path().join("gate.iso");
+        build_image(
+            &src,
+            &image,
+            &ImageSpec {
+                profile: DiscProfile::Dvd,
+                volume_id: "GATE".to_string(),
+                joliet: true,
+            },
+        )
+        .expect("build the fixture image");
+        let source = image.to_str().expect("utf-8 temp path");
+
+        // ISO 盘：两侧都放行。
+        assert_eq!(
+            crate::gate_session_state_with("native", source).unwrap(),
+            IsoSessionState::Usable
+        );
+        assert_eq!(
+            crate::gate_session_state_with("xorriso", source).unwrap(),
+            IsoSessionState::Usable
+        );
+
+        // 纯 UDF 盘：两侧都判不可用，续写照旧被拒（ADR-0010）。
+        let udf = write_udf_only_image(&tmp);
+        let udf_source = udf.to_str().expect("utf-8 temp path");
+        assert_eq!(
+            crate::gate_session_state_with("native", udf_source).unwrap(),
+            IsoSessionState::Unusable
+        );
+        assert_eq!(
+            crate::gate_session_state_with("xorriso", udf_source).unwrap(),
+            IsoSessionState::Unusable
         );
     }
 

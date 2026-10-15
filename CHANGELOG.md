@@ -9,15 +9,37 @@
 
 **中文**
 
+### FEAT
+
+- 增长模式（追加）新增保守开关 `OPTIBURN_GROW_BACKEND`（`auto` 默认、`xorriso`、`native`）：Linux 上取 `native` 可把追加的写前准备（末区段门禁判定、尺寸预演）与写入整条切到原生引擎，写前窗口里不再起子进程。写前门禁的末区段判定改为跟随写盘引擎，`probe` 每台设备多报一行增长模式后端。默认档在这一条落地时仍是 xorriso，同一发布内随后切到原生，见下面“变更”一节。真机验证（2026-10-15，多区段 CD-R，HL-DT-ST GP70N）：默认档写前 51.0 秒、总计 81.4 秒，原生档写前 0.3 秒、总计 16.9 秒，两档写入的文件都读回一致，原生增长在 Linux 上的写序列由此验证通过一次，嫁接数据的逐字节校验也通过（220 MB 的安装包 sha256 与 Release 产物一致，ADR-0025）。
+- 新增写前阶段计时诊断 `OPTIBURN_TIMING`：置位后 CLI 与 GUI 命令层每段完成往 stderr 打一行（`阶段 尺寸预演：4.2 秒`，GUI 多一段暂存拷贝，从终端启动可见）。默认档的 Linux 追加准备会依次起三个 xorriso 子进程（末区段查询、尺寸预演、提交），每次都要重新初始化驱动器并读进整份盘上 ISO 结构，计时行就是用来在真机上分辨这十几秒花在哪一段（ADR-0025）。
+
 ### 修复
 
 - 修正非 UTF-8 环境下追加会写坏盘上原有非 ASCII 文件名的问题：会碰文件名的 xorriso 调用（增长模式的尺寸预演与提交、卷标、列目录树、整树抽取、按路径抽取）一律固定 `-local_charset UTF-8`，名字侧字符集与消息侧解析用的 `LC_ALL=C` 解耦。此前在 `LC_ALL=C` 一类环境里跑一次追加，libisofs 会把旧区段每个非 ASCII 名换成带哈希的替代名（`____hcm____._t_x_t…`）写进新会话，一次写介质上不可回修。真机验证那张多区段 CD-R 的第 3 个区段（本次改动之前写入）就是这种形态。回归测试 `grow_keeps_joliet_names_under_a_c_locale` 去掉该参数即失败（ADR-0026）。
 
+### 变更
+
+- 增长模式（追加）的默认后端切到原生：Linux 与 Windows 的 `auto` 都走原生增长，写前窗口不再起子进程（真机 2026-10-15，同一张多区段 CD-R：写前 51.0 秒降到 1.6 秒）。Linux 上按设备事实回退 xorriso 增长模式，判据只有三条：随机可写介质（盘片状态位 0b11）、驱动器报的 Profile 不在支持名单、指定倍速。显式选择优先于默认且不回退。镜像刻录仍按平台分派（ADR-0027）。
+- 追加页新增“增长模式后端”选择（跟随默认 / 原生增长 / xorriso 增长模式），回落发生时结果横幅里说明原因。CLI 在同一步打一行说明。`probe` 的增长模式后端行改为报实际默认与回退条件。
+- 已知边界写进平台表与 README：DVD±R 与 BD-R 的原生写序列未经真机验证。增长区段不带 Rock Ridge（xorriso 增长带）。写盘质量未测。
+
 **English**
+
+### FEAT
+
+- The growth mode (append) gains the conservative switch `OPTIBURN_GROW_BACKEND` (`auto` by default, `xorriso`, `native`): on Linux, `native` moves the whole write preparation (last-session gate check, size rehearsal) and the write itself to the native engine, so the pre-write window spawns no subprocess. The pre-write gate's last-session check now follows the writing engine, and `probe` prints one more line for the growth backend per device. The default mode was still xorriso when this landed and flips to native later in the same release, see CHANGED below. Verified on hardware (2026-10-15, multi-session CD-R, HL-DT-ST GP70N): the default mode spends 51.0 s before writing and 81.4 s in total, the native mode 0.3 s and 16.9 s, and the files written by both modes read back identical, which verifies the native growth write sequence on Linux once, and the byte-for-byte check of the grafted old files passed as well (the 220 MB installer's sha256 matches the release artifact, both archives pass `unzip -t`, ADR-0025).
+- New stage-timing diagnostic `OPTIBURN_TIMING`: with it set, the CLI and the GUI command layer print one line per stage to stderr (`阶段 尺寸预演：4.2 秒`, the GUI has an extra staging copy, visible when launched from a terminal). The default Linux append preparation runs three xorriso subprocesses in sequence (last-session query, size rehearsal, commit), each re-initializing the drive and loading the whole ISO structure from the disc, and the timing lines are how those tens of seconds get attributed on real hardware (ADR-0025).
 
 ### FIX
 
 - Append no longer rewrites existing non-ASCII file names when the environment is not UTF-8: every xorriso call that touches file names (the grow size rehearsal and commit, the volume id, tree listing, whole-tree extraction, per-path extraction) now pins `-local_charset UTF-8`, decoupling the name charset from the `LC_ALL=C` used to parse messages. Previously a single append under a C locale made libisofs replace every non-ASCII name of the old session with a hashed substitute (`____hcm____._t_x_t…`) and write it into the new session, which cannot be repaired on write-once media; session 3 of the multi-session CD-R used for hardware verification (written before this change) has exactly that shape. The regression test `grow_keeps_joliet_names_under_a_c_locale` fails without the flag (ADR-0026).
+
+### CHANGED
+
+- The default backend of the growth mode (append) is now the native engine: `auto` runs native growth on Linux and Windows alike, so the pre-write window spawns no subprocess (hardware, 2026-10-15, same multi-session CD-R: preparation dropped from 51.0 s to 1.6 s). On Linux it falls back to xorriso grow mode on device facts only: random-writable media (disc status 0b11), a profile outside the supported list, or a requested write speed. An explicit choice wins over the default and never falls back. Image burning still dispatches by platform (ADR-0027).
+- The append page gained a growth-backend choice (follow default / native growth / xorriso grow mode) and the result banner now explains a fallback; the CLI prints one line instead. The `probe` growth-backend line now reports the default and its fallback conditions.
+- Known boundaries are recorded in the platform table and README: the native write sequence for DVD±R and BD-R is unverified on hardware; native-grown sessions carry no Rock Ridge (xorriso-grown ones do); burn quality is not measured.
 
 ## [0.1.7] - 2026-10-12
 
