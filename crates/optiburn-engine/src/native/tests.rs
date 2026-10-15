@@ -921,7 +921,7 @@ fn session_headroom_falls_back_when_the_gap_is_unreadable() {
 
 #[test]
 fn session_headroom_never_drops_below_the_spec_floor() {
-    // 实测差额只有 100 块时按规范下限 6750 块兜底。
+    // 实测差额只有 100 块时按标准下限 6750 块兜底。
     let mut mmc = MmcDevice::new(Box::new(drive_with_measured_gap(
         CurrentProfile::CD_R,
         0x100,

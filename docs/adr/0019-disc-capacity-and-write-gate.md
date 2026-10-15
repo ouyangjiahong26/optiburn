@@ -132,7 +132,7 @@ ADR-0010 决定不显示盘片容量：当时 `READ CAPACITY` 未实现，多区
    转换，不含导出区。本机没有 DVD 与 BD 介质实测，BD-R 的 zone 尺寸也没有公开的标准
    值。另有一条限制：实测差额走 `READ TRACK INFORMATION` 的轨道 0xFF，而 MMC 只为 CD
    与 DVD+R 族定义它，DVD-R 与 BD-R 上取不到，回落 16 MB（这两种介质的原生写入路径
-   同样依赖轨道 0xFF，ADR-0017 记了这条缺口）。
+   取地址用的也是同一个 0xFF，见 `native.rs` 的 `LAST_TRACK`）。
 4. 实测差额的读法：READ TOC Format 1 取末区段起点，READ TRACK INFORMATION 轨道 0xFF
    取 NWA（要求 NWA_V 置位且 NWA 大于末区段起点），READ(10) 读末区段起点加 16 块，
    校验标准标识 `CD001` 与双端序两个半值相等，差额等于 NWA 减（末区段起点加卷空间

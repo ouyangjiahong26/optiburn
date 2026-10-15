@@ -31,10 +31,10 @@ const CD_APPEND_DEFAULT_BLOCKS: u64 = 7_335;
 const CD_CLOSE_FIRST_BLOCKS: u64 = 6_750;
 const CD_CLOSE_BLOCKS: u64 = 2_250;
 
-/// 非 CD 封盘那一次要写的 lead-out 下限（块）：DVD+R 的导出区最少 5120 扇区
-/// （ECMA-349 §20，含 Guard Zone 2 的 4096 下限）。实测差额量到的是会话之间的转换
-/// （Intro 加 Closure），封盘用不上，按这个下限兜底；BD-R 没有公开的标准值，走
-/// [`NON_CD_DEFAULT_BYTES`]。
+/// 非 CD 封盘那一次要写的 lead-out 下限（块）：ECMA-349 §20.1 的 Buffer Zone 3
+/// 768、§20.2 的外圈识别区 256 与 §20.3 的 Guard Zone 2 下限 4096 合计最少 5120
+/// 扇区。实测差额量到的是会话之间的转换（Intro 加 Closure），封盘用不上，按这个
+/// 下限兜底；BD-R 没有公开的标准值，走 [`NON_CD_DEFAULT_BYTES`]。
 const NON_CD_CLOSE_FLOOR_BLOCKS: u64 = 5_120;
 
 /// 非 CD 介质读不到实测差额时的默认余量：BD 的 zone 尺寸没有公开的标准值，本机也
