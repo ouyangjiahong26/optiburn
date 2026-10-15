@@ -71,6 +71,16 @@ fn inspect_session_gaps() {
     let info = mmc.read_disc_information().expect("disc information");
     let profile = mmc.get_configuration().expect("current profile");
     println!("disc: status={:?} sessions={}", info.status, info.sessions);
+    if let Ok(track) = mmc.read_track_information(crate::native::LAST_TRACK) {
+        println!(
+            "track 0xFF: nwa={} nwa_valid={} damaged={} free={} track_blocks={}",
+            track.next_writable_address,
+            track.nwa_valid,
+            track.damaged,
+            track.free_blocks,
+            track.track_blocks
+        );
+    }
     if let Some(kind) = profile.media_kind() {
         println!(
             "headroom: append={} close={}",
@@ -78,12 +88,12 @@ fn inspect_session_gaps() {
             crate::capacity::session_headroom(&mut mmc, kind, info.status, true)
         );
     }
-    let starts: Vec<u32> = mmc
-        .read_toc_tracks()
-        .expect("track list")
-        .iter()
-        .map(|track| track.start_lba)
-        .collect();
+    let Ok(tracks) = mmc.read_toc_tracks() else {
+        // 空白盘的 READ TOC 会被驱动器拒绝（实测），此时没有区段可量。
+        println!("track list: unavailable on this disc");
+        return;
+    };
+    let starts: Vec<u32> = tracks.iter().map(|track| track.start_lba).collect();
     let mut block = [0u8; optiburn_mmc::SECTOR_BYTES];
     for pair in starts.windows(2) {
         let (start, next) = (pair[0], pair[1]);
