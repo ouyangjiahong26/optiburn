@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+**中文**
+
+### 修复
+
+- 修正非 UTF-8 环境下追加会写坏盘上原有非 ASCII 文件名的问题：会碰文件名的 xorriso 调用（增长模式的尺寸预演与提交、卷标、列目录树、整树抽取、按路径抽取）一律固定 `-local_charset UTF-8`，名字侧字符集与消息侧解析用的 `LC_ALL=C` 解耦。此前在 `LC_ALL=C` 一类环境里跑一次追加，libisofs 会把旧区段每个非 ASCII 名换成带哈希的替代名（`____hcm____._t_x_t…`）写进新会话，一次写介质上不可回修。真机验证那张多区段 CD-R 的第 3 个区段（本次改动之前写入）就是这种形态。回归测试 `grow_keeps_joliet_names_under_a_c_locale` 去掉该参数即失败（ADR-0026）。
+
+**English**
+
+### FIX
+
+- Append no longer rewrites existing non-ASCII file names when the environment is not UTF-8: every xorriso call that touches file names (the grow size rehearsal and commit, the volume id, tree listing, whole-tree extraction, per-path extraction) now pins `-local_charset UTF-8`, decoupling the name charset from the `LC_ALL=C` used to parse messages. Previously a single append under a C locale made libisofs replace every non-ASCII name of the old session with a hashed substitute (`____hcm____._t_x_t…`) and write it into the new session, which cannot be repaired on write-once media; session 3 of the multi-session CD-R used for hardware verification (written before this change) has exactly that shape. The regression test `grow_keeps_joliet_names_under_a_c_locale` fails without the flag (ADR-0026).
+
 ## [0.1.7] - 2026-10-12
 
 **中文**

@@ -50,4 +50,4 @@
   - `readback::extract_args` 少了 `-drive_access shared`。盘被桌面环境自动挂载时 xorriso 独占打开失败（`Cannot open busy device`，实测），整树抽取回落原生。补上与其它只读参数表同一口径。
 - 未了事项：
   - 纯 UDF 实物盘在 Linux 上的读取仍无真机证据，触发信号的形态目前只在镜像文件与这张 ISO 盘上确认。
-  - xorriso 在 `LC_ALL=C` 下把 Joliet 的非 ASCII 名换成替代名（`/中文追加.txt` 变 `/__e______._t_x...`，libisofs 报 `Cannot convert from charset UTF-16BE to ANSI_X3.4-1968`），原生读侧按 Joliet 读得出原名。这是 xorriso 优先这一档的既有代价（改动前就成立，非本轮引入），只在此记下，分派与字符集设定未动。
+  - xorriso 在 `LC_ALL=C` 下把 Joliet 的非 ASCII 名换成替代名（`/中文追加.txt` 变 `/__e______._t_x...`，libisofs 报 `Cannot convert from charset UTF-16BE to ANSI_X3.4-1968`），原生读侧按 Joliet 读得出原名。这是 xorriso 优先这一档的既有代价（改动前就成立，非本轮引入），只在此记下，分派与字符集设定未动。ADR-0026 起该代价消失：会碰文件名的 xorriso 调用都固定 `-local_charset UTF-8`，消息仍走 `LC_ALL=C`，两件事解耦。

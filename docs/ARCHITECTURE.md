@@ -120,7 +120,8 @@ Linux 是 `xorriso -print_size`，Windows 是原生会话计划的尺寸），�
 共用常量 `SESSION_OVERHEAD`。
 
 隐藏：`xorriso -as cdrecord` 与增长模式（`-dev … -map <目录> / -commit`，见
-ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、stderr 上的百分比
+ADR-0006）的参数拼装（路径按 `OsStr` 原样传递，不做有损转换）、名字侧字符集固定
+`-local_charset UTF-8`（与消息侧的 `LC_ALL=C` 解耦，见 ADR-0026）、stderr 上的百分比
 解析、失败时从 stderr 尾部取摘要、区分工具缺失（`MissingTool`，载荷只有工具名，
 安装指引由 CLI 与 GUI 按系统给出，见 ADR-0004 补记）与其它 I/O 错误（`Io`）、
 原生写序列（起点取 NWA、写参数页、关区段）与块与块之间的取消检查、原生读侧的
