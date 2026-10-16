@@ -9,11 +9,19 @@
 
 **中文**
 
+### FEAT
+
+- **一次向多台光驱写入（ADR-0025）**：任务槽从全局单槽改成按设备键控，同一设备互斥、不同设备并行。刻录页与追加页改成设备与内容配对表，点“添加设备”逐行配设备与内容，提交按行顺序逐行发起，某一台被拒（占用或门禁失败）只把错误留在那一行，已发起的行照常写入。内容区顶部的“当前任务”清单逐台显示进度与停止按钮，可单独停某一台，一台失败或被停不影响其它台。被任务占用的光驱在下拉里标注“任务进行中”并禁用，该行的输入与校验按钮一并禁用。设备页的复制与抢救按展开的设备判断占用，该设备有任务在跑时禁用。CLI 不变，同一台设备不要同时被 GUI 与 CLI 选中（操作口径见 `docs/MULTI-DRIVE.md`）。
+
 ### 修复
 
 - **写前容量门禁不再用一个 16 MB 常数（ADR-0019 修订）**：区段开销按动作与介质取值。保持可追加的追加优先用盘上实测几何（末区段的下一可写地址与它的数据量之差，本机 CD-R 上 7335 块约 15 MB），读不到时用 CD 默认值（首区段 11845 块、非首区段 7335 块）并取标准下限兜底。封盘不再按大数拦（首区段 6750 块、后续区段 2250 块，ECMA-394 的导出区下限），同一张盘上可用 11547 块（22.6 MB）时写下过 4536 块的封盘区段，按旧口径会被误拒。拒绝文案把待写入、区段开销、可用容量三个数字摊开，不再出现“待写入 8.3 MB、可用 22.6 MB”这种看不出原因的消息。DVD 与 BD 仍沿用 16 MB 兜底（没有本机实测），封盘那次另按 ECMA-349 的导出区下限 5120 扇区兜底，实测依据见 ADR-0019 修订。
 
 **English**
+
+### FEAT
+
+- **Write to several optical drives at once (ADR-0025)**: job slots are now keyed by device instead of one global slot, so one drive at a time stays exclusive while different drives run in parallel. The burn and append pages became a device-to-content pairing table: click Add device to add a row, each row picks one drive and one image or file list, and submitting walks the rows in order. A row that is refused (busy drive, gate failure) keeps its error in that row and does not stop the rows already started. The Current tasks list on top shows per-drive progress and a Stop button for each task, so one drive can be stopped without touching the others. A drive that already has a task running is marked busy in the dropdown and disabled, together with that row's inputs and verify button. On the devices page, copying and salvaging are disabled for the expanded drive while a task runs on it. The CLI is unchanged; do not drive one drive from the GUI and the CLI at the same time (see `docs/MULTI-DRIVE.md`).
 
 ### FIX
 

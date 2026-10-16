@@ -106,8 +106,9 @@ export function startVerify(args: {
   return invoke("start_verify", args);
 }
 
-export function cancelJob(): Promise<void> {
-  return invoke("cancel_job");
+// 取消一台设备上的任务：槽键即设备串（build 任务传 "build"）。
+export function cancelJob(device: string): Promise<void> {
+  return invoke("cancel_job", { device });
 }
 
 export function confirmClose(): Promise<void> {
