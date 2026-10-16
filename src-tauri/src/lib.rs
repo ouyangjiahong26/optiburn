@@ -41,7 +41,7 @@ pub fn run() {
             // 有任务在跑时拦下关窗：由前端弹确认框，确认后走 confirm_close。
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.app_handle().state::<job::JobState>();
-                if state.0.lock().expect("job state mutex").is_some() {
+                if !state.is_empty() {
                     api.prevent_close();
                     let _ = window.app_handle().emit("close-blocked", ());
                 }

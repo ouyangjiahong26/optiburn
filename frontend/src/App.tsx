@@ -1,9 +1,11 @@
-// 侧栏导航 + 页面切换 + 全局任务状态：进度、结果、取消与退出确认都在这里。
-import { useCallback, useEffect, useRef, useState } from "react";
+// 侧栏导航 + 页面切换 + 全局任务状态：多设备并发下的当前任务清单、结果、逐任务
+// 取消与退出确认都在这里（issue #50）。
+import { useCallback, useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { Disc3, FileArchive, Flame, FolderPlus } from "lucide-react";
 import { cancelJob, confirmClose, onCloseBlocked, onJobDone, onJobProgress } from "./api";
 import type { ActiveJob, JobKind, JobResult } from "./types";
+import { nextLocalSeq } from "./hooks";
 import { t } from "./i18n";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ProgressBar } from "./components/ProgressBar";
@@ -53,29 +55,32 @@ function jobStatusText(job: ActiveJob): string {
 
 export function App() {
   const [page, setPage] = useState<PageId>("devices");
-  const [job, setJob] = useState<ActiveJob | null>(null);
-  const [result, setResult] = useState<JobResult | null>(null);
+  const [jobs, setJobs] = useState<ActiveJob[]>([]);
+  const [results, setResults] = useState<JobResult[]>([]);
   const [refreshSignal, setRefreshSignal] = useState(0);
-  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
-  const seqRef = useRef(0);
 
-  // 提交即锁定：等第一个进度或完成事件接管，避免窗口期里再次提交或切页。
-  const startJob = useCallback((kind: JobKind) => {
-    setResult(null);
-    setJob((current) => current ?? { kind, fraction: null });
+  const pushResult = useCallback((result: JobResult) => {
+    setResults((current) => [...current, result]);
   }, []);
 
-  // invoke 被立即拒绝时不会有 job-done 事件，用这里解锁并展示原因。
-  // 若任务已由事件接管（kind 不匹配），这里不动任何状态。
-  const abortJob = useCallback((kind: JobKind, message?: string) => {
-    setJob((current) =>
-      current !== null && current.kind === kind ? null : current,
+  // 发起任务即乐观登记一条清单项：只有刻录与追加发进度事件，复制、抢救、校验、
+  // 制作镜像只能靠这一步出现在“当前任务”清单里（占用标注与停止入口都依赖它）。
+  // 每次调用取一个新的负序号，撤销按序号精确移除，不会误删同设备上已在跑的条目。
+  const startJob = useCallback((kind: JobKind, device: string) => {
+    const seq = nextLocalSeq();
+    setJobs((current) =>
+      current.some((job) => job.device === device)
+        ? current
+        : [...current, { kind, device, seq, fraction: null }],
     );
-    if (message !== undefined) {
-      seqRef.current += 1;
-      setResult({ kind, outcome: "failed", message, seq: seqRef.current });
-    }
+    return seq;
+  }, []);
+
+  // 启动被拒（BusySlot、输入被拒）时撤掉刚登记的那条。
+  const abortJob = useCallback((seq: number) => {
+    setJobs((current) => current.filter((job) => job.seq !== seq));
   }, []);
 
   useEffect(() => {
@@ -84,12 +89,31 @@ export function App() {
     // StrictMode 挂载两次：订阅真正建立后才登记清理函数，卸载先行则直接反订阅。
     void Promise.all([
       onJobProgress((progress) => {
-        setJob({ kind: progress.kind, fraction: progress.fraction });
+        setJobs((current) => {
+          const index = current.findIndex((item) => item.device === progress.device);
+          if (index === -1) {
+            return [
+              ...current,
+              {
+                kind: progress.kind,
+                device: progress.device,
+                seq: progress.seq,
+                fraction: progress.fraction,
+              },
+            ];
+          }
+          const next = [...current];
+          next[index] = { ...next[index], kind: progress.kind, seq: progress.seq, fraction: progress.fraction };
+          return next;
+        });
       }),
       onJobDone((done) => {
-        setJob(null);
-        seqRef.current += 1;
-        setResult({ ...done, seq: seqRef.current });
+        // 载荷缺 device 或 seq 的事件无法配对（前后端同批发布，正常不会发生），丢弃。
+        if (typeof done.device !== "string" || typeof done.seq !== "number") {
+          return;
+        }
+        setJobs((current) => current.filter((item) => item.device !== done.device));
+        setResults((current) => [...current, done]);
         // 页面常驻挂载，设备页自己决定展开中的清单要不要重读。
         setRefreshSignal((signal) => signal + 1);
       }),
@@ -109,21 +133,25 @@ export function App() {
     };
   }, []);
 
-  const locked = job !== null;
-  // 写盘类任务停止会留下不完整的盘，只读任务（复制、校验）不会，文案要分开。
-  const discWriting = job !== null && (job.kind === "burn" || job.kind === "append");
+  // 结果横幅只显示最新一条，多条失败的历史仍留在 results 里供页面级弹窗逐条处理。
+  const latestResult = results.length > 0 ? results[results.length - 1] : null;
+  // 停止确认的文案按目标任务的类别区分：写盘类停止会留下不完整的盘。
+  const cancelEntry = jobs.find((job) => job.device === cancelTarget) ?? null;
+  const cancelWriting =
+    cancelEntry !== null && (cancelEntry.kind === "burn" || cancelEntry.kind === "append");
+  const anyWriting = jobs.some((job) => job.kind === "burn" || job.kind === "append");
 
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="brand">OptiBurn</div>
         <nav className="nav">
+          {/* 任务在跑也允许切页：各页面按设备判断占用，切页只切可见性。 */}
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
               type="button"
               className={`nav-item${page === item.id ? " active" : ""}`}
-              disabled={locked}
               onClick={() => setPage(item.id)}
             >
               <item.icon size={15} />
@@ -132,74 +160,93 @@ export function App() {
           ))}
         </nav>
         {/* 检查更新固定在侧栏底部，不可就地更新的安装形态（Linux deb）组件自返回 null。 */}
-        <UpdaterSection locked={locked} />
+        <UpdaterSection locked={jobs.length > 0} />
       </aside>
       <main className="content">
-        {job !== null && (
+        {jobs.length > 0 && (
           <section className="job-bar">
-            <ProgressBar fraction={job.fraction} />
-            <div className="job-status-row">
-              <span className="job-status">{jobStatusText(job)}</span>
-              {(job.kind === "burn" ||
-                job.kind === "append" ||
-                job.kind === "copy" ||
-                job.kind === "salvage") && (
-                <button
-                  type="button"
-                  className="btn btn-danger"
-                  onClick={() => setCancelDialogOpen(true)}
-                >
-                  {t("Stop", "停止")}
-                </button>
-              )}
-            </div>
+            {jobs.map((job) => (
+              <div className="job-entry" key={job.device}>
+                <div className="job-status-row">
+                  <span className="job-status">
+                    {job.device === "build"
+                      ? jobStatusText(job)
+                      : `${job.device} · ${jobStatusText(job)}`}
+                  </span>
+                  {/* build 不给停止入口：build_image 不接受取消令牌。其余任务后端
+                      都支持取消（读写侧都在进度循环里检查）。 */}
+                  {job.kind !== "build" && (
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      onClick={() => setCancelTarget(job.device)}
+                    >
+                      {t("Stop", "停止")}
+                    </button>
+                  )}
+                </div>
+                <ProgressBar fraction={job.fraction} />
+              </div>
+            ))}
           </section>
         )}
-        {result !== null && (
+        {latestResult !== null && (
           <div
-            className={`result-banner${result.outcome === "done" ? "" : " warn"}`}
+            className={`result-banner${latestResult.outcome === "done" ? "" : " warn"}`}
           >
-            {result.message}
+            {latestResult.message}
           </div>
         )}
         {/* 四个页面全部保持挂载，切换只切可见性：读盘得到的清单、选择状态与正在
             进行的复制都不会因为切页而丢失。 */}
         <div className={page === "devices" ? undefined : "page-hidden"}>
           <DevicesPage
-            locked={locked}
+            jobs={jobs}
+            results={results}
+            pushResult={pushResult}
+            startJob={startJob}
+            abortJob={abortJob}
             refreshSignal={refreshSignal}
             active={page === "devices"}
-            onJobStart={startJob}
-            onJobAbort={abortJob}
           />
         </div>
         <div className={page === "build" ? undefined : "page-hidden"}>
-          <BuildPage locked={locked} onJobStart={startJob} onJobAbort={abortJob} />
+          <BuildPage
+            locked={jobs.some((job) => job.kind === "build")}
+            jobs={jobs}
+            results={results}
+            pushResult={pushResult}
+            startJob={startJob}
+            abortJob={abortJob}
+            active={page === "build"}
+          />
         </div>
         <div className={page === "burn" ? undefined : "page-hidden"}>
           <BurnPage
-            locked={locked}
-            result={result}
+            jobs={jobs}
+            results={results}
+            pushResult={pushResult}
+            startJob={startJob}
+            abortJob={abortJob}
             active={page === "burn"}
-            onJobStart={startJob}
-            onJobAbort={abortJob}
           />
         </div>
         <div className={page === "append" ? undefined : "page-hidden"}>
           <AppendPage
-            locked={locked}
-            result={result}
+            jobs={jobs}
+            results={results}
+            pushResult={pushResult}
+            startJob={startJob}
+            abortJob={abortJob}
             active={page === "append"}
-            onJobStart={startJob}
-            onJobAbort={abortJob}
           />
         </div>
       </main>
       <ConfirmDialog
-        open={cancelDialogOpen}
+        open={cancelTarget !== null}
         title={t("Stop task", "停止任务")}
         message={
-          discWriting
+          cancelWriting
             ? t(
                 "Stopping now leaves the disc with incomplete contents and an unclosed track. On many drives that makes the disc unwritable, so only reading (and rescuing) it will be possible afterwards. Stop anyway?",
                 "停止后盘片内容不完整，留下未关闭的轨道。多数驱动器会因此拒绝再写这张盘，之后只能读盘（以及从里面抢救数据）。确认停止？",
@@ -213,17 +260,20 @@ export function App() {
         cancelText={t("Continue", "继续")}
         tone="danger"
         onConfirm={() => {
-          setCancelDialogOpen(false);
+          const device = cancelTarget;
+          setCancelTarget(null);
           // 任务可能恰好刚结束：此时取消请求会被后端拒绝，而 job-done 已更新界面，忽略即可。
-          cancelJob().catch(() => undefined);
+          if (device !== null) {
+            cancelJob(device).catch(() => undefined);
+          }
         }}
-        onCancel={() => setCancelDialogOpen(false)}
+        onCancel={() => setCancelTarget(null)}
       />
       <ConfirmDialog
         open={closeDialogOpen}
         title={t("Quit OptiBurn", "退出 OptiBurn")}
         message={
-          discWriting
+          anyWriting
             ? t(
                 "A task is running. Stopping now leaves the disc with incomplete contents and an unclosed track, which on many drives makes the disc unwritable. Stop and quit anyway?",
                 "有任务正在进行。停止后盘片内容不完整，留下未关闭的轨道，多数驱动器会因此拒绝再写这张盘。确认停止并退出？",

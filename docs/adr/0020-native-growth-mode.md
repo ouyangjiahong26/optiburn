@@ -75,18 +75,18 @@ Windows 仍走 xorriso，而 Windows 上没有能访问光驱的 xorriso 构建�
 9. 平台分派与读写侧同规则：Windows 走原生增长（ADR-0017/0018 已在那边实机验证），
    Linux 维持 xorriso 增长模式（ADR-0006）。`optiburn_engine::grow_size` 也分派：
    Linux 仍是 `xorriso -print_size` 预演，Windows 用原生会话计划的字节数。
-   ADR-0025 起这条分派可以由保守开关 `OPTIBURN_GROW_BACKEND` 显式覆盖，
+   ADR-0028 起这条分派可以由保守开关 `OPTIBURN_GROW_BACKEND` 显式覆盖，
    Linux 因此可以把增长模式整条切到原生（写前窗口不再起子进程）。这条路的 Linux
    写序列已在 2026-10-15 的多区段 CD-R 上验证过一次（追加一个区段，内容读回一致，
-   写前耗时从 51.0 秒降到 0.3 秒，见 ADR-0025）。ADR-0027 起 Linux 的默认档就是
+   写前耗时从 51.0 秒降到 0.3 秒，见 ADR-0028）。ADR-0027 起 Linux 的默认档就是
    原生增长，按设备事实回退 xorriso（随机可写介质、未知 Profile、指定倍速三条）。
 
 ## 后果
 
 - Windows 上 `append` 与 GUI 追加页不再依赖外部程序：追加的写前门禁、容量预演、会话
   生成、写盘全部在进程内完成。GUI 追加页的完成通知仍按老办法重开设备读一次区段数。
-- 追加只占盘的增量空间：新区段是目录结构加新文件，旧文件不重写。实测的会话开销与
-  `SESSION_OVERHEAD` 的 16 MB 余量没有冲突（区段 lead-in/lead-out 由门禁余量兜）。
+- 追加只占盘的增量空间：新区段是目录结构加新文件，旧文件不重写。实测的会话开销
+  （CD-R 上 7335 块，约 15 MB，见 ADR-0019 修订）由门禁余量兜。
 - 同一条 `native::write_image` 服务镜像刻录与会话写入，两条路的进度回调、取消粒度、
   末块补零一致。
 - 只写 ISO/Joliet 的取舍要在读侧保持自洽：Windows 上追加过的盘，其末区段不再有 UDF

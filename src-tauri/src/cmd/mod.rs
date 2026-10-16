@@ -3,10 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, GrowBackendMode, GrowJob,
-    GrowSuitability, IsoSessionState, NativeEngine, NativeGap, SessionFallback, XorrisoEngine,
-    append_gate_session_state, grow, grow_backend_choice, grow_backend_mode_value, grow_size,
-    read_volume_id, resolve_grow_backend,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, CapacityGate, GrowBackendMode,
+    GrowJob, GrowSuitability, IsoSessionState, NativeEngine, NativeGap, SessionFallback,
+    XorrisoEngine, append_gate_session_state, capacity_gate, grow, grow_backend_choice,
+    grow_backend_mode_value, grow_size, read_volume_id, resolve_grow_backend,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
@@ -16,11 +16,15 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::i18n::{Lang, lang, pick};
-use crate::job::{JobKind, JobState, RunningJob};
+use crate::job::{BusySlot, JobHandle, JobKind, JobState};
 
 pub(crate) mod copy;
 pub(crate) mod salvage;
 pub(crate) mod verify;
+
+/// build 任务的槽键：build 没有设备，用固定伪键占一个槽（设备串不会是这个词，
+/// 见 job.rs 的模块注释）。
+const BUILD_SLOT: &str = "build";
 
 /// 一台光驱及其盘片状态，字段与前端 `types.ts` 的 `DeviceInfo` 一一对应。
 #[derive(Serialize)]
@@ -49,20 +53,26 @@ pub struct ImageInfoDto {
     filesystems: Vec<String>,
 }
 
-/// 进度事件载荷（事件名 `job-progress`）。
-#[derive(Serialize, Clone, Copy)]
+/// 进度事件载荷（事件名 `job-progress`）。device 是任务槽键（build 为 "build"），
+/// seq 与完成事件配对。
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct JobProgress {
     kind: JobKind,
+    device: String,
+    seq: u64,
     fraction: f32,
 }
 
 /// 完成事件载荷（事件名 `job-done`），outcome 取 "done" | "cancelled" | "failed"。
-/// gate 仅在门禁类失败时给出，供前端弹对应的引导对话框。
+/// gate 仅在门禁类失败时给出，供前端弹对应的引导对话框。device 与 seq 的口径同
+/// [`JobProgress`]。
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct JobDone {
     kind: JobKind,
+    device: String,
+    seq: u64,
     outcome: String,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -82,9 +92,10 @@ enum JobError {
     },
     /// 追加路径上末区段不是 ISO 9660（例如 UDF 盘），续写会遮住原有内容。
     NoIsoSession,
-    /// 待写入量超过盘上可用容量，写前容量门禁拒绝（ADR-0019）。
+    /// 待写入量加区段开销余量超过盘上可用容量，写前容量门禁拒绝（ADR-0019）。
     Capacity {
         needed: u64,
+        headroom: u64,
         free: u64,
     },
     /// 待刻录列表或暂存阶段的输入问题，文案已由下层给出。
@@ -288,15 +299,20 @@ fn job_error_text(lang: Lang, error: &JobError) -> String {
             "The last session on this disc is not ISO 9660 (e.g. a UDF disc written by Windows): appending an ISO session would leave systems that mount the last session seeing only the new content. This tool cannot append to such discs yet, use a blank disc instead.",
         )
         .into(),
-        JobError::Capacity { needed, free } => {
+        JobError::Capacity {
+            needed,
+            headroom,
+            free,
+        } => {
             let needed = copy::human_bytes(lang, *needed);
+            let overhead = copy::human_bytes(lang, *headroom);
             let available = copy::human_bytes(lang, *free);
             match lang {
                 Lang::Zh => format!(
-                    "这张盘放不下本次写入：待写入约 {needed}，盘上可用容量约 {available}。请减少待写内容或更换盘片。"
+                    "这张盘放不下本次写入：待写入约 {needed}，区段开销（lead-in 与 lead-out）还要约 {overhead}，盘上可用容量约 {available}。请减少待写内容或更换盘片。"
                 ),
                 Lang::En => format!(
-                    "The disc cannot hold this write: about {needed} to write, {available} free on the disc. Remove some files or use another disc."
+                    "The disc cannot hold this write: about {needed} to write, about {overhead} more for the session overhead (lead-in and lead-out), {available} free on the disc. Remove some files or use another disc."
                 ),
             }
         }
@@ -495,49 +511,60 @@ fn probe_one(path: String) -> DeviceInfo {
     info
 }
 
-/// 占住任务槽：已有任务时拒绝，避免两个任务同时操作同一台光驱（写盘与复制都经过这里）。
-fn begin_job(state: &State<'_, JobState>) -> Result<CancelToken, String> {
-    let mut slot = state.0.lock().expect("job state mutex");
-    if slot.is_some() {
-        return Err(pick(
-            lang(),
+/// 占用文案：设备槽点名设备串。build 没有设备可指，沿用全局文案（build 的并发
+/// 不在多设备改造范围内，保持单占）。
+fn busy_slot_text(lang: Lang, kind: JobKind, slot: &str) -> String {
+    match kind {
+        JobKind::Build => pick(
+            lang,
             "已有任务在进行，请等它结束。",
             "A task is already running. Wait for it to finish.",
         )
-        .into());
+        .into(),
+        _ => match lang {
+            Lang::Zh => format!("{slot} 上已有任务在进行，请等它结束或先停止它。"),
+            Lang::En => format!(
+                "A task is already running on {slot}. Wait for it to finish or stop it first."
+            ),
+        },
     }
-    let cancel = CancelToken::default();
-    *slot = Some(RunningJob {
-        cancel: cancel.clone(),
-        join: None,
-    });
-    Ok(cancel)
+}
+
+/// 占住设备槽：同一设备已有任务时拒绝，避免两个任务同时操作同一台光驱（写盘与
+/// 复制都经过这里），不同设备互不影响（issue #50）。
+fn begin_job(state: &State<'_, JobState>, slot: &str, kind: JobKind) -> Result<JobHandle, String> {
+    state
+        .begin(slot, kind)
+        .map_err(|BusySlot(slot)| busy_slot_text(lang(), kind, &slot))
 }
 
 /// spawn_blocking 之后补记工作句柄，供 confirm_close 等待退出。
-fn set_join(state: &State<'_, JobState>, join: tauri::async_runtime::JoinHandle<()>) {
-    if let Some(job) = state.0.lock().expect("job state mutex").as_mut() {
-        job.join = Some(join);
-    }
+fn set_join(
+    state: &State<'_, JobState>,
+    slot: &str,
+    seq: u64,
+    join: tauri::async_runtime::JoinHandle<()>,
+) {
+    state.set_join(slot, seq, join);
 }
 
-/// 清空任务槽并广播完成事件。
+/// 释放任务槽并广播完成事件。
 fn finish_job(
     app: &AppHandle,
+    slot: &str,
+    seq: u64,
     kind: JobKind,
     outcome: &str,
     gate: Option<&'static str>,
     message: String,
 ) {
-    app.state::<JobState>()
-        .0
-        .lock()
-        .expect("job state mutex")
-        .take();
+    app.state::<JobState>().finish(slot, seq);
     let _ = app.emit(
         "job-done",
         JobDone {
             kind,
+            device: slot.to_string(),
+            seq,
             outcome: outcome.to_string(),
             message,
             gate,
@@ -560,7 +587,7 @@ fn gate_of(error: &JobError) -> Option<&'static str> {
 }
 
 /// 失败收尾：广播 job-done，并把同一份文案返回给调用方（invoke 拒绝分支复用）。
-fn fail_job(app: &AppHandle, kind: JobKind, error: JobError) -> String {
+fn fail_job(app: &AppHandle, slot: &str, seq: u64, kind: JobKind, error: JobError) -> String {
     // 面向用户的文案经过归类，原始细节写进应用日志备查。
     if let JobError::Burn(BurnError::Failed(tail)) = &error {
         eprintln!("optiburn: 刻录失败原始输出：{tail}");
@@ -575,7 +602,7 @@ fn fail_job(app: &AppHandle, kind: JobKind, error: JobError) -> String {
     };
     let gate = gate_of(&error);
     let text = job_error_text(lang(), &error);
-    finish_job(app, kind, outcome, gate, text.clone());
+    finish_job(app, slot, seq, kind, outcome, gate, text.clone());
     text
 }
 
@@ -594,7 +621,7 @@ pub async fn start_build_image(
         Some(path) => ensure_iso_extension(PathBuf::from(path)),
         None => default_output(Path::new(&src)),
     };
-    begin_job(&state)?;
+    let handle = begin_job(&state, BUILD_SLOT, JobKind::Build)?;
 
     let app = app.clone();
     let spec = ImageSpec {
@@ -608,6 +635,8 @@ pub async fn start_build_image(
             Ok(info) => {
                 finish_job(
                     &app,
+                    BUILD_SLOT,
+                    handle.seq,
                     JobKind::Build,
                     "done",
                     None,
@@ -622,7 +651,13 @@ pub async fn start_build_image(
                     filesystems: info.filesystems,
                 })
             }
-            Err(e) => Err(fail_job(&app, JobKind::Build, JobError::Mastering(e))),
+            Err(e) => Err(fail_job(
+                &app,
+                BUILD_SLOT,
+                handle.seq,
+                JobKind::Build,
+                JobError::Mastering(e),
+            )),
         }
     })
     .await
@@ -670,7 +705,8 @@ pub async fn start_burn(
     speed: Option<u32>,
     close_disc: bool,
 ) -> Result<(), String> {
-    let cancel = begin_job(&state)?;
+    let JobHandle { cancel, seq } = begin_job(&state, &device, JobKind::Burn)?;
+    let slot = device.clone();
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
         let image = PathBuf::from(image);
@@ -693,6 +729,7 @@ pub async fn start_burn(
                     run_disc_task(DiscTask {
                         app: &worker,
                         kind: JobKind::Burn,
+                        seq,
                         append: false,
                         path: &image,
                         device: &device,
@@ -709,13 +746,13 @@ pub async fn start_burn(
             Err(error) => Err(error),
         };
         match result {
-            Ok(message) => finish_job(&worker, JobKind::Burn, "done", None, message),
+            Ok(message) => finish_job(&worker, &device, seq, JobKind::Burn, "done", None, message),
             Err(e) => {
-                fail_job(&worker, JobKind::Burn, e);
+                fail_job(&worker, &device, seq, JobKind::Burn, e);
             }
         }
     });
-    set_join(&state, join);
+    set_join(&state, &slot, seq, join);
     Ok(())
 }
 
@@ -777,18 +814,27 @@ pub async fn start_append(
     if files.is_empty() {
         return Err(pick(lang(), "待刻录列表是空的。", "The file list is empty.").into());
     }
-    let cancel = begin_job(&state)?;
+    let JobHandle { cancel, seq } = begin_job(&state, &device, JobKind::Append)?;
+    let slot = device.clone();
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
-        let result = run_append_task(&worker, &cancel, files, &device, &volume_id, options);
+        let result = run_append_task(&worker, &cancel, seq, files, &device, &volume_id, options);
         match result {
-            Ok(message) => finish_job(&worker, JobKind::Append, "done", None, message),
+            Ok(message) => finish_job(
+                &worker,
+                &device,
+                seq,
+                JobKind::Append,
+                "done",
+                None,
+                message,
+            ),
             Err(e) => {
-                fail_job(&worker, JobKind::Append, e);
+                fail_job(&worker, &device, seq, JobKind::Append, e);
             }
         }
     });
-    set_join(&state, join);
+    set_join(&state, &slot, seq, join);
     Ok(())
 }
 
@@ -838,6 +884,7 @@ fn append_preflight(
 fn run_append_task(
     app: &AppHandle,
     cancel: &CancelToken,
+    seq: u64,
     files: Vec<String>,
     device: &str,
     volume_id: &str,
@@ -859,6 +906,7 @@ fn run_append_task(
     let result = run_disc_task(DiscTask {
         app,
         kind: JobKind::Append,
+        seq,
         append: true,
         path: &stage,
         device,
@@ -985,30 +1033,20 @@ pub async fn disc_volume_id(device: String) -> Result<String, String> {
     .expect("volume id worker did not panic")
 }
 
-/// 取消当前任务：置位令牌，引擎在下一个进度行停掉子进程。
+/// 取消一台设备上的任务：置位令牌，引擎在下一个进度行停掉子进程。
 #[tauri::command]
-pub fn cancel_job(state: State<'_, JobState>) -> Result<(), String> {
-    let slot = state.0.lock().expect("job state mutex");
-    match slot.as_ref() {
-        Some(job) => {
-            job.cancel.cancel();
-            Ok(())
-        }
-        None => Err(pick(lang(), "当前没有进行中的任务。", "No task is running.").into()),
+pub fn cancel_job(state: State<'_, JobState>, device: String) -> Result<(), String> {
+    if state.cancel(&device) {
+        Ok(())
+    } else {
+        Err(pick(lang(), "当前没有进行中的任务。", "No task is running.").into())
     }
 }
 
-/// 关窗确认后的收尾：置位取消、等子进程停掉，再退出整个应用。
+/// 关窗确认后的收尾：全部任务置位取消、等子进程停掉，再退出整个应用。
 #[tauri::command]
 pub fn confirm_close(app: AppHandle, state: State<'_, JobState>) {
-    let join = {
-        let mut slot = state.0.lock().expect("job state mutex");
-        if let Some(job) = slot.as_ref() {
-            job.cancel.cancel();
-        }
-        slot.take().and_then(|job| job.join)
-    };
-    if let Some(join) = join {
+    for join in state.cancel_all_and_drain() {
         let _ = tauri::async_runtime::block_on(join);
     }
     app.exit(0);
@@ -1019,6 +1057,8 @@ pub fn confirm_close(app: AppHandle, state: State<'_, JobState>) {
 struct DiscTask<'a> {
     app: &'a AppHandle,
     kind: JobKind,
+    /// 事件配对序号：进度与完成事件靠它对上（issue #50）。
+    seq: u64,
     append: bool,
     /// burn 时是镜像文件，append 时是源目录。
     path: &'a Path,
@@ -1031,7 +1071,7 @@ struct DiscTask<'a> {
     /// 增长模式后端选择（ADR-0027），门禁判定、尺寸预演与写入共用。
     mode: GrowBackendMode,
     cancel: &'a CancelToken,
-    /// 阶段计时（ADR-0025），由调用方建一次，贯穿整条写前流程。
+    /// 阶段计时（ADR-0028），由调用方建一次，贯穿整条写前流程。
     timer: &'a StageTimer,
 }
 
@@ -1044,7 +1084,7 @@ struct DiscTask<'a> {
 /// 原生增长会在引擎内再做一次容量门禁（镜像尺寸要等会话生成计划算完才算得准），
 /// 那道拒绝转成与写前门禁同一个 [`JobError::Capacity`]，用户看到的引导弹窗一致。
 fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
-    let mut progress = progress_emitter(task.app, task.kind);
+    let mut progress = progress_emitter(task.app, task.kind, task.device, task.seq);
     let result = if task.append {
         let job = GrowJob {
             src: task.path.to_path_buf(),
@@ -1058,8 +1098,9 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
             .timer
             .stage("尺寸预演", || grow_size(task.mode, &job))
             .map_err(job_error_of_burn)?;
-        task.timer
-            .stage("容量检查", || ensure_fits(task.device, needed))?;
+        task.timer.stage("容量检查", || {
+            ensure_fits(task.device, needed, task.close_disc)
+        })?;
         task.timer.stage("写入", || {
             grow(task.mode, &job, &mut progress, task.cancel)
         })
@@ -1082,8 +1123,9 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
                 )),
             })?
             .len();
-        task.timer
-            .stage("容量检查", || ensure_fits(task.device, needed))?;
+        task.timer.stage("容量检查", || {
+            ensure_fits(task.device, needed, task.close_disc)
+        })?;
         task.timer.stage("写入", || {
             burn_engine().burn(&job, &mut progress, task.cancel)
         })
@@ -1097,7 +1139,15 @@ fn run_disc_task(task: DiscTask) -> Result<String, JobError> {
 /// 映射，其余折成 [`JobError::Burn`]。
 fn job_error_of_burn(error: BurnError) -> JobError {
     match error {
-        BurnError::NotEnoughSpace { needed, free } => JobError::Capacity { needed, free },
+        BurnError::NotEnoughSpace {
+            needed,
+            headroom,
+            free,
+        } => JobError::Capacity {
+            needed,
+            headroom,
+            free,
+        },
         BurnError::GrowUnsupported(detail) => JobError::GrowUnsupported(detail),
         BurnError::GrowConflict(detail) => JobError::GrowConflict(detail),
         BurnError::DamagedLastSession { fallback } => JobError::DamagedSession { fallback },
@@ -1113,31 +1163,30 @@ fn job_error_of_burn(error: BurnError) -> JobError {
     }
 }
 
-/// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝（ADR-0019）。
+/// 写前容量门禁：待写入量加区段开销超过可用容量就拒绝（ADR-0019）。余量与比较
+/// 收在 [`capacity_gate`]（按介质与动作分档，优先用盘上实测几何）。
 ///
-/// 可用容量取 [`MmcDevice::read_disc_capacity`]（顺序介质上是 READ TRACK
-/// INFORMATION 的剩余块数）。读不到时放行：门禁是尽力而为的预检，不该成为
-/// 新的故障点，真放不下由引擎写入失败兜底。区段开销余量与 CLI 共用
-/// [`optiburn_engine::SESSION_OVERHEAD`]。
-fn ensure_fits(device: &str, needed_bytes: u64) -> Result<(), JobError> {
-    let transport = optiburn_transport::open(device).map_err(|e| JobError::Open {
-        device: device.to_string(),
-        source: e,
-    })?;
-    let mut mmc = MmcDevice::new(transport);
-    let capacity = mmc.read_disc_capacity();
-    // 查完立刻释放句柄：刻录引擎随后要以独占方式打开设备。
-    drop(mmc);
-    let Some(free) = capacity.free else {
-        return Ok(());
-    };
-    if needed_bytes + optiburn_engine::SESSION_OVERHEAD > free {
-        return Err(JobError::Capacity {
-            needed: needed_bytes,
+/// 盘片信息、介质族或可用容量读不到时放行：门禁是尽力而为的预检，不该成为新的
+/// 故障点，真放不下由引擎写入失败兜底。
+fn ensure_fits(device: &str, needed_bytes: u64, closing: bool) -> Result<(), JobError> {
+    match capacity_gate(device, needed_bytes, closing) {
+        Ok(CapacityGate::Fits | CapacityGate::Unknown) => Ok(()),
+        Err(BurnError::Mmc(MmcError::Transport(source))) => Err(JobError::Open {
+            device: device.to_string(),
+            source,
+        }),
+        Err(BurnError::Mmc(other)) => Err(JobError::Disc(other)),
+        Err(BurnError::NotEnoughSpace {
+            needed,
+            headroom,
             free,
-        });
+        }) => Err(JobError::Capacity {
+            needed,
+            headroom,
+            free,
+        }),
+        Err(other) => Err(JobError::Burn(other)),
     }
-    Ok(())
 }
 
 /// 刻录引擎的选择：Windows 上没有可用的 xorriso（MSYS2 的构建没有光驱访问，
@@ -1175,7 +1224,7 @@ fn check_write_gates(
     // 镜像路径不接受可追加盘（单区段镜像会遮住已有区段的文件），增长模式放行。
     approve_write(&info, append).map_err(JobError::Gate)?;
     // 追加路径再过一道：盘上有没有可用的 ISO 9660 会话（ADR-0010、ADR-0022）。
-    // 判定问的是将要写盘的引擎能不能读它（ADR-0025），不是笼统的读侧分派。
+    // 判定问的是将要写盘的引擎能不能读它（ADR-0028），不是笼统的读侧分派。
     let mut damaged = None;
     if append && info.status == DiscStatus::Appendable {
         match append_gate_session_state(mode, device, speed_requested).map_err(|e| match e {
@@ -1211,9 +1260,22 @@ fn open_gate(device: &str) -> Result<DiscInformation, JobError> {
 }
 
 /// 进度上报闭包：引擎每个百分比行发一次事件。
-fn progress_emitter<'a>(app: &'a AppHandle, kind: JobKind) -> impl FnMut(f32) + 'a {
+fn progress_emitter<'a>(
+    app: &'a AppHandle,
+    kind: JobKind,
+    device: &'a str,
+    seq: u64,
+) -> impl FnMut(f32) + 'a {
     move |fraction: f32| {
-        let _ = app.emit("job-progress", JobProgress { kind, fraction });
+        let _ = app.emit(
+            "job-progress",
+            JobProgress {
+                kind,
+                device: device.to_string(),
+                seq,
+                fraction,
+            },
+        );
     }
 }
 
@@ -1412,23 +1474,29 @@ mod tests {
                 Lang::Zh,
                 &JobError::Capacity {
                     needed: 4700372992,
+                    headroom: 16777216,
                     free: 4284481536,
                 }
             ),
-            "这张盘放不下本次写入：待写入约 4.4 GB，盘上可用容量约 4.0 GB。请减少待写内容或更换盘片。"
+            "这张盘放不下本次写入：待写入约 4.4 GB，区段开销（lead-in 与 lead-out）还要约 16.0 MB，盘上可用容量约 4.0 GB。请减少待写内容或更换盘片。"
         );
         assert_eq!(
             job_error_text(
                 Lang::En,
                 &JobError::Capacity {
                     needed: 4700372992,
+                    headroom: 16777216,
                     free: 4284481536,
                 }
             ),
-            "The disc cannot hold this write: about 4.4 GB to write, 4.0 GB free on the disc. Remove some files or use another disc."
+            "The disc cannot hold this write: about 4.4 GB to write, about 16.0 MB more for the session overhead (lead-in and lead-out), 4.0 GB free on the disc. Remove some files or use another disc."
         );
         assert_eq!(
-            gate_of(&JobError::Capacity { needed: 1, free: 1 }),
+            gate_of(&JobError::Capacity {
+                needed: 1,
+                headroom: 1,
+                free: 1
+            }),
             Some("capacity")
         );
         assert_eq!(
@@ -1437,6 +1505,27 @@ mod tests {
                 &JobError::Input("复制 /x 失败：no such file".to_string())
             ),
             "复制 /x 失败：no such file"
+        );
+    }
+
+    /// 设备槽占用文案钉住：设备串入句，build 无设备沿用全局文案（issue #50）。
+    #[test]
+    fn busy_slot_texts_are_pinned() {
+        assert_eq!(
+            busy_slot_text(Lang::Zh, JobKind::Burn, "D:"),
+            "D: 上已有任务在进行，请等它结束或先停止它。"
+        );
+        assert_eq!(
+            busy_slot_text(Lang::En, JobKind::Burn, "D:"),
+            "A task is already running on D:. Wait for it to finish or stop it first."
+        );
+        assert_eq!(
+            busy_slot_text(Lang::Zh, JobKind::Build, BUILD_SLOT),
+            "已有任务在进行，请等它结束。"
+        );
+        assert_eq!(
+            busy_slot_text(Lang::En, JobKind::Build, BUILD_SLOT),
+            "A task is already running. Wait for it to finish."
         );
     }
 
@@ -1518,6 +1607,7 @@ mod tests {
         assert_eq!(
             gate_of(&JobError::Capacity {
                 needed: 100,
+                headroom: 50,
                 free: 50
             }),
             Some("capacity")

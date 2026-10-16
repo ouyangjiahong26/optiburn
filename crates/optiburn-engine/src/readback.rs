@@ -370,7 +370,7 @@ pub fn iso_session_state(source: &str) -> Result<IsoSessionState, BurnError> {
 
 /// 末区段状态的原生读法，不走读侧后端分派。
 ///
-/// 写盘引擎是原生时，写前门禁要问的就是原生读侧（ADR-0025）：读侧开关取
+/// 写盘引擎是原生时，写前门禁要问的就是原生读侧（ADR-0028）：读侧开关取
 /// `xorriso` 时门禁也不该去起一个子进程，判定与写盘方必须一致。
 pub fn native_iso_session_state(source: &str) -> Result<IsoSessionState, BurnError> {
     NATIVE_READ.iso_session_state(source)
@@ -1081,7 +1081,7 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
         );
     }
 
-    /// 门禁的判定跟随写盘引擎（ADR-0025）：写盘方是原生时直接问原生读侧，写盘方是
+    /// 门禁的判定跟随写盘引擎（ADR-0028）：写盘方是原生时直接问原生读侧，写盘方是
     /// xorriso 时走读侧分派（xorriso 优先加后端回退，ADR-0024 决策 7）。
     ///
     /// 断言的是“换读法不改结论”：两种夹具（ISO 盘、纯 UDF 盘）两侧给同一答案，

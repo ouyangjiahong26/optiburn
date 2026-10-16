@@ -9,7 +9,7 @@ ADR-0024 起读侧为了解析英文关键行固定 `LC_ALL=C`，代价写在那
 在该 locale 下把 Joliet 的非 ASCII 名换成替代名（libisofs 报 `Cannot convert from
 charset UTF-16BE to ANSI_X3.4-1968`）。当时的定位是“xorriso 优先这一档的既有代价”。
 
-ADR-0025 的追加真机验证暴露了同一根因在写侧的后果，比读侧严重：增长运行要读出盘上
+ADR-0028 的追加真机验证暴露了同一根因在写侧的后果，比读侧严重：增长运行要读出盘上
 旧区段的名字再写进新会话，而 xorriso 的本地字符集来自调用方的 locale。非 UTF-8 环境
 （`LC_ALL=C`、shell 里没有生成 UTF-8 locale、服务或自动化环境）里跑一次追加，
 libisofs 会把旧区段每个非 ASCII 名换成带哈希的替代名并写进新会话。本机离线复现
@@ -53,5 +53,5 @@ LC_ALL=C 增长后   /____hcm____._t_x_t137714629b44773be78118882a756025
 - 非 UTF-8 环境里的追加不再写坏盘上原有的非 ASCII 名。ADR-0024 补记里“xorriso 读
   Joliet 非 ASCII 名给替代名”的既有代价随之消失，Linux 上 xorriso 优先这一档的
   读盘名字与原生读侧一致。
-- 已经写坏的名字不回修，ADR-0025 的真机验证记录里对此有说明。
+- 已经写坏的名字不回修，ADR-0028 的真机验证记录里对此有说明。
 - 文档同步：ADR-0024 补记加一行指向本 ADR，`CHANGELOG.md` 记修复。

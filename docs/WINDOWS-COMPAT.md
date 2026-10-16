@@ -65,7 +65,7 @@ ISO 9660，丢了它盘就成废盘。Joliet 提供 Windows 的长文件名与�
 
 | 介质 | 能否追加区段 | 说明 |
 |---|---|---|
-| CD-R / CD-RW | 可以 | 每次追加占用 lead-in/lead-out，约 20 MB 开销 |
+| CD-R / CD-RW | 可以 | 每次追加占用 lead-in/lead-out，实测约 15 MB（7335 块，见 ADR-0019 修订） |
 | DVD+R / DVD+RW | 可以 | 结构上原生支持 |
 | DVD-R / DVD-RW | 不可以 | 未封口即为挂起状态，追加会失败 |
 | DVD-RAM | 可以（按 UDF 包写） | 行为像可移动磁盘 |

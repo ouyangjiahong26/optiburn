@@ -8,6 +8,7 @@ use tauri::{AppHandle, State};
 
 use super::{JobError, JobKind, JobState, begin_job, fail_job, finish_job, set_join};
 use crate::i18n::{Lang, lang, pick};
+use crate::job::JobHandle;
 
 /// 抢救未关闭轨道里的数据到 `dest`（只读盘面，只往本地写）。完成消息里带
 /// 完整、半截、没写三类文件的数量与半截 zip 的处置结果。
@@ -26,11 +27,20 @@ pub async fn salvage_disc(
         )
         .into());
     }
-    let cancel = begin_job(&state)?;
+    let JobHandle { cancel, seq } = begin_job(&state, &device, JobKind::Salvage)?;
+    let slot = device.clone();
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
         match salvage_blocking(&device, Path::new(&dest), &cancel) {
-            Ok(message) => finish_job(&worker, JobKind::Salvage, "done", None, message),
+            Ok(message) => finish_job(
+                &worker,
+                &device,
+                seq,
+                JobKind::Salvage,
+                "done",
+                None,
+                message,
+            ),
             Err(error) => {
                 if !matches!(error, JobError::Cancelled { .. }) {
                     eprintln!(
@@ -38,11 +48,11 @@ pub async fn salvage_disc(
                         super::job_error_text(lang(), &error)
                     );
                 }
-                fail_job(&worker, JobKind::Salvage, error);
+                fail_job(&worker, &device, seq, JobKind::Salvage, error);
             }
         }
     });
-    set_join(&state, join);
+    set_join(&state, &slot, seq, join);
     Ok(())
 }
 

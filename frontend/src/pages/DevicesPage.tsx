@@ -1,13 +1,14 @@
 // 默认落地页：探测在页面可见时刷新，job-done 后由 App 发信号重读。
 // 点击设备卡片展开盘上文件清单，支持拖动框选与 Ctrl/Shift 多选，可复制到系统剪贴板。
+// 复制与抢救按设备判断占用：其它设备的任务不影响本台（issue #50）。
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Copy, FileText, Folder, LifeBuoy, RefreshCw } from "lucide-react";
 import { copyDiscFiles, listDisc, pickSalvageFolder, salvageDisc } from "../api";
-import { useDeviceProbe } from "../hooks";
+import { nextLocalSeq, useDeviceProbe } from "../hooks";
 import { t } from "../i18n";
 import { capacityLabel, formatBytes } from "../format";
-import type { DiscEntry, JobControls } from "../types";
+import type { DiscEntry, PageProps } from "../types";
 import { StatusBadge } from "../components/StatusBadge";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 
@@ -17,15 +18,14 @@ type ListingState =
   | { kind: "ready"; entries: DiscEntry[] };
 
 export function DevicesPage({
-  locked,
+  jobs,
+  pushResult,
+  startJob,
+  abortJob,
   refreshSignal,
   active,
-  onJobStart,
-  onJobAbort,
-}: JobControls & {
-  locked: boolean;
+}: PageProps & {
   refreshSignal: number;
-  active: boolean;
 }) {
   const { devices, probing, error, refresh } = useDeviceProbe();
   const [openDevice, setOpenDevice] = useState<string | null>(null);
@@ -97,7 +97,8 @@ export function DevicesPage({
   }
 
   async function toggleDevice(path: string) {
-    if (locked) {
+    // 正在被写入的设备不展开清单：读盘会与写任务争同一台光驱。其它设备不受影响。
+    if (jobs.some((job) => job.device === path)) {
       return;
     }
     // 锚点与进行中的加载都属于上一份清单，切换时一并作废。
@@ -125,7 +126,7 @@ export function DevicesPage({
   }
 
   function handleRowDown(event: ReactPointerEvent, entry: DiscEntry) {
-    if (entry.isDir || locked) {
+    if (entry.isDir) {
       return;
     }
     if (event.shiftKey && anchorRef.current !== null) {
@@ -153,33 +154,51 @@ export function DevicesPage({
     selectRange(anchorRef.current, entry.path);
   }
 
+  // 展开中的设备被任何任务占用时禁用写争类操作：复制、抢救都要读盘，与写盘互斥。
+  const busy = jobs.some((job) => job.device === openDevice);
+
   async function handleCopy() {
-    if (openDevice === null || selected.length === 0 || locked) {
+    if (openDevice === null || selected.length === 0 || busy) {
       return;
     }
-    // 复制在任务槽里跑，进度与完成消息走全局任务事件，与写盘同一套展示。
-    onJobStart("copy");
+    // 复制在任务槽里跑：先乐观登记清单项（复制没有进度回调，登记后占用标注与
+    // 停止入口才成立），启动被拒时按序号撤掉。
+    const seq = startJob("copy", openDevice);
     try {
       await copyDiscFiles(openDevice, selected);
     } catch (cause) {
-      onJobAbort("copy", String(cause));
+      abortJob(seq);
+      pushResult({
+        kind: "copy",
+        device: openDevice,
+        seq: nextLocalSeq(),
+        outcome: "failed",
+        message: String(cause),
+      });
     }
   }
 
   // 抢救未关闭轨道：说明放在确认框里（执行那一刻），入口只留一行，首屏不铺长文。
   async function handleSalvage() {
-    if (openDevice === null || locked) {
+    if (openDevice === null || busy) {
       return;
     }
     const dest = await pickSalvageFolder();
     if (dest === null) {
       return;
     }
-    onJobStart("salvage");
+    const seq = startJob("salvage", openDevice);
     try {
       await salvageDisc(openDevice, dest);
     } catch (cause) {
-      onJobAbort("salvage", String(cause));
+      abortJob(seq);
+      pushResult({
+        kind: "salvage",
+        device: openDevice,
+        seq: nextLocalSeq(),
+        outcome: "failed",
+        message: String(cause),
+      });
     }
   }
 
@@ -193,7 +212,7 @@ export function DevicesPage({
         <button
           type="button"
           className="btn"
-          disabled={locked || probing}
+          disabled={probing}
           onClick={() => {
             void refresh();
             reloadExpanded();
@@ -268,7 +287,7 @@ export function DevicesPage({
                       <button
                         type="button"
                         className="btn"
-                        disabled={locked}
+                        disabled={busy}
                         onClick={() => setSalvageConfirmOpen(true)}
                       >
                         <LifeBuoy size={11} />
@@ -310,7 +329,7 @@ export function DevicesPage({
                         <button
                           type="button"
                           className="btn"
-                          disabled={locked || selected.length === 0}
+                          disabled={busy || selected.length === 0}
                           onClick={() => void handleCopy()}
                         >
                           <Copy size={11} />

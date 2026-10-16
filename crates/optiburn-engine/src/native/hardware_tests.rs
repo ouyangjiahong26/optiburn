@@ -1,6 +1,8 @@
 //! 真机测试：需要光驱，用环境变量指定设备后手动跑。
 //!
 //! - 只读侦察：`cargo test -p optiburn-engine -- --ignored inspect_real_media --nocapture`
+//! - 门禁余量读数：`OPTIBURN_DEVICE=D: cargo test -p optiburn-engine -- --ignored inspect_session_gaps --nocapture`
+//!   打印门禁会用的区段开销与盘上相邻区段的实测差额（CD 余量默认值的来源，ADR-0019 修订）。
 //! - 真机写盘：`OPTIBURN_DEVICE=D: OPTIBURN_IMAGE=x.iso cargo test -p optiburn-engine -- --ignored native_burn_real --nocapture`
 //!   写入会占用一张空白或可覆写的盘，别拿有数据的盘跑。
 
@@ -53,6 +55,55 @@ fn inspect_real_media() {
             })
             .collect();
         println!("tracks: {}", listed.join(" "));
+    }
+}
+
+#[test]
+#[ignore = "needs optical drive"]
+fn inspect_session_gaps() {
+    // 只读侦察：打印门禁会用的区段开销余量，以及盘上相邻区段的地址差额（下一区段
+    // 起点减上一区段数据末尾，数据末尾取该区段 PVD 的卷空间大小）。CD 的余量默认值
+    // 就是按这个读数定的，换驱动器或换介质后重跑这条核对（ADR-0019 修订）。
+    let device = std::env::var("OPTIBURN_DEVICE").expect("set OPTIBURN_DEVICE, e.g. D:");
+    let transport = optiburn_transport::open(&device).expect("open device");
+    let mut mmc = MmcDevice::new(transport);
+    wait_until_ready(&mut mmc).expect("device ready");
+    let info = mmc.read_disc_information().expect("disc information");
+    let profile = mmc.get_configuration().expect("current profile");
+    println!("disc: status={:?} sessions={}", info.status, info.sessions);
+    if let Ok(track) = mmc.read_track_information(crate::native::LAST_TRACK) {
+        println!(
+            "track 0xFF: nwa={} nwa_valid={} damaged={} free={} track_blocks={}",
+            track.next_writable_address,
+            track.nwa_valid,
+            track.damaged,
+            track.free_blocks,
+            track.track_blocks
+        );
+    }
+    if let Some(kind) = profile.media_kind() {
+        println!(
+            "headroom: append={} close={}",
+            crate::capacity::session_headroom(&mut mmc, kind, info.status, false),
+            crate::capacity::session_headroom(&mut mmc, kind, info.status, true)
+        );
+    }
+    let Ok(tracks) = mmc.read_toc_tracks() else {
+        // 空白盘的 READ TOC 会被驱动器拒绝（实测），此时没有区段可量。
+        println!("track list: unavailable on this disc");
+        return;
+    };
+    let starts: Vec<u32> = tracks.iter().map(|track| track.start_lba).collect();
+    let mut block = [0u8; optiburn_mmc::SECTOR_BYTES];
+    for pair in starts.windows(2) {
+        let (start, next) = (pair[0], pair[1]);
+        if let Ok(()) = mmc.read_blocks(start + crate::capacity::PVD_BLOCK_OFFSET, &mut block) {
+            let space = crate::capacity::parse_pvd_volume_space(&block);
+            println!(
+                "session at {start}: data={space:?} gap={:?}",
+                space.map(|space| next - start - space)
+            );
+        }
     }
 }
 

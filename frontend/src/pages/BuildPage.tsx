@@ -1,17 +1,22 @@
-// 制作镜像：等待整个任务结束才拿到结果，运行形态只有不确定进度一种。
+// 制作镜像：等待整个任务结束才拿到结果，运行形态只有不确定进度一种。build 没有
+// 设备，槽键是固定的 "build"（issue #50 保持单占）。
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { startBuildImage } from "../api";
+import { nextLocalSeq } from "../hooks";
 import { t } from "../i18n";
 import { FormRow } from "../components/FormRow";
 import { PathField } from "../components/PathField";
-import type { DiscProfile, ImageInfoDto, JobControls } from "../types";
+import type { DiscProfile, ImageInfoDto, PageProps } from "../types";
 
 const PROFILE_LABEL: Record<DiscProfile, string> = {
   cd: "CD",
   dvd: "DVD",
   bd: "BD",
 };
+
+// 制作镜像的任务槽键，与后端 `cmd::BUILD_SLOT` 同值（设备串不会是这个词）。
+const BUILD_SLOT = "build";
 
 // 只做提示：按两种分隔符取“父目录 + 目录名 + .iso”，源为根目录时退回
 // optiburn.iso；真正的默认值由后端计算，这里不保证与之一致。
@@ -48,7 +53,12 @@ function isoSuffixHint(output: string): string | null {
   return `${stripped}.iso`;
 }
 
-export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { locked: boolean }) {
+export function BuildPage({
+  locked,
+  pushResult,
+  startJob,
+  abortJob,
+}: PageProps & { locked: boolean }) {
   const [src, setSrc] = useState("");
   const [output, setOutput] = useState("");
   const [profile, setProfile] = useState<DiscProfile>("dvd");
@@ -61,7 +71,9 @@ export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { lo
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setImageInfo(null);
-    onJobStart("build");
+    // 制作镜像没有设备，槽键是固定的 "build"（与后端 BUILD_SLOT 同值）。它不发
+    // 进度事件，先乐观登记清单项，这样制作进行中表单与提交按钮被禁用。
+    const seq = startJob("build", BUILD_SLOT);
     try {
       setImageInfo(
         await startBuildImage({
@@ -73,7 +85,14 @@ export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { lo
       );
     } catch (cause) {
       // 任务真实失败时 job-done 事件会展示原因，这里只在启动被拒绝时解锁。
-      onJobAbort("build", String(cause));
+      abortJob(seq);
+      pushResult({
+        kind: "build",
+        device: BUILD_SLOT,
+        seq: nextLocalSeq(),
+        outcome: "failed",
+        message: String(cause),
+      });
     }
   }
 

@@ -53,8 +53,11 @@
 | 读盘（Disc Reading） | 读出盘上末区段内容的五个能力：卷标、末区段是否 ISO 9660、目录树列举、整树抽取、按路径抽取。接在 `ReadBackend` 接缝上，后端是 xorriso 子进程或原生解析（ISO 9660 见 ADR-0018，UDF 见 ADR-0021）。 | 读碟、光盘读取 |
 | 后端回退（Backend Fallback） | 读盘时 xorriso 读不到 ISO 9660（输出报空镜像兜底或读侧报错），改用原生读侧重试同一次操作的动作。与损坏末区段的候选区段回退（`SessionFallback`）是两回事。 | 回退、降级、兜底、切后端 |
 | 保守开关（Conservative Switch） | 置位后退回改动前行为的环境变量，用于对照与止损。现有 `OPTIBURN_LAST_SESSION_ONLY`、`OPTIBURN_READ_BACKEND` 与 `OPTIBURN_GROW_BACKEND`。 | 逃生开关、兼容开关 |
-| 阶段计时（stage timing） | 写盘前各段耗时的诊断输出：`OPTIBURN_TIMING` 置位后 CLI 与 GUI 命令层的 `burn`、`append` 每段完成往 stderr 打一行（`阶段 尺寸预演：4.2 秒`，GUI 多一段暂存拷贝）。用来在真机上分辨等待花在哪一段，见 ADR-0025。 | 性能日志、耗时统计 |
+| 阶段计时（stage timing） | 写盘前各段耗时的诊断输出：`OPTIBURN_TIMING` 置位后 CLI 与 GUI 命令层的 `burn`、`append` 每段完成往 stderr 打一行（`阶段 尺寸预演：4.2 秒`，GUI 多一段暂存拷贝）。用来在真机上分辨等待花在哪一段，见 ADR-0028。 | 性能日志、耗时统计 |
 | 盘片容量（DiscCapacity） | 总容量与可用容量两个口径，可用容量优先取 READ TRACK INFORMATION 的剩余块数，退回 READ FORMAT CAPACITIES 的格式化容量（ADR-0019）。对应 `DiscCapacity`、`read_disc_capacity`。 | 光盘大小、介质容量、容量信息 |
 | 可用容量（free） | 盘片容量里还能写入的量，写前容量门禁的比较基准。顺序介质上是剩余块数乘 2048 字节（ADR-0019）。 | 剩余空间、可用空间、自由空间 |
+| 区段开销（Session Overhead） | 数据区之外新区段自身要占的地址空间：本区段的 lead-out 与（保持可追加时）下一区段的 lead-in。写前容量门禁把它与待写入量相加再与可用容量比较。对应 `optiburn-engine::capacity`（ADR-0019 修订）。 | 预留空间、保护大小、安全空间 |
 | 格式化容量（FormatCapacity） | READ FORMAT CAPACITIES 报出的两个数值：未格式化介质的最大可格式化容量（描述符类型 1）与已格式化介质的当前格式化容量（类型 2）。对应 `FormatCapacity`、`read_format_capacities`。 | 介质容量、盘片大小 |
 | 预演（print size） | 增长模式提交前算出即将写入的新区段大小（字节），与可用容量同口径。Linux 用 `xorriso -print_size`，Windows 用原生会话计划的尺寸，两端都收在 `grow_size`。 | 大小估算、dry-run |
+| 多设备写入（Multi-device Write） | 一次会话内把内容分别写到两台及以上驱动器：每台设备一个独立任务，同一设备互斥，不同设备并行。对应 GUI 任务槽的按设备键控。 | 并行刻录、批量刻录 |
+| 设备占用（Device Busy） | 某台驱动器上已有任务在跑的状态：该设备上的第二个任务被拒，界面把它标为占用并禁用。 | 设备锁定、驱动忙 |

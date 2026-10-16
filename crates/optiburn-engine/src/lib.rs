@@ -15,7 +15,7 @@
 //! 增长模式（`append`/追加页）同样分平台：Windows 用原生引擎读旧区段、生成
 //! 绝对地址约定的新区段（ADR-0020），Linux 维持 xorriso 的增长模式。Linux 上
 //! 可以用保守开关 `OPTIBURN_GROW_BACKEND` 把整条追加准备与写入切到原生引擎，
-//! 代价是原生增长在 Linux 还没有真机验证（ADR-0025）。
+//! 代价是原生增长在 Linux 还没有真机验证（ADR-0028）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use optiburn_mmc::{DiscStatus, MediaKind, MmcDevice};
 
+mod capacity;
 mod disc_read;
 mod grow;
 mod native;
@@ -30,6 +31,7 @@ mod readback;
 mod verify;
 mod xorriso;
 
+pub use capacity::{CapacityGate, capacity_gate};
 pub use native::NativeEngine;
 pub use readback::{
     DiscEntry, ReadBackendMode, extract_paths, extract_tree, iso_session_state, list_tree,
@@ -87,10 +89,10 @@ pub fn resolve_grow_backend(choice: Option<GrowBackendMode>) -> Result<GrowBacke
     }
 }
 
-/// 写前阶段计时的开关名：`OPTIBURN_TIMING`（ADR-0025）。默认关闭，正常输出不加噪声。
+/// 写前阶段计时的开关名：`OPTIBURN_TIMING`（ADR-0028）。默认关闭，正常输出不加噪声。
 pub const TIMING_ENV: &str = "OPTIBURN_TIMING";
 
-/// 阶段计时是否开启：读 `OPTIBURN_TIMING`，没设、空值与 `0` 都算关闭（ADR-0025）。
+/// 阶段计时是否开启：读 `OPTIBURN_TIMING`，没设、空值与 `0` 都算关闭（ADR-0028）。
 ///
 /// 判定收在引擎里，CLI 与 GUI 命令层共用一个口径，避免两边各写一份后漂移。
 pub fn stage_timing_enabled() -> bool {
@@ -310,11 +312,6 @@ pub fn grow_size(mode: GrowBackendMode, job: &GrowJob) -> Result<u64, BurnError>
 pub(crate) const XORRISO: &str = "xorriso";
 /// 子进程失败时保留多少行 stderr 作为摘要。
 pub(crate) const TAIL_LINES: usize = 10;
-/// 容量门禁的区段开销余量（ADR-0019）：待写入量（[`grow_size`] 的预演字节数
-/// 或镜像大小）只算数据区，不含区段 lead-in/lead-out 与链接区。CD 每区段最大约
-/// 15 MB，DVD/BD 约 2 MB，取覆盖最坏情形的 16 MB。CLI 与 GUI 的写前容量门禁
-/// 共用这一个常量，避免两端口径漂移。
-pub const SESSION_OVERHEAD: u64 = 16 * 1024 * 1024;
 
 /// 一次镜像刻录任务的输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -497,9 +494,15 @@ pub enum BurnError {
     /// 原生引擎做不到这次请求，原因见 [`NativeGap`]，文案由 CLI 与 GUI 分别给出。
     #[error("native engine gap: {0}")]
     NativeGap(NativeGap),
-    /// 盘上剩余空间放不下待写入的新区段（原生增长模式的门禁，ADR-0020）。
-    #[error("not enough space for the new session: needs {needed} bytes, {free} free")]
-    NotEnoughSpace { needed: u64, free: u64 },
+    /// 盘上剩余空间放不下待写入的新区段（写前容量门禁，ADR-0019）。
+    #[error(
+        "not enough space for the new session: needs {needed} bytes, {headroom} bytes of session overhead, {free} free"
+    )]
+    NotEnoughSpace {
+        needed: u64,
+        headroom: u64,
+        free: u64,
+    },
     /// 盘上旧区段的形状不支持嫁接式增长（无 Joliet、启动记录、多 extent 文件等）。
     #[error("cannot grow this disc with the native engine: {0}")]
     GrowUnsupported(String),
@@ -619,7 +622,7 @@ mod tests {
     }
 
     /// 增长模式开关的取值判定与读侧同形状：空值与 auto 都是默认，未知值报错并
-    /// 列出合法取值，不静默落回默认（ADR-0025）。
+    /// 列出合法取值，不静默落回默认（ADR-0028）。
     #[test]
     fn grow_backend_mode_values_and_unknown() {
         assert_eq!(
@@ -722,7 +725,7 @@ mod tests {
         );
     }
 
-    /// 阶段计时默认关闭：没设、空值与 `0` 都不打行，其余值打开（ADR-0025）。判定收在
+    /// 阶段计时默认关闭：没设、空值与 `0` 都不打行，其余值打开（ADR-0028）。判定收在
     /// 引擎一份，CLI 与 GUI 命令层共用，两边不再各写一遍。
     #[test]
     fn stage_timing_is_opt_in() {
