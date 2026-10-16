@@ -1,7 +1,8 @@
 // 侧栏底部的“检查更新”：只有可就地更新的安装形态显示（Windows NSIS 与 Linux AppImage，
 // 见 ADR-0015）。检查、确认、下载、安装都在这里闭环。下载与安装分两步：Windows 上
 // NSIS 安装器接管后会直接退出应用，所以安装只在没有任务进行时触发，进行中的刻录不会
-// 被安装动作打断。
+// 被安装动作打断。整体不可用时返回 null，因此版本提示不能放在这里，单列在
+// VersionBadge。
 import { useEffect, useRef, useState } from "react";
 import { t } from "../i18n";
 import {
@@ -19,6 +20,8 @@ type Phase = "idle" | "checking" | "confirm" | "downloading" | "downloaded";
 
 export function UpdaterSection({ locked }: { locked: boolean }) {
   const [enabled, setEnabled] = useState(false);
+  // 更新确认框要报出“当前版本 vX 可更新到 vY”，所以要一份自己的版本；侧栏那处
+  // 常显的版本提示由 VersionBadge 自己取，两者互不依赖。
   const [version, setVersion] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [update, setUpdate] = useState<Update | null>(null);
@@ -124,9 +127,6 @@ export function UpdaterSection({ locked }: { locked: boolean }) {
   const busy = phase === "checking" || phase === "downloading";
   return (
     <div className="updater">
-      <div className="updater-version">
-        {version === "" ? "OptiBurn" : `OptiBurn v${version}`}
-      </div>
       {phase === "downloaded" ? (
         <button
           type="button"

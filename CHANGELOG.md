@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+**中文**
+
+### 修复
+
+- Linux 上侧栏左下角的版本提示不再消失：版本行此前与“检查更新”入口共用一个开关，安装形态不能就地更新时（deb 安装、开发态运行）整个区域返回 null，版本号被一并隐藏。现在版本提示单列成一个恒定显示的组件，版本号取自应用自身的版本，Windows 与 AppImage 的表现不变。
+
+**English**
+
+### FIX
+
+- The version label in the bottom-left corner no longer disappears on Linux: it shared one switch with the Check for updates entry, so installations that cannot update in place (deb packages, development runs) returned null for the whole area and hid the version together with it. The label is now a separate component that always renders, taking the version from the application itself; Windows and AppImage look unchanged.
+
 ## [0.1.8] - 2026-10-16
 
 **中文**
