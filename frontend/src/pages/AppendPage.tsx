@@ -29,7 +29,7 @@ let nextRowId = 1;
 
 const DEFAULT_VOLUME_ID = "OPTIBURN";
 
-export function AppendPage({ jobs, results, pushResult, active }: PageProps) {
+export function AppendPage({ jobs, results, pushResult, startJob, abortJob, active }: PageProps) {
   const [rows, setRows] = useState<AppendRow[]>([]);
   const [speed, setSpeed] = useState("");
   const [closeDisc, setCloseDisc] = useState(false);
@@ -219,6 +219,8 @@ export function AppendPage({ jobs, results, pushResult, active }: PageProps) {
 
   async function handleVerify(row: AppendRow) {
     updateRow(row.id, { verify: null });
+    // 校验没有进度回调：先乐观登记清单项，占用标注与启动被拒的撤销都靠它。
+    const seq = startJob("verify", row.device);
     try {
       const report = await startVerify({
         device: row.device,
@@ -228,6 +230,7 @@ export function AppendPage({ jobs, results, pushResult, active }: PageProps) {
       });
       updateRow(row.id, { verify: report });
     } catch (cause) {
+      abortJob(seq);
       pushResult({
         kind: "verify",
         device: row.device,

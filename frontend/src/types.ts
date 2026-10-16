@@ -72,6 +72,10 @@ export type PageProps = {
   jobs: ActiveJob[];
   results: JobResult[];
   pushResult: (result: JobResult) => void;
+  // 发起任务即乐观登记一条清单项（本地负序号），返回的序号供启动被拒时精确撤销。
+  // 只有刻录与追加有进度回调，其余任务的清单项只能靠这一步出现。
+  startJob: (kind: JobKind, device: string) => number;
+  abortJob: (seq: number) => void;
   // 页面是否可见：设备探测只在可见时刷新（页面常驻挂载，不等于一直活跃）。
   active: boolean;
 };

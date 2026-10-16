@@ -20,6 +20,8 @@ type ListingState =
 export function DevicesPage({
   jobs,
   pushResult,
+  startJob,
+  abortJob,
   refreshSignal,
   active,
 }: PageProps & {
@@ -159,10 +161,13 @@ export function DevicesPage({
     if (openDevice === null || selected.length === 0 || busy) {
       return;
     }
-    // 复制在任务槽里跑，进度与完成消息走全局任务事件，与写盘同一套展示。
+    // 复制在任务槽里跑：先乐观登记清单项（复制没有进度回调，登记后占用标注与
+    // 停止入口才成立），启动被拒时按序号撤掉。
+    const seq = startJob("copy", openDevice);
     try {
       await copyDiscFiles(openDevice, selected);
     } catch (cause) {
+      abortJob(seq);
       pushResult({
         kind: "copy",
         device: openDevice,
@@ -182,9 +187,11 @@ export function DevicesPage({
     if (dest === null) {
       return;
     }
+    const seq = startJob("salvage", openDevice);
     try {
       await salvageDisc(openDevice, dest);
     } catch (cause) {
+      abortJob(seq);
       pushResult({
         kind: "salvage",
         device: openDevice,

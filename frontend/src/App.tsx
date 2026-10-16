@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { Disc3, FileArchive, Flame, FolderPlus } from "lucide-react";
 import { cancelJob, confirmClose, onCloseBlocked, onJobDone, onJobProgress } from "./api";
-import type { ActiveJob, JobResult } from "./types";
+import type { ActiveJob, JobKind, JobResult } from "./types";
+import { nextLocalSeq } from "./hooks";
 import { t } from "./i18n";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ProgressBar } from "./components/ProgressBar";
@@ -62,6 +63,24 @@ export function App() {
 
   const pushResult = useCallback((result: JobResult) => {
     setResults((current) => [...current, result]);
+  }, []);
+
+  // 发起任务即乐观登记一条清单项：只有刻录与追加发进度事件，复制、抢救、校验、
+  // 制作镜像只能靠这一步出现在“当前任务”清单里（占用标注与停止入口都依赖它）。
+  // 每次调用取一个新的负序号，撤销按序号精确移除，不会误删同设备上已在跑的条目。
+  const startJob = useCallback((kind: JobKind, device: string) => {
+    const seq = nextLocalSeq();
+    setJobs((current) =>
+      current.some((job) => job.device === device)
+        ? current
+        : [...current, { kind, device, seq, fraction: null }],
+    );
+    return seq;
+  }, []);
+
+  // 启动被拒（BusySlot、输入被拒）时撤掉刚登记的那条。
+  const abortJob = useCallback((seq: number) => {
+    setJobs((current) => current.filter((job) => job.seq !== seq));
   }, []);
 
   useEffect(() => {
@@ -186,6 +205,8 @@ export function App() {
             jobs={jobs}
             results={results}
             pushResult={pushResult}
+            startJob={startJob}
+            abortJob={abortJob}
             refreshSignal={refreshSignal}
             active={page === "devices"}
           />
@@ -196,6 +217,8 @@ export function App() {
             jobs={jobs}
             results={results}
             pushResult={pushResult}
+            startJob={startJob}
+            abortJob={abortJob}
             active={page === "build"}
           />
         </div>
@@ -204,6 +227,8 @@ export function App() {
             jobs={jobs}
             results={results}
             pushResult={pushResult}
+            startJob={startJob}
+            abortJob={abortJob}
             active={page === "burn"}
           />
         </div>
@@ -212,6 +237,8 @@ export function App() {
             jobs={jobs}
             results={results}
             pushResult={pushResult}
+            startJob={startJob}
+            abortJob={abortJob}
             active={page === "append"}
           />
         </div>

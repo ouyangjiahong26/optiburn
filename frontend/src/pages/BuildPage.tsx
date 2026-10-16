@@ -15,6 +15,9 @@ const PROFILE_LABEL: Record<DiscProfile, string> = {
   bd: "BD",
 };
 
+// 制作镜像的任务槽键，与后端 `cmd::BUILD_SLOT` 同值（设备串不会是这个词）。
+const BUILD_SLOT = "build";
+
 // 只做提示：按两种分隔符取“父目录 + 目录名 + .iso”，源为根目录时退回
 // optiburn.iso；真正的默认值由后端计算，这里不保证与之一致。
 function defaultOutputHint(src: string): string | null {
@@ -53,6 +56,8 @@ function isoSuffixHint(output: string): string | null {
 export function BuildPage({
   locked,
   pushResult,
+  startJob,
+  abortJob,
 }: PageProps & { locked: boolean }) {
   const [src, setSrc] = useState("");
   const [output, setOutput] = useState("");
@@ -66,6 +71,9 @@ export function BuildPage({
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setImageInfo(null);
+    // 制作镜像没有设备，槽键是固定的 "build"（与后端 BUILD_SLOT 同值）。它不发
+    // 进度事件，先乐观登记清单项，这样制作进行中表单与提交按钮被禁用。
+    const seq = startJob("build", BUILD_SLOT);
     try {
       setImageInfo(
         await startBuildImage({
@@ -76,10 +84,11 @@ export function BuildPage({
         }),
       );
     } catch (cause) {
-      // 任务真实失败时 job-done 事件会展示原因，这里只在启动被拒绝时合成一条结果。
+      // 任务真实失败时 job-done 事件会展示原因，这里只在启动被拒绝时解锁。
+      abortJob(seq);
       pushResult({
         kind: "build",
-        device: "build",
+        device: BUILD_SLOT,
         seq: nextLocalSeq(),
         outcome: "failed",
         message: String(cause),

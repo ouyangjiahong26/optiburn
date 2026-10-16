@@ -510,7 +510,7 @@ fn probe_one(path: String) -> DeviceInfo {
     info
 }
 
-/// 占用文案：设备槽点名设备串；build 没有设备可指，沿用全局文案（build 的并发
+/// 占用文案：设备槽点名设备串。build 没有设备可指，沿用全局文案（build 的并发
 /// 不在多设备改造范围内，保持单占）。
 fn busy_slot_text(lang: Lang, kind: JobKind, slot: &str) -> String {
     match kind {
