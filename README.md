@@ -9,7 +9,7 @@
 
 Cross-platform optical disc burning toolkit in Rust for Windows and Linux on x86_64 and arm64. Software covering all four combinations is rare, and burning on Linux desktops (Ubuntu, Kylin, and other distributions) is especially rough: cryptic command-line tools, no progress, English-only errors, and disc states you have to sort out by hand. optiburn turns that into a reliable workflow: pre-flight disc checks, live progress, cancellable jobs, error causes classified into readable messages, and read-back verification. Images cover ISO 9660, Joliet and UDF Bridge, so older systems and Windows can read them directly.
 
-## What it does today (0.1.7)
+## What it does today (0.1.8)
 
 | Command | State |
 |---|---|
@@ -35,7 +35,7 @@ cargo build --release
 - Rust 1.98.1 (pinned by `rust-toolchain.toml`).
 - `xorriso` on `PATH` is needed by the CLI's default burn engine and by the GUI's Linux read and grow paths (browsing, verification, grow mode), and it is the reference reader in the tests. On Debian/Ubuntu: `sudo apt install xorriso`. On Windows there is no usable build: the MSYS2 package (`pacman -S xorriso`) is compiled without a drive-access backend, so it only works on image files, never on a drive (verified on hardware and against the upstream build logic on 2026-10-10; see the addendum in ADR-0008). Windows needs no external tool at all: the GUI and `--engine native` use the native MMC engine for burning and growing (ADR-0017, ADR-0020) and the native reader for browsing (ADR-0018, ADR-0021).
 - Write access to the drive: usually membership in the `cdrom` group, or root.
-- GUI: on Windows grab `OptiBurn_0.1.7_x64-setup.exe` (or the arm64 build). On Linux grab the AppImage (make it executable and run) or the `.deb`. Burning and reading use the native engine and native reader on Windows (no external tool); on Linux they use `xorriso` (see the note above). Offline Windows machines: grab the `-offline` build of the x64 installer instead; it embeds the WebView2 runtime (installer about 210 MB) and installs with zero downloads. On an unpatched Windows 7 the WebView2 installer fails with 0x8007007F: install KB2533623 and KB3063858 first, obtained offline from the [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) (see the addendum in ADR-0016).
+- GUI: on Windows grab `OptiBurn_0.1.8_x64-setup.exe` (or the arm64 build). On Linux grab the AppImage (make it executable and run) or the `.deb`. Burning and reading use the native engine and native reader on Windows (no external tool); on Linux they use `xorriso` (see the note above). Offline Windows machines: grab the `-offline` build of the x64 installer instead; it embeds the WebView2 runtime (installer about 210 MB) and installs with zero downloads. On an unpatched Windows 7 the WebView2 installer fails with 0x8007007F: install KB2533623 and KB3063858 first, obtained offline from the [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) (see the addendum in ADR-0016).
 
 ## Usage
 
@@ -93,7 +93,7 @@ done
 ## Acknowledgements
 
 - [hadris](https://github.com/hxyulin/hadris): the MIT-licensed Rust image writer (`hadris-cd`) that produces the UDF Bridge images.
-- [xorriso / libburnia](https://www.gnu.org/software/xorriso/): the reference implementation this project tests against, and the 0.1.7 burn backend (invoked as a subprocess; no GPL code is linked).
+- [xorriso / libburnia](https://www.gnu.org/software/xorriso/): the reference implementation this project tests against, and the 0.1.8 burn backend (invoked as a subprocess; no GPL code is linked).
 - [alight](https://github.com/vicr123/alight): reference for how a Linux `SG_IO` transport is structured; no code copied (that repository carries no license).
 
 ## License
