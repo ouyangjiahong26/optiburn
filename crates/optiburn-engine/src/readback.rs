@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use crate::{BurnError, CancelToken, IsoSessionState, SalvageReport, TAIL_LINES, XORRISO};
 
 use super::disc_read::NativeRead;
-use super::xorriso::run;
+use super::xorriso::{local_charset_args, run};
 
 /// 读侧后端：读盘能力的实现约定（[`BurnEngine`] 的读侧对偶，ADR-0018）。
 pub(crate) trait ReadBackend {
@@ -368,6 +368,14 @@ pub fn iso_session_state(source: &str) -> Result<IsoSessionState, BurnError> {
     selected_read_backend()?.iso_session_state(source)
 }
 
+/// 末区段状态的原生读法，不走读侧后端分派。
+///
+/// 写盘引擎是原生时，写前门禁要问的就是原生读侧（ADR-0028）：读侧开关取
+/// `xorriso` 时门禁也不该去起一个子进程，判定与写盘方必须一致。
+pub fn native_iso_session_state(source: &str) -> Result<IsoSessionState, BurnError> {
+    NATIVE_READ.iso_session_state(source)
+}
+
 /// 把镜像或设备的目录树抽取到本地目录，供回读校验与复制使用（ADR-0010）。
 ///
 /// xorriso 路径的 `-osirrox on` 打开抽取权限，`-extract / <目标>` 把整树落到目标
@@ -403,15 +411,18 @@ fn reports_blank_medium(stderr: &str) -> bool {
 /// 组装读卷标的参数表。
 ///
 /// 带 `-drive_access shared`：盘被挂载时独占打开会失败，shared 仍能读到 PVD，
-/// 卷标预填与末区段检查因此在挂载期间也可用。
+/// 卷标预填与末区段检查因此在挂载期间也可用。名字侧字符集固定 UTF-8（ADR-0026）：
+/// 本模块的消息解析固定 `LC_ALL=C`，两者解耦后非 ASCII 名不再被换成替代名。
 fn pvd_info_args(device: &str) -> Vec<OsString> {
-    vec![
+    let mut args = local_charset_args();
+    args.extend([
         OsString::from("-drive_access"),
         OsString::from("shared"),
         OsString::from("-indev"),
         OsString::from(device),
         OsString::from("-pvd_info"),
-    ]
+    ]);
+    args
 }
 
 /// 从 `-pvd_info` 的 stdout 里取卷标，空值或没有该行返回 `None`。
@@ -438,7 +449,8 @@ fn parse_volume_id(stdout: &str) -> Option<String> {
 /// 2026-10-12，udisks2 挂载的 CD-R 上 xorriso 报 `Cannot open busy device`），
 /// shared 才能抽。与 [`extract_paths_args`] 同一口径。
 fn extract_args(source: &Path, dest: &Path) -> Vec<OsString> {
-    vec![
+    let mut args = local_charset_args();
+    args.extend([
         OsString::from("-drive_access"),
         OsString::from("shared"),
         OsString::from("-indev"),
@@ -448,7 +460,8 @@ fn extract_args(source: &Path, dest: &Path) -> Vec<OsString> {
         OsString::from("-extract"),
         OsString::from("/"),
         dest.as_os_str().to_os_string(),
-    ]
+    ]);
+    args
 }
 
 /// 盘上最后一区段的一个条目。
@@ -463,7 +476,8 @@ pub struct DiscEntry {
 
 /// 组装列清单的参数表。
 fn list_args(device: &str) -> Vec<OsString> {
-    vec![
+    let mut args = local_charset_args();
+    args.extend([
         OsString::from("-drive_access"),
         OsString::from("shared"),
         OsString::from("-indev"),
@@ -473,7 +487,8 @@ fn list_args(device: &str) -> Vec<OsString> {
         OsString::from("-exec"),
         OsString::from("lsdl"),
         OsString::from("--"),
-    ]
+    ]);
+    args
 }
 
 /// 解析 `lsdl` 的输出：`-rw-r--r-- 1 1000 1000 7797 Oct 9 10:25 '/路径'`。
@@ -594,14 +609,15 @@ fn is_drive_prefix(segment: &str) -> bool {
 
 /// 组装多路径抽取的参数表：一次加载盘片，按序执行每条 `-extract`。
 fn extract_paths_args(device: &str, targets: &[(String, PathBuf)]) -> Vec<OsString> {
-    let mut args = vec![
+    let mut args = local_charset_args();
+    args.extend([
         OsString::from("-drive_access"),
         OsString::from("shared"),
         OsString::from("-indev"),
         OsString::from(device),
         OsString::from("-osirrox"),
         OsString::from("on"),
-    ];
+    ]);
     for (path, target) in targets {
         args.push(OsString::from("-extract"));
         args.push(OsString::from(path));
@@ -613,9 +629,10 @@ fn extract_paths_args(device: &str, targets: &[(String, PathBuf)]) -> Vec<OsStri
 /// 跑一个只读查询并收集 stdout 与 stderr。
 ///
 /// 文案解析依赖英文关键行，固定 `LC_ALL=C`。实测（2026-10-12，xorriso 1.5.6）该
-/// locale 下中文卷标原样输出，但 Joliet 的非 ASCII 名会被换成替代名（libisofs 报
+/// locale 下中文卷标原样输出，而 Joliet 的非 ASCII 名会被换成替代名（libisofs 报
 /// `Cannot convert from charset UTF-16BE to ANSI_X3.4-1968`，`/中文追加.txt` 变
-/// `/__e______._t_x...`），原生读侧按 Joliet 读得出原名。取舍见 ADR-0024 补记。
+/// `/__e______._t_x...`）。2026-10-15 起名字侧另加 `-local_charset UTF-8`，消息用
+/// 英文、名字用 UTF-8 两件事解耦，替代名不再出现（ADR-0026）。
 /// 失败时取 stderr 尾部做摘要。xorriso 增长模式的尺寸预演
 /// （[`crate::xorriso::grow_size`]）也复用它。
 pub(crate) fn run_output(program: &str, args: &[OsString]) -> Result<(String, String), BurnError> {
@@ -670,7 +687,15 @@ mod tests {
     fn pvd_info_args_and_volume_id_parse() {
         assert_eq!(
             pvd_info_args("/dev/sr0"),
-            os(&["-drive_access", "shared", "-indev", "/dev/sr0", "-pvd_info"])
+            os(&[
+                "-local_charset",
+                "UTF-8",
+                "-drive_access",
+                "shared",
+                "-indev",
+                "/dev/sr0",
+                "-pvd_info"
+            ])
         );
         let stdout = "\
 Drive current: -indev '/dev/sr0'
@@ -701,6 +726,8 @@ Preparer Id  : XORRISO
         assert_eq!(
             extract_args(Path::new("/tmp/a.iso"), Path::new("/tmp/out")),
             os(&[
+                "-local_charset",
+                "UTF-8",
                 "-drive_access",
                 "shared",
                 "-indev",
@@ -835,6 +862,8 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
         assert_eq!(
             list_args("/dev/sr0"),
             os(&[
+                "-local_charset",
+                "UTF-8",
                 "-drive_access",
                 "shared",
                 "-indev",
@@ -856,6 +885,8 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
         assert_eq!(
             extract_paths_args("/dev/sr0", &targets),
             os(&[
+                "-local_charset",
+                "UTF-8",
                 "-drive_access",
                 "shared",
                 "-indev",
@@ -1047,6 +1078,55 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
             merge_session_state(Err(BurnError::NoIsoSession), || Ok(IsoSessionState::Usable))
                 .unwrap(),
             IsoSessionState::Usable
+        );
+    }
+
+    /// 门禁的判定跟随写盘引擎（ADR-0028）：写盘方是原生时直接问原生读侧，写盘方是
+    /// xorriso 时走读侧分派（xorriso 优先加后端回退，ADR-0024 决策 7）。
+    ///
+    /// 断言的是“换读法不改结论”：两种夹具（ISO 盘、纯 UDF 盘）两侧给同一答案，
+    /// 开关改变的是这次查询由谁回答（写前窗口里起不起子进程），不是判定口径。
+    /// 起不起子进程只能在接了光驱的机器上看（CLI 的 `OPTIBURN_TIMING` 计时）。
+    #[cfg(unix)]
+    #[test]
+    fn gate_answers_are_the_same_under_both_writing_backends() {
+        let tmp = TempDir::new("readback-gate-backend");
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).expect("create the source dir");
+        std::fs::write(src.join("说明.txt"), b"gate fixture").expect("write the sample file");
+        let image = tmp.path().join("gate.iso");
+        build_image(
+            &src,
+            &image,
+            &ImageSpec {
+                profile: DiscProfile::Dvd,
+                volume_id: "GATE".to_string(),
+                joliet: true,
+            },
+        )
+        .expect("build the fixture image");
+        let source = image.to_str().expect("utf-8 temp path");
+
+        // ISO 盘：两侧都放行。
+        assert_eq!(
+            crate::gate_session_state_with("native", source).unwrap(),
+            IsoSessionState::Usable
+        );
+        assert_eq!(
+            crate::gate_session_state_with("xorriso", source).unwrap(),
+            IsoSessionState::Usable
+        );
+
+        // 纯 UDF 盘：两侧都判不可用，续写照旧被拒（ADR-0010）。
+        let udf = write_udf_only_image(&tmp);
+        let udf_source = udf.to_str().expect("utf-8 temp path");
+        assert_eq!(
+            crate::gate_session_state_with("native", udf_source).unwrap(),
+            IsoSessionState::Unusable
+        );
+        assert_eq!(
+            crate::gate_session_state_with("xorriso", udf_source).unwrap(),
+            IsoSessionState::Unusable
         );
     }
 

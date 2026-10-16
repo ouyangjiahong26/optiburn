@@ -26,6 +26,9 @@
 - Linux 上纯 UDF 盘的卷标、目录树列举、整树抽取、按路径抽取可用，与 Windows 原生读侧等价，抢救在 Linux 一并可用。
 - 损坏末区段的候选区段回退（ADR-0022）在 Linux 顺带可用：损坏末区段的盘在 xorriso 侧是兜底空镜像形态（`Unusable`），门禁拿它问一次原生，原生按候选枚举与验证报出 `Damaged`，xorriso 报错时也照常回退。这是预期收益，不是额外改动，测试里要有它。
 - 保守开关置位 `xorriso` 时行为与本次改动前一致，是对照与止损的退路。
+- ADR-0028 起，写前门禁的末区段判定跟随增长模式的后端选择：写盘方是原生时（Linux
+  上 `OPTIBURN_GROW_BACKEND=native`）直接问原生读侧，不再经过本 ADR 的读侧分派；
+  写盘方是 xorriso 时仍是本 ADR 决策 7 的口径。门禁问的是将要写盘的引擎能不能读。
 - 验收分两级：镜像分支（合成盘夹具）全绿即合并，真机证据（一张纯 UDF 实物盘、卷标与目录树列举与抽取三类读操作、与 `udfinfo` 加内核 `mount -t udf` 的逐字节对拍、设备路径上触发信号形态的确认）由维护者在接了光驱的主机上补，结果记回 issue #41。设备路径上“读侧报错”这一类触发已在 2026-10-12 的多区段 CD-R 上确认（抢救），兜底空镜像这一类仍只有镜像文件的证据。
 - 文档同步：ADR-0018 与 ADR-0021 的后果节各加一行指向本 ADR，`docs/ARCHITECTURE.md` 平台表的读盘一行改写，`CONTEXT.md` 立纯 UDF 盘、后端回退、保守开关三条术语。
 
@@ -50,4 +53,4 @@
   - `readback::extract_args` 少了 `-drive_access shared`。盘被桌面环境自动挂载时 xorriso 独占打开失败（`Cannot open busy device`，实测），整树抽取回落原生。补上与其它只读参数表同一口径。
 - 未了事项：
   - 纯 UDF 实物盘在 Linux 上的读取仍无真机证据，触发信号的形态目前只在镜像文件与这张 ISO 盘上确认。
-  - xorriso 在 `LC_ALL=C` 下把 Joliet 的非 ASCII 名换成替代名（`/中文追加.txt` 变 `/__e______._t_x...`，libisofs 报 `Cannot convert from charset UTF-16BE to ANSI_X3.4-1968`），原生读侧按 Joliet 读得出原名。这是 xorriso 优先这一档的既有代价（改动前就成立，非本轮引入），只在此记下，分派与字符集设定未动。
+  - xorriso 在 `LC_ALL=C` 下把 Joliet 的非 ASCII 名换成替代名（`/中文追加.txt` 变 `/__e______._t_x...`，libisofs 报 `Cannot convert from charset UTF-16BE to ANSI_X3.4-1968`），原生读侧按 Joliet 读得出原名。这是 xorriso 优先这一档的既有代价（改动前就成立，非本轮引入），只在此记下，分派与字符集设定未动。ADR-0026 起该代价消失：会碰文件名的 xorriso 调用都固定 `-local_charset UTF-8`，消息仍走 `LC_ALL=C`，两件事解耦。

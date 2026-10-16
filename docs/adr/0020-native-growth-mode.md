@@ -75,6 +75,11 @@ Windows 仍走 xorriso，而 Windows 上没有能访问光驱的 xorriso 构建�
 9. 平台分派与读写侧同规则：Windows 走原生增长（ADR-0017/0018 已在那边实机验证），
    Linux 维持 xorriso 增长模式（ADR-0006）。`optiburn_engine::grow_size` 也分派：
    Linux 仍是 `xorriso -print_size` 预演，Windows 用原生会话计划的字节数。
+   ADR-0028 起这条分派可以由保守开关 `OPTIBURN_GROW_BACKEND` 显式覆盖，
+   Linux 因此可以把增长模式整条切到原生（写前窗口不再起子进程）。这条路的 Linux
+   写序列已在 2026-10-15 的多区段 CD-R 上验证过一次（追加一个区段，内容读回一致，
+   写前耗时从 51.0 秒降到 0.3 秒，见 ADR-0028）。ADR-0027 起 Linux 的默认档就是
+   原生增长，按设备事实回退 xorriso（随机可写介质、未知 Profile、指定倍速三条）。
 
 ## 后果
 

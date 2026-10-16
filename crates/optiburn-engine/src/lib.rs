@@ -13,11 +13,15 @@
 //! 后端回退到原生（保守开关 `OPTIBURN_READ_BACKEND`，ADR-0024），Windows 走原生。
 //!
 //! 增长模式（`append`/追加页）同样分平台：Windows 用原生引擎读旧区段、生成
-//! 绝对地址约定的新区段（ADR-0020），Linux 维持 xorriso 的增长模式。
+//! 绝对地址约定的新区段（ADR-0020），Linux 维持 xorriso 的增长模式。Linux 上
+//! 可以用保守开关 `OPTIBURN_GROW_BACKEND` 把整条追加准备与写入切到原生引擎，
+//! 代价是原生增长在 Linux 还没有真机验证（ADR-0028）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use optiburn_mmc::{DiscStatus, MediaKind, MmcDevice};
 
 mod capacity;
 mod disc_read;
@@ -31,26 +35,251 @@ pub use capacity::{CapacityGate, capacity_gate};
 pub use native::NativeEngine;
 pub use readback::{
     DiscEntry, ReadBackendMode, extract_paths, extract_tree, iso_session_state, list_tree,
-    read_backend_mode, read_backend_name, read_volume_id, salvage,
+    native_iso_session_state, read_backend_mode, read_backend_name, read_volume_id, salvage,
 };
 pub use verify::compare_trees;
 pub use xorriso::{BurnFailure, XorrisoEngine};
 
+/// 增长模式（追加）后端的选择：界面或保守开关给的值，不是最终生效的后端。
+///
+/// `Auto` 是默认：先按平台定（Linux 与 Windows 都走原生增长，ADR-0027），再按设备
+/// 事实回退（见 [`grow_backend_choice`]）。`Native` 与 `Xorriso` 是显式选择，不做
+/// 回退，原生引擎的缺口按 [`NativeGap`] 原样报出。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrowBackendMode {
+    Auto,
+    Xorriso,
+    Native,
+}
+
+impl GrowBackendMode {
+    /// 取值原样回写，用于 `probe` 的诊断行与界面回传。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GrowBackendMode::Auto => "auto",
+            GrowBackendMode::Xorriso => "xorriso",
+            GrowBackendMode::Native => "native",
+        }
+    }
+}
+
+/// 增长模式后端选择：从环境变量 `OPTIBURN_GROW_BACKEND` 读（保守开关，ADR-0027）。
+pub fn grow_backend_mode() -> Result<GrowBackendMode, BurnError> {
+    grow_backend_mode_value(std::env::var("OPTIBURN_GROW_BACKEND").ok().as_deref())
+}
+
+/// 取值判定：空值与 `auto` 都算默认。公开是因为界面把选择按字符串传给命令层，
+/// 抽成纯函数则不碰进程环境就能测（形状照 `readback` 的 `read_backend_mode_value`）。
+pub fn grow_backend_mode_value(value: Option<&str>) -> Result<GrowBackendMode, BurnError> {
+    match value {
+        None | Some("") | Some("auto") => Ok(GrowBackendMode::Auto),
+        Some("xorriso") => Ok(GrowBackendMode::Xorriso),
+        Some("native") => Ok(GrowBackendMode::Native),
+        Some(other) => Err(BurnError::ReadFailed(format!(
+            "unknown growth backend value {other:?}: expected auto, xorriso, or native"
+        ))),
+    }
+}
+
+/// 后端选择的解析：显式选择优先，其次环境开关，最后平台默认（ADR-0027）。
+pub fn resolve_grow_backend(choice: Option<GrowBackendMode>) -> Result<GrowBackendMode, BurnError> {
+    match choice {
+        Some(mode) => Ok(mode),
+        None => grow_backend_mode(),
+    }
+}
+
+/// 写前阶段计时的开关名：`OPTIBURN_TIMING`（ADR-0028）。默认关闭，正常输出不加噪声。
+pub const TIMING_ENV: &str = "OPTIBURN_TIMING";
+
+/// 阶段计时是否开启：读 `OPTIBURN_TIMING`，没设、空值与 `0` 都算关闭（ADR-0028）。
+///
+/// 判定收在引擎里，CLI 与 GUI 命令层共用一个口径，避免两边各写一份后漂移。
+pub fn stage_timing_enabled() -> bool {
+    stage_timing_enabled_value(std::env::var(TIMING_ENV).ok().as_deref())
+}
+
+/// 开关取值判定。抽出来是为了能不碰进程环境测。
+pub fn stage_timing_enabled_value(value: Option<&str>) -> bool {
+    !matches!(value, None | Some("") | Some("0"))
+}
+
+/// 这台设备与这次写入适不适合走原生增长。
+///
+/// 回退判据只看驱动器的静态事实与调用方的请求，不看写入过程中的报错：写失败时盘上
+/// 可能已经写了一半，重试只会多留一个损坏末区段（ADR-0027）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrowSuitability {
+    /// 适合走原生增长。
+    Native,
+    /// 盘片是随机可写介质（MMC 状态位 0b11，例如 DVD-RAM、BD-RE），原生增长不支持。
+    Rewritable,
+    /// 驱动器报的 Profile 不在原生支持的名单里。
+    UnsupportedProfile,
+    /// 调用方指定了倍速，而原生引擎没有实现 SET CD SPEED。
+    WriteSpeed,
+    /// 设备事实探不到（打不开、命令失败）。分派不该成为新的故障点，按平台默认走。
+    Unknown,
+}
+
+impl GrowSuitability {
+    /// 面向用户的中文说明：只在从原生态回落时用得上，`Native` 与 `Unknown` 返回空串。
+    ///
+    /// 与 `BurnFailure::user_text` 同一口径，文案收在引擎里，CLI 与 GUI 共用一份。
+    pub fn user_text(&self) -> &'static str {
+        match self {
+            GrowSuitability::Rewritable => {
+                "盘片是随机可写介质，原生增长不支持，本次改用 xorriso 增长模式（写前会慢一些）。"
+            }
+            GrowSuitability::UnsupportedProfile => {
+                "驱动器报的介质类型不在原生增长支持范围内，本次改用 xorriso 增长模式。"
+            }
+            GrowSuitability::WriteSpeed => {
+                "指定了倍速，而原生引擎还没有实现设速，本次改用 xorriso 增长模式。"
+            }
+            GrowSuitability::Native | GrowSuitability::Unknown => "",
+        }
+    }
+}
+
+/// 从设备事实判定适配性。纯函数，离线可测。
+pub(crate) fn grow_suitability_of(
+    media_kind: Option<MediaKind>,
+    random_writable: bool,
+    speed_requested: bool,
+) -> GrowSuitability {
+    if speed_requested {
+        return GrowSuitability::WriteSpeed;
+    }
+    if random_writable {
+        return GrowSuitability::Rewritable;
+    }
+    match media_kind {
+        Some(_) => GrowSuitability::Native,
+        None => GrowSuitability::UnsupportedProfile,
+    }
+}
+
+/// 探一次设备事实：当前 Profile 与盘片状态。任何一步失败都归
+/// [`GrowSuitability::Unknown`]，由调用方按平台默认处理。
+fn probe_grow_suitability(device: &str, speed_requested: bool) -> GrowSuitability {
+    let Ok(transport) = optiburn_transport::open(device) else {
+        return GrowSuitability::Unknown;
+    };
+    let mut mmc = MmcDevice::new(transport);
+    let Ok(profile) = mmc.get_configuration() else {
+        return GrowSuitability::Unknown;
+    };
+    let Ok(info) = mmc.read_disc_information() else {
+        return GrowSuitability::Unknown;
+    };
+    grow_suitability_of(
+        profile.media_kind(),
+        matches!(info.status, DiscStatus::Other(_)),
+        speed_requested,
+    )
+}
+
+/// 这次写入实际使用的增长模式后端，以及从原生态回落的原因（没有回落就是 `None`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrowBackendChoice {
+    /// 最终生效的后端名：`native` 或 `xorriso`。
+    pub backend: &'static str,
+    /// 从原生态回落时的判据，供界面与 CLI 说明为什么没用原生。
+    pub fallback: Option<GrowSuitability>,
+}
+
+/// 把选择、设备事实与是否指定倍速解析成这次写入实际用的后端（ADR-0027）。
+///
+/// 规则只有这一份，引擎的三条入口（门禁判定、尺寸预演、写入）与两个前端都用它：
+/// - 选择 `xorriso`：就是 xorriso，Windows 上仍拒绝（那边没有能访问光驱的 xorriso）。
+/// - 选择 `native`：就是原生，缺口按 [`NativeGap`] 报错，不回退。
+/// - 选择 `auto`：Linux 先用原生，命中 [`GrowSuitability`] 里非 Native 的判据时
+///   回退 xorriso。Windows 直接用原生（那边没有可回退的对象），与改动前一致。
+pub fn grow_backend_choice(
+    mode: GrowBackendMode,
+    device: &str,
+    speed_requested: bool,
+) -> Result<GrowBackendChoice, BurnError> {
+    let selected = grow_backend_name(mode)?;
+    if selected == "xorriso" || mode == GrowBackendMode::Native || cfg!(windows) {
+        return Ok(GrowBackendChoice {
+            backend: selected,
+            fallback: None,
+        });
+    }
+    match probe_grow_suitability(device, speed_requested) {
+        GrowSuitability::Native | GrowSuitability::Unknown => Ok(GrowBackendChoice {
+            backend: "native",
+            fallback: None,
+        }),
+        reason => Ok(GrowBackendChoice {
+            backend: "xorriso",
+            fallback: Some(reason),
+        }),
+    }
+}
+
+/// 模式对应的名义后端名，供 `probe` 报增长模式现状（ADR-0027）。`auto` 在两边都
+/// 是原生。Linux 上实际生效的可能是回退后的 xorriso，那要问 [`grow_backend_choice`]。
+///
+/// Windows 上唯一能取得的 xorriso 不含光驱访问（ADR-0008 补记），显式要求它等于
+/// 要求一个用不了的后端，直接拒绝并给出退路。
+pub fn grow_backend_name(mode: GrowBackendMode) -> Result<&'static str, BurnError> {
+    match mode {
+        GrowBackendMode::Xorriso if cfg!(windows) => Err(BurnError::ReadFailed(
+            "no usable xorriso build on Windows (ADR-0008); unset OPTIBURN_GROW_BACKEND or set auto/native"
+                .to_string(),
+        )),
+        GrowBackendMode::Xorriso => Ok("xorriso"),
+        GrowBackendMode::Native | GrowBackendMode::Auto => Ok("native"),
+    }
+}
+
 /// 把目录追加到盘上（增长模式）：读出盘上末区段的目录树，把源目录并进去后作为
 /// 新区段提交。
 ///
-/// Windows 走原生引擎（自己读旧区段、生成新区段，见 ADR-0020），Linux 维持
-/// xorriso 增长模式（ADR-0006）。分派规则与写侧、读侧同理由：哪条路在平台上
-/// 走得通，不是设备语义差异。
+/// `mode` 是调用方的选择，最终用哪个后端由 [`grow_backend_choice`] 按设备事实定
+/// （ADR-0027）。Linux 默认走原生增长，写前窗口里不再起子进程。
 pub fn grow(
+    mode: GrowBackendMode,
     job: &GrowJob,
     progress: &mut dyn FnMut(f32),
     cancel: &CancelToken,
 ) -> Result<(), BurnError> {
-    if cfg!(windows) {
-        native::grow(job, progress, cancel)
-    } else {
-        xorriso::grow(job, progress, cancel)
+    let choice = grow_backend_choice(mode, &job.device, job.speed.is_some())?;
+    match choice.backend {
+        "native" => native::grow(job, progress, cancel),
+        _ => xorriso::grow(job, progress, cancel),
+    }
+}
+
+/// 追加写前门禁要问的那个问题：将要写盘的引擎能不能读盘上末区段。
+///
+/// 门禁的结论决定要不要放行写盘，所以判定要交给写盘方自己的读法（ADR-0027）：
+/// xorriso 写盘时走 xorriso 那一侧的读侧分派（libisofs 读得到就放行，读不到再问
+/// 原生，ADR-0024 决策 7），原生写盘时走原生读侧。这个查询只读盘，不写。
+///
+/// `speed_requested` 与写入端同一判据：指定了倍速时实际写盘的是 xorriso，门禁也
+/// 必须问 xorriso，否则两侧对同一张盘可能给出不同结论。
+pub fn append_gate_session_state(
+    mode: GrowBackendMode,
+    device: &str,
+    speed_requested: bool,
+) -> Result<IsoSessionState, BurnError> {
+    let choice = grow_backend_choice(mode, device, speed_requested)?;
+    gate_session_state_with(choice.backend, device)
+}
+
+/// 写入端后端名到门禁查询的映射。抽出来是为了能不碰进程环境测（见测试
+/// `gate_answers_are_the_same_under_both_writing_backends`）。
+pub(crate) fn gate_session_state_with(
+    backend: &str,
+    device: &str,
+) -> Result<IsoSessionState, BurnError> {
+    match backend {
+        "native" => native_iso_session_state(device),
+        _ => iso_session_state(device),
     }
 }
 
@@ -69,12 +298,13 @@ pub fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnError> {
 }
 
 /// 追加会话的尺寸预演：返回即将写入的新区段字节数，供调用方的写前容量门禁
-/// （ADR-0019）。不写盘，但会读盘片状态与旧区段目录树。
-pub fn grow_size(job: &GrowJob) -> Result<u64, BurnError> {
-    if cfg!(windows) {
-        native::grow_size(job)
-    } else {
-        xorriso::grow_size(job)
+/// （ADR-0019）。不写盘，但会读盘片状态与旧区段目录树。分派与 [`grow`] 用
+/// [`grow_backend_choice`] 同一份判据，预演与提交因此看到同一个后端。
+pub fn grow_size(mode: GrowBackendMode, job: &GrowJob) -> Result<u64, BurnError> {
+    let choice = grow_backend_choice(mode, &job.device, job.speed.is_some())?;
+    match choice.backend {
+        "native" => native::grow_size(job),
+        _ => xorriso::grow_size(job),
     }
 }
 
@@ -389,5 +619,138 @@ mod tests {
         assert!(text.contains("sudo apt install xorriso"), "{text}");
         assert!(text.contains("MSYS2"), "{text}");
         assert!(!text.contains("pacman"), "{text}");
+    }
+
+    /// 增长模式开关的取值判定与读侧同形状：空值与 auto 都是默认，未知值报错并
+    /// 列出合法取值，不静默落回默认（ADR-0028）。
+    #[test]
+    fn grow_backend_mode_values_and_unknown() {
+        assert_eq!(
+            grow_backend_mode_value(None).unwrap(),
+            GrowBackendMode::Auto
+        );
+        assert_eq!(
+            grow_backend_mode_value(Some("")).unwrap(),
+            GrowBackendMode::Auto
+        );
+        assert_eq!(
+            grow_backend_mode_value(Some("auto")).unwrap(),
+            GrowBackendMode::Auto
+        );
+        assert_eq!(
+            grow_backend_mode_value(Some("xorriso")).unwrap(),
+            GrowBackendMode::Xorriso
+        );
+        assert_eq!(
+            grow_backend_mode_value(Some("native")).unwrap(),
+            GrowBackendMode::Native
+        );
+        let err = grow_backend_mode_value(Some("cdrecord")).expect_err("unknown value must fail");
+        let BurnError::ReadFailed(message) = &err else {
+            panic!("{err:?}");
+        };
+        assert!(message.contains("auto, xorriso, or native"), "{message}");
+        assert_eq!(GrowBackendMode::Auto.as_str(), "auto");
+        assert_eq!(GrowBackendMode::Xorriso.as_str(), "xorriso");
+        assert_eq!(GrowBackendMode::Native.as_str(), "native");
+    }
+
+    /// 增长模式的后端分派：`auto` 两边都是原生（ADR-0027），显式值覆盖平台，
+    /// Windows 上的显式 xorriso 被拒（那边没有能访问光驱的 xorriso）。
+    #[test]
+    fn grow_backend_wiring_is_pinned() {
+        assert_eq!(grow_backend_name(GrowBackendMode::Auto).unwrap(), "native");
+        assert_eq!(
+            grow_backend_name(GrowBackendMode::Native).unwrap(),
+            "native"
+        );
+        assert_eq!(
+            grow_backend_name(GrowBackendMode::Xorriso).is_err(),
+            cfg!(windows)
+        );
+        // 显式选择不探设备、不回退：设备串可以随便给。
+        assert_eq!(
+            grow_backend_choice(GrowBackendMode::Native, "/dev/optiburn-missing", false)
+                .unwrap()
+                .backend,
+            "native"
+        );
+        if !cfg!(windows) {
+            assert_eq!(
+                grow_backend_name(GrowBackendMode::Xorriso).unwrap(),
+                "xorriso"
+            );
+            assert_eq!(
+                grow_backend_choice(GrowBackendMode::Xorriso, "/dev/optiburn-missing", false)
+                    .unwrap()
+                    .backend,
+                "xorriso"
+            );
+            // 探不到设备事实时按平台默认走原生，不把分派变成新的故障点。
+            let choice =
+                grow_backend_choice(GrowBackendMode::Auto, "/dev/optiburn-missing", false).unwrap();
+            assert_eq!(choice.backend, "native");
+            assert_eq!(choice.fallback, None);
+        }
+    }
+
+    /// 回退判据只看设备事实与倍速请求，不看写入过程中的报错（ADR-0027）：随机可写
+    /// 介质与未知 Profile 回退 xorriso，指定倍速回退，其余走原生。
+    #[test]
+    fn grow_suitability_rules_are_pinned() {
+        assert_eq!(
+            grow_suitability_of(Some(MediaKind::Cd), false, false),
+            GrowSuitability::Native
+        );
+        assert_eq!(
+            grow_suitability_of(Some(MediaKind::PlusOrBdR), false, false),
+            GrowSuitability::Native
+        );
+        assert_eq!(
+            grow_suitability_of(None, false, false),
+            GrowSuitability::UnsupportedProfile
+        );
+        assert_eq!(
+            grow_suitability_of(Some(MediaKind::DvdMinus), true, false),
+            GrowSuitability::Rewritable
+        );
+        // 倍速优先于介质判据：指定了倍速就一定走 xorriso。
+        assert_eq!(
+            grow_suitability_of(Some(MediaKind::Cd), false, true),
+            GrowSuitability::WriteSpeed
+        );
+        assert_eq!(
+            grow_suitability_of(Some(MediaKind::PlusOrBdR), true, true),
+            GrowSuitability::WriteSpeed
+        );
+    }
+
+    /// 阶段计时默认关闭：没设、空值与 `0` 都不打行，其余值打开（ADR-0028）。判定收在
+    /// 引擎一份，CLI 与 GUI 命令层共用，两边不再各写一遍。
+    #[test]
+    fn stage_timing_is_opt_in() {
+        assert!(!stage_timing_enabled_value(None));
+        assert!(!stage_timing_enabled_value(Some("")));
+        assert!(!stage_timing_enabled_value(Some("0")));
+        assert!(stage_timing_enabled_value(Some("1")));
+        assert!(stage_timing_enabled_value(Some("yes")));
+    }
+
+    /// 后端选择的解析顺序：显式选择优先，其次环境开关，最后平台默认（ADR-0027）。
+    #[test]
+    fn resolve_grow_backend_prefers_the_explicit_choice() {
+        assert_eq!(
+            resolve_grow_backend(Some(GrowBackendMode::Xorriso)).unwrap(),
+            GrowBackendMode::Xorriso
+        );
+        assert_eq!(
+            resolve_grow_backend(Some(GrowBackendMode::Native)).unwrap(),
+            GrowBackendMode::Native
+        );
+        // 没有显式选择时读环境开关，未设置就是默认档（不碰进程环境的判定在 value 版）。
+        assert_eq!(
+            grow_backend_mode_value(None).unwrap(),
+            GrowBackendMode::Auto
+        );
     }
 }

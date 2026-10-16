@@ -120,7 +120,8 @@ fn parse_print_size(stdout: &str) -> Option<u64> {
 /// [`grow_args`] 的提交与 [`print_size_args`] 的预演都从它出发，保证预演与实际
 /// 写入看到同一份输入，大小口径才一致。
 fn grow_base_args(job: &GrowJob) -> Vec<OsString> {
-    let mut args = vec![OsString::from("-dev"), OsString::from(&job.device)];
+    let mut args = local_charset_args();
+    args.extend([OsString::from("-dev"), OsString::from(&job.device)]);
     if let Some(speed) = job.speed {
         args.push(OsString::from("-speed"));
         args.push(OsString::from(format!("{speed}")));
@@ -136,6 +137,17 @@ fn grow_base_args(job: &GrowJob) -> Vec<OsString> {
         OsString::from("/"),
     ]);
     args
+}
+
+/// xorriso 的名字侧字符集固定为 UTF-8（ADR-0026）。
+///
+/// 不给这个设置时 xorriso 按系统 locale 猜本地字符集，`LC_ALL=C` 一类环境里
+/// libisofs 会把非 ASCII 名换成替代名（`____hcm____._t_x_t1377…` 这种带哈希的
+/// 形态）。增长模式要读出盘上旧区段的名字再写进新会话，读侧又要固定 `LC_ALL=C`
+/// 拿英文消息，两件事必须解耦，否则在非 UTF-8 环境里追加一次就把盘上原有中文名
+/// 写坏一次（2026-10-15 真机复现，见 ADR-0026）。
+pub(crate) fn local_charset_args() -> Vec<OsString> {
+    vec![OsString::from("-local_charset"), OsString::from("UTF-8")]
 }
 
 /// 组装增长模式参数表。
@@ -388,6 +400,8 @@ mod tests {
         assert_eq!(
             grow_args(&job),
             os(&[
+                "-local_charset",
+                "UTF-8",
                 "-dev",
                 "/dev/sr0",
                 "-speed",
@@ -432,6 +446,8 @@ mod tests {
         assert_eq!(
             print_size_args(&job),
             os(&[
+                "-local_charset",
+                "UTF-8",
                 "-dev",
                 "/dev/sr0",
                 "-speed",
@@ -461,6 +477,8 @@ mod tests {
         assert_eq!(
             grow_args(&job),
             os(&[
+                "-local_charset",
+                "UTF-8",
                 "-dev",
                 "/dev/sr0",
                 "-volid",
@@ -700,5 +718,67 @@ libburn : SORRY : Drive is already released
         );
         assert_eq!(BurnFailure::Other.user_text("boom"), "刻录失败：boom");
         assert!(BurnFailure::DriveLost.user_text("").starts_with("刻录中断"));
+    }
+
+    /// 增长运行在非 UTF-8 环境里也要保住盘上原有的非 ASCII 名（ADR-0026）。
+    ///
+    /// 触发条件是 xorriso 按 locale 猜本地字符集：`LC_ALL=C` 下 libisofs 把旧区段
+    /// 的 Joliet 名换成替代名（`/____hcm____._t_x_t…` 这种带哈希的形态）再写进新
+    /// 区段，追加一次就写坏一次。参数表里固定 `-local_charset UTF-8` 后名字原样
+    /// 保留。盘用文件当 `stdio:` 伪设备，断言直接读回写成的镜像。
+    #[cfg(unix)]
+    #[test]
+    fn grow_keeps_joliet_names_under_a_c_locale() {
+        use crate::disc_read::udf::tests::TempDir;
+        use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
+
+        let tmp = TempDir::new("xorriso-grow-charset");
+        let source = tmp.path().join("src");
+        std::fs::create_dir_all(&source).expect("create the source dir");
+        std::fs::write(source.join("中文原名.txt"), b"old").expect("write the old file");
+        let disc = tmp.path().join("disc.bin");
+        build_image(
+            &source,
+            &disc,
+            &ImageSpec {
+                profile: DiscProfile::Cd,
+                volume_id: "OLD".to_string(),
+                joliet: true,
+            },
+        )
+        .expect("build the old session");
+
+        let staged = tmp.path().join("staged");
+        std::fs::create_dir_all(&staged).expect("create the staging dir");
+        std::fs::write(staged.join("新增.txt"), b"new").expect("write the new file");
+        let job = GrowJob {
+            src: staged,
+            device: format!("stdio:{}", disc.display()),
+            speed: None,
+            volume_id: "NEW".to_string(),
+            close_disc: false,
+            allow_damaged_last_session: false,
+        };
+
+        // 真增长一次，环境固定成 C locale，这是替代名的触发条件。
+        let status = Command::new(XORRISO)
+            .args(grow_args(&job))
+            .env("LC_ALL", "C")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run xorriso");
+        assert!(status.success(), "grow failed: {status}");
+
+        // 读回列名时也固定名字侧字符集，断言的才是盘上真正存下的名字。
+        let listing = Command::new(XORRISO)
+            .args(["-local_charset", "UTF-8", "-indev"])
+            .arg(&disc)
+            .args(["-find", "/", "-exec", "lsdl", "--"])
+            .output()
+            .expect("list the grown image");
+        let names = String::from_utf8_lossy(&listing.stdout);
+        assert!(names.contains("中文原名.txt"), "{names}");
+        assert!(names.contains("新增.txt"), "{names}");
     }
 }

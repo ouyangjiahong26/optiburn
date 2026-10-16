@@ -2,12 +2,15 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use optiburn_engine::{
-    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, CapacityGate, GrowJob,
-    IsoSessionState, NativeEngine, ReadBackendMode, SessionFallback, XorrisoEngine, capacity_gate,
-    grow, grow_size, iso_session_state, read_backend_mode, read_backend_name,
+    BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, CapacityGate, GrowBackendMode,
+    GrowJob, GrowSuitability, IsoSessionState, NativeEngine, ReadBackendMode, SessionFallback,
+    XorrisoEngine, append_gate_session_state, capacity_gate, grow, grow_backend_choice,
+    grow_backend_mode, grow_backend_name, grow_size, read_backend_mode, read_backend_name,
+    resolve_grow_backend,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
 use optiburn_mmc::{DiscCapacity, DiscStatus, MmcDevice, MmcError, WriteBlock};
@@ -264,11 +267,18 @@ fn burn_command(
         "xorriso" => Box::new(XorrisoEngine),
         other => return Err(format!("引擎 {other} 尚未实现")),
     };
-    ensure_burnable(device, false)?;
+    let timer = StageTimer::from_env();
+    // 镜像刻录仍按平台分派（ADR-0027 决定不动这条），门禁只管盘片状态与挂载。
+    let mode = resolve_grow_backend(None).map_err(|e| burn_error_text(&e))?;
+    timer.stage("写前门禁", || {
+        ensure_burnable(mode, speed.is_some(), device, false)
+    })?;
     let image_bytes = std::fs::metadata(image)
         .map_err(|e| format!("读取镜像 {} 大小失败：{e}", image.display()))?
         .len();
-    ensure_fits(device, image_bytes, close_disc)?;
+    timer.stage("容量检查", || {
+        ensure_fits(device, image_bytes, close_disc)
+    })?;
     let job = BurnJob {
         image: image.to_path_buf(),
         device: device.to_string(),
@@ -279,7 +289,9 @@ fn burn_command(
 
     let mut progress = |fraction: f32| eprint!("\r{:>5.1}%", fraction * 100.0);
     // CLI 不提供取消入口，传一个永不置位的默认令牌。
-    let result = burner.burn(&job, &mut progress, &CancelToken::default());
+    let result = timer.stage("写入", || {
+        burner.burn(&job, &mut progress, &CancelToken::default())
+    });
     eprintln!();
     result.map_err(|e| burn_error_text(&e))
 }
@@ -292,7 +304,19 @@ fn append_command(
     close_disc: bool,
     allow_damaged_last_session: bool,
 ) -> Result<(), String> {
-    let damaged = ensure_burnable(device, true)?;
+    let timer = StageTimer::from_env();
+    // 后端选择：显式选择优先，其次环境开关，最后平台默认（ADR-0027）。实际生效的
+    // 后端由设备事实决定，回落时在日志里说明一次，免得用户以为坏了。
+    let mode = resolve_grow_backend(None).map_err(|e| burn_error_text(&e))?;
+    if let Some(reason) = grow_backend_choice(mode, device, speed.is_some())
+        .map_err(|e| burn_error_text(&e))?
+        .fallback
+    {
+        println!("{}", fallback_notice(reason));
+    }
+    let damaged = timer.stage("写前门禁", || {
+        ensure_burnable(mode, speed.is_some(), device, true)
+    })?;
     if let Some(fallback) = damaged {
         if !allow_damaged_last_session {
             return Err(damaged_session_text(fallback, false));
@@ -307,14 +331,50 @@ fn append_command(
         close_disc,
         allow_damaged_last_session,
     };
-    let needed = grow_size(&job).map_err(|e| burn_error_text(&e))?;
-    ensure_fits(device, needed, close_disc)?;
+    let needed = timer
+        .stage("尺寸预演", || grow_size(mode, &job))
+        .map_err(|e| burn_error_text(&e))?;
+    timer.stage("容量检查", || ensure_fits(device, needed, close_disc))?;
 
     println!("追加 {} 到 {}。", src.display(), device);
     let mut progress = |fraction: f32| eprint!("\r{:>5.1}%", fraction * 100.0);
-    let result = grow(&job, &mut progress, &CancelToken::default());
+    let result = timer.stage("写入", || {
+        grow(mode, &job, &mut progress, &CancelToken::default())
+    });
     eprintln!();
     result.map_err(|e| burn_error_text(&e))
+}
+
+/// 增长后端从原生态回落时的说明文字，取自引擎的 [`GrowSuitability::user_text`]。
+fn fallback_notice(reason: GrowSuitability) -> &'static str {
+    reason.user_text()
+}
+
+/// 阶段计时：把“点下去到开始写数据之间”的等待拆成可读的几段。
+///
+/// 开关名与取值判定收在引擎里（[`optiburn_engine::stage_timing_enabled`]），CLI 与
+/// GUI 命令层共用一个口径。Linux 的追加准备里每一段都可能各自起一个 xorriso 子进程，
+/// 驱动器要重新初始化，慢在哪一段只能靠真实设备上的计时分辨（`docs/adr/0025`）。
+struct StageTimer {
+    enabled: bool,
+}
+
+impl StageTimer {
+    fn from_env() -> Self {
+        Self {
+            enabled: optiburn_engine::stage_timing_enabled(),
+        }
+    }
+
+    /// 跑一个阶段并计时。阶段名直接出现在用户看到的输出里。
+    fn stage<T>(&self, name: &str, run: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let outcome = run();
+        if self.enabled {
+            eprintln!("阶段 {name}：{:.1} 秒", started.elapsed().as_secs_f64());
+        }
+        outcome
+    }
 }
 
 /// 刻录前把盘片状态查清楚：挂载占用与盘片状态都在这里拦，等就绪、按状态放行或拒绝。
@@ -322,6 +382,8 @@ fn append_command(
 /// 镜像路径（`accept_appendable = false`）不接受可追加盘：单区段镜像不带前面
 /// 区段的目录树，写下去会把旧文件遮住。追加必须走 `append` 的增长模式。
 fn ensure_burnable(
+    mode: GrowBackendMode,
+    speed_requested: bool,
     device: &str,
     accept_appendable: bool,
 ) -> Result<Option<SessionFallback>, String> {
@@ -355,7 +417,7 @@ fn ensure_burnable(
     })?;
     // 追加路径再过一道：盘上有没有可用的 ISO 9660 会话，三态分流见下面的函数。
     let damaged = if accept_appendable && info.status == DiscStatus::Appendable {
-        ensure_iso_session(device)?
+        ensure_iso_session(mode, device, speed_requested)?
     } else {
         None
     };
@@ -369,8 +431,17 @@ fn ensure_burnable(
 /// 追加路径再过一道：盘上有没有可用的 ISO 9660 会话（ADR-0010、ADR-0022）。
 /// 三态分流：末区段可用就放行。末区段损坏但更早区段可读时把回退信息交给调用方
 /// 去要确认。连更早区段都读不出来（纯 UDF 盘、空白盘）按今天的文案拒绝。
-fn ensure_iso_session(device: &str) -> Result<Option<SessionFallback>, String> {
-    match iso_session_state(device).map_err(|e| read_error_text("读取末区段格式", &e))? {
+///
+/// 判定走 [`append_gate_session_state`]：问的是将要写盘的那个引擎能不能读它，
+/// 不是笼统的读侧分派（ADR-0027），因此要与写入端拿同一份后端判据。
+fn ensure_iso_session(
+    mode: GrowBackendMode,
+    device: &str,
+    speed_requested: bool,
+) -> Result<Option<SessionFallback>, String> {
+    match append_gate_session_state(mode, device, speed_requested)
+        .map_err(|e| read_error_text("读取末区段格式", &e))?
+    {
         IsoSessionState::Usable => Ok(None),
         IsoSessionState::Damaged(fallback) => Ok(Some(fallback)),
         IsoSessionState::Unusable => Err(
@@ -632,6 +703,51 @@ fn read_backend_line(mode: ReadBackendMode) -> Result<String, BurnError> {
     ))
 }
 
+/// 增长模式后端的说明文字：说清实际用哪条路，以及显式切原生意味着什么。
+fn grow_backend_text(mode: GrowBackendMode) -> String {
+    match mode {
+        GrowBackendMode::Auto if cfg!(windows) => "原生增长引擎".to_string(),
+        // 默认档就是原生，回退按介质与倍速判据在每次写入前定（ADR-0027）。
+        GrowBackendMode::Auto => {
+            "原生增长（随机可写介质、未知介质类型或指定倍速时回退 xorriso）".to_string()
+        }
+        GrowBackendMode::Xorriso => "只用 xorriso 增长模式，退回改动前行为".to_string(),
+        // 写前窗口不起子进程是这条路的收益，真机验证状态是它的代价，文案里都留着。
+        GrowBackendMode::Native if cfg!(windows) => "只用原生增长引擎".to_string(),
+        GrowBackendMode::Native => {
+            "只用原生增长引擎，写前窗口不起子进程，缺口按错误报出".to_string()
+        }
+    }
+}
+
+/// probe 的增长模式后端行：开关值加实际会用的后端（ADR-0028）。
+///
+/// 该值在本平台没有可用后端时（Windows 的 xorriso）返回错误，由调用方原样报出。
+fn grow_backend_line(mode: GrowBackendMode) -> Result<String, BurnError> {
+    grow_backend_name(mode)?;
+    Ok(format!(
+        "增长模式后端：{}（{}）",
+        mode.as_str(),
+        grow_backend_text(mode)
+    ))
+}
+
+/// 两条后端诊断行（读侧与增长模式）。两者都来自环境开关，与具体设备无关，所以
+/// 循环外算一次。开关值非法，或该值在本平台没有可用后端时，把原因原样报出来。
+fn backend_lines() -> (String, String) {
+    let read = match read_backend_mode() {
+        Ok(mode) => read_backend_line(mode).unwrap_or_else(|error| format!("读侧后端：{error}")),
+        Err(error) => format!("读侧后端：{error}"),
+    };
+    let grow = match grow_backend_mode() {
+        Ok(mode) => {
+            grow_backend_line(mode).unwrap_or_else(|error| format!("增长模式后端：{error}"))
+        }
+        Err(error) => format!("增长模式后端：{error}"),
+    };
+    (read, grow)
+}
+
 fn probe_command() -> Result<(), String> {
     let devices = optiburn_transport::list_optical_devices();
     if devices.is_empty() {
@@ -639,12 +755,7 @@ fn probe_command() -> Result<(), String> {
         return Ok(());
     }
 
-    // 读侧后端来自环境变量，与具体设备无关，循环外算一次。开关值非法，或该值在
-    // 本平台没有可用后端时，把原因原样报出来。
-    let backend = match read_backend_mode() {
-        Ok(mode) => read_backend_line(mode).unwrap_or_else(|error| format!("读侧后端：{error}")),
-        Err(error) => format!("读侧后端：{error}"),
-    };
+    let (backend, grow_backend) = backend_lines();
 
     for text in devices {
         let transport = match optiburn_transport::open(&text) {
@@ -652,6 +763,7 @@ fn probe_command() -> Result<(), String> {
             Err(e) => {
                 println!("{text} | 打开失败：{e}");
                 println!("{backend}");
+                println!("{grow_backend}");
                 continue;
             }
         };
@@ -675,6 +787,7 @@ fn probe_command() -> Result<(), String> {
         let capacity = capacity_text(&device.read_disc_capacity());
         println!("{text} | {identity} | {disc}{capacity}");
         println!("{backend}");
+        println!("{grow_backend}");
     }
     Ok(())
 }
@@ -733,6 +846,28 @@ mod tests {
         } else {
             assert_eq!(auto, "xorriso 优先，读不到 ISO 9660 时后端回退到原生");
         }
+    }
+
+    /// 增长模式的诊断行与读侧同形：报开关值加实际会用的后端，Windows 上显式要求
+    /// xorriso 报原因（ADR-0028）。
+    #[test]
+    fn probe_reports_the_growth_switch_and_the_backend_it_will_use() {
+        assert_eq!(
+            grow_backend_line(GrowBackendMode::Auto).unwrap(),
+            format!(
+                "增长模式后端：auto（{}）",
+                grow_backend_text(GrowBackendMode::Auto)
+            )
+        );
+        assert_eq!(
+            grow_backend_name(GrowBackendMode::Auto).unwrap(),
+            "native",
+            "默认档是原生增长（ADR-0027），实际是否回退由每次写入前的设备事实决定"
+        );
+        assert_eq!(
+            grow_backend_line(GrowBackendMode::Xorriso).is_err(),
+            cfg!(windows)
+        );
     }
 
     #[test]
