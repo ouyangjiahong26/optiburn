@@ -173,10 +173,9 @@ export function App() {
                       ? jobStatusText(job)
                       : `${job.device} · ${jobStatusText(job)}`}
                   </span>
-                  {(job.kind === "burn" ||
-                    job.kind === "append" ||
-                    job.kind === "copy" ||
-                    job.kind === "salvage") && (
+                  {/* build 不给停止入口：build_image 不接受取消令牌。其余任务后端
+                      都支持取消（读写侧都在进度循环里检查）。 */}
+                  {job.kind !== "build" && (
                     <button
                       type="button"
                       className="btn btn-danger"

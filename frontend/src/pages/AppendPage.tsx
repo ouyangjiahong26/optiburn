@@ -1,5 +1,5 @@
 // 追加：把待刻录文件写入空盘或已有区段的盘，文件在盘根平铺。设备与内容配对成
-// 行，多行提交即多设备并发（issue #50）；门禁失败用对话框逐条引导。
+// 行，多行提交即多设备并发（issue #50），门禁失败用对话框逐条引导。
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
@@ -54,7 +54,7 @@ export function AppendPage({ jobs, results, pushResult, startJob, abortJob, acti
 
   // 选中设备后读盘上现有卷标预填，避免以默认值静默改掉盘上的卷标。读不到（空盘、
   // 盘被挂载占用等）就回到默认卷标，不把别的盘的值带过来。序号守卫按行区分，防
-  // 迟到的响应覆盖后选的设备；手改过的行不再被自动写回覆盖。
+  // 迟到的响应覆盖后选的设备，手改过的行不再被自动写回覆盖。
   const volumeSeqRef = useRef(new Map<number, number>());
   const refreshVolumeId = useCallback(async (rowId: number, device: string) => {
     if (device === "") {
@@ -307,7 +307,7 @@ export function AppendPage({ jobs, results, pushResult, startJob, abortJob, acti
                     </option>
                     {devices !== null &&
                       devices.map((item) => {
-                        // 其它行已选的设备不进选项；被任务占用的进选项但禁用。
+                        // 其它行已选的设备不进选项，被任务占用的进选项但禁用。
                         if (row.device !== item.path && takenDevices.has(item.path)) {
                           return null;
                         }

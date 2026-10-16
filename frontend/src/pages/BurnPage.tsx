@@ -1,5 +1,5 @@
 // 刻录：设备与镜像配对成行，多行提交即多设备并发（issue #50）。命令立即返回，
-// 进度与结果全部来自事件；门禁失败用对话框逐条引导。
+// 进度与结果全部来自事件，门禁失败用对话框逐条引导。
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
@@ -142,7 +142,7 @@ export function BurnPage({ jobs, results, pushResult, startJob, abortJob, active
                     </option>
                     {devices !== null &&
                       devices.map((item) => {
-                        // 其它行已选的设备不进选项；被任务占用的进选项但禁用。
+                        // 其它行已选的设备不进选项，被任务占用的进选项但禁用。
                         if (row.device !== item.path && takenDevices.has(item.path)) {
                           return null;
                         }
