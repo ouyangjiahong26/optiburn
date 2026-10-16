@@ -56,3 +56,5 @@
 | 区段开销（Session Overhead） | 数据区之外新区段自身要占的地址空间：本区段的 lead-out 与（保持可追加时）下一区段的 lead-in。写前容量门禁把它与待写入量相加再与可用容量比较。对应 `optiburn-engine::capacity`（ADR-0019 修订）。 | 预留空间、保护大小、安全空间 |
 | 格式化容量（FormatCapacity） | READ FORMAT CAPACITIES 报出的两个数值：未格式化介质的最大可格式化容量（描述符类型 1）与已格式化介质的当前格式化容量（类型 2）。对应 `FormatCapacity`、`read_format_capacities`。 | 介质容量、盘片大小 |
 | 预演（print size） | 增长模式提交前算出即将写入的新区段大小（字节），与可用容量同口径。Linux 用 `xorriso -print_size`，Windows 用原生会话计划的尺寸，两端都收在 `grow_size`。 | 大小估算、dry-run |
+| 多设备写入（Multi-device Write） | 一次会话内把内容分别写到两台及以上驱动器：每台设备一个独立任务，同一设备互斥，不同设备并行。对应 GUI 任务槽的按设备键控。 | 并行刻录、批量刻录 |
+| 设备占用（Device Busy） | 某台驱动器上已有任务在跑的状态：该设备上的第二个任务被拒，界面把它标为占用并禁用。 | 设备锁定、驱动忙 |

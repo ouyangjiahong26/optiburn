@@ -47,32 +47,31 @@ export type GateKind =
 
 export type JobOutcome = "done" | "cancelled" | "failed";
 
-export type JobProgress = { kind: JobKind; fraction: number };
+// 进度事件载荷：device 是任务槽键（设备串，build 为 "build"），seq 与完成事件配对。
+export type JobProgress = { kind: JobKind; device: string; seq: number; fraction: number };
 
+// 完成事件载荷：device 与 seq 的口径同 JobProgress。
 export type JobDone = {
   kind: JobKind;
+  device: string;
+  seq: number;
   outcome: JobOutcome;
   message: string;
   gate?: GateKind;
 };
 
-// 前端自己发起但被立即拒绝的调用不会再来 job-done 事件，就地生成一条结果。
-// seq 用于区分先后，保证对话框之类的消费方对每条结果只反应一次。
-export type JobResult = JobDone & { seq: number };
+// 前端自己发起但被立即拒绝的调用不会再来 job-done 事件，就地合成一条结果：
+// seq 用负数自减（见 hooks.ts 的 nextLocalSeq），与后端从 1 起的序号永不冲突。
+export type JobResult = JobDone;
 
 // 运行中的任务：fraction 为 null 表示没有进度回调（不确定形态）。
-export type ActiveJob = { kind: JobKind; fraction: number | null };
+export type ActiveJob = { kind: JobKind; device: string; seq: number; fraction: number | null };
 
-// 页面启动与解锁任务的统一入口，由 App 提供，保证全局只有一处任务状态。
-export type JobControls = {
-  onJobStart: (kind: JobKind) => void;
-  onJobAbort: (kind: JobKind, message?: string) => void;
-};
-
-// 刻录页与追加页共有的 props。
-export type DiscPageProps = JobControls & {
-  locked: boolean;
-  result: JobResult | null;
+// 四个页面统一的 props：App 持有全部任务状态，页面按 device 判断各自关心的占用。
+export type PageProps = {
+  jobs: ActiveJob[];
+  results: JobResult[];
+  pushResult: (result: JobResult) => void;
   // 页面是否可见：设备探测只在可见时刷新（页面常驻挂载，不等于一直活跃）。
   active: boolean;
 };

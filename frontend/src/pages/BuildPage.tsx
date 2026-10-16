@@ -1,11 +1,13 @@
-// 制作镜像：等待整个任务结束才拿到结果，运行形态只有不确定进度一种。
+// 制作镜像：等待整个任务结束才拿到结果，运行形态只有不确定进度一种。build 没有
+// 设备，槽键是固定的 "build"（issue #50 保持单占）。
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { startBuildImage } from "../api";
+import { nextLocalSeq } from "../hooks";
 import { t } from "../i18n";
 import { FormRow } from "../components/FormRow";
 import { PathField } from "../components/PathField";
-import type { DiscProfile, ImageInfoDto, JobControls } from "../types";
+import type { DiscProfile, ImageInfoDto, PageProps } from "../types";
 
 const PROFILE_LABEL: Record<DiscProfile, string> = {
   cd: "CD",
@@ -48,7 +50,10 @@ function isoSuffixHint(output: string): string | null {
   return `${stripped}.iso`;
 }
 
-export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { locked: boolean }) {
+export function BuildPage({
+  locked,
+  pushResult,
+}: PageProps & { locked: boolean }) {
   const [src, setSrc] = useState("");
   const [output, setOutput] = useState("");
   const [profile, setProfile] = useState<DiscProfile>("dvd");
@@ -61,7 +66,6 @@ export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { lo
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setImageInfo(null);
-    onJobStart("build");
     try {
       setImageInfo(
         await startBuildImage({
@@ -72,8 +76,14 @@ export function BuildPage({ locked, onJobStart, onJobAbort }: JobControls & { lo
         }),
       );
     } catch (cause) {
-      // 任务真实失败时 job-done 事件会展示原因，这里只在启动被拒绝时解锁。
-      onJobAbort("build", String(cause));
+      // 任务真实失败时 job-done 事件会展示原因，这里只在启动被拒绝时合成一条结果。
+      pushResult({
+        kind: "build",
+        device: "build",
+        seq: nextLocalSeq(),
+        outcome: "failed",
+        message: String(cause),
+      });
     }
   }
 

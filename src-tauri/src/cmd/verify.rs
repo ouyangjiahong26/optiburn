@@ -10,7 +10,7 @@ use super::{
     JobError, begin_job, engine_error_text, fail_job, finish_job, stage_files, unique_temp_dir,
 };
 use crate::i18n::{Lang, lang, pick};
-use crate::job::{JobKind, JobState};
+use crate::job::{JobHandle, JobKind, JobState};
 
 /// 校验模式：追加校验对比待刻录文件，刻录校验对比镜像。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -50,7 +50,7 @@ pub async fn start_verify(
     mode: String,
 ) -> Result<VerifyReportDto, String> {
     let mode = verify_mode_from_str(lang(), &mode)?;
-    let cancel = begin_job(&state)?;
+    let JobHandle { cancel, seq } = begin_job(&state, &device, JobKind::Verify)?;
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         match run_verify(&device, Path::new(&source), &files, mode, &cancel) {
@@ -62,6 +62,8 @@ pub async fn start_verify(
                 };
                 finish_job(
                     &worker,
+                    &device,
+                    seq,
                     JobKind::Verify,
                     outcome,
                     None,
@@ -69,7 +71,7 @@ pub async fn start_verify(
                 );
                 Ok(VerifyReportDto { differences })
             }
-            Err(e) => Err(fail_job(&worker, JobKind::Verify, e)),
+            Err(e) => Err(fail_job(&worker, &device, seq, JobKind::Verify, e)),
         }
     })
     .await

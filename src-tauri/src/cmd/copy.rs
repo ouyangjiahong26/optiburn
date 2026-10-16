@@ -11,7 +11,7 @@ use tauri::{AppHandle, State};
 
 use super::{JobError, begin_job, fail_job, finish_job, job_error_text, set_join, unique_temp_dir};
 use crate::i18n::{Lang, lang, pick};
-use crate::job::{JobKind, JobState};
+use crate::job::{JobHandle, JobKind, JobState};
 
 /// 盘上条目的 DTO，对应前端 `DiscEntry`。
 #[derive(Serialize)]
@@ -92,12 +92,15 @@ pub async fn copy_disc_files(
     if paths.is_empty() {
         return Err(pick(lang(), "没有选中文件。", "No files are selected.").into());
     }
-    let cancel = begin_job(&state)?;
+    let JobHandle { cancel, seq } = begin_job(&state, &device, JobKind::Copy)?;
+    let slot = device.clone();
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
         match copy_disc_files_blocking(&device, &paths, &cancel) {
             Ok(report) => finish_job(
                 &worker,
+                &device,
+                seq,
                 JobKind::Copy,
                 "done",
                 None,
@@ -122,11 +125,11 @@ pub async fn copy_disc_files(
                         job_error_text(lang(), &error)
                     );
                 }
-                fail_job(&worker, JobKind::Copy, error);
+                fail_job(&worker, &device, seq, JobKind::Copy, error);
             }
         }
     });
-    set_join(&state, join);
+    set_join(&state, &slot, seq, join);
     Ok(())
 }
 
