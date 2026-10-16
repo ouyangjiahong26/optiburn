@@ -34,7 +34,10 @@ export function UpdaterSection({ locked }: { locked: boolean }) {
 
   useEffect(() => {
     void canSelfUpdate().then(setEnabled);
-    void appVersion().then(setVersion);
+    // 读不到版本时确认框文案退化即可，不往控制台抛未处理的失败；VersionBadge 同样吞掉。
+    void appVersion()
+      .then(setVersion)
+      .catch(() => {});
   }, []);
 
   if (!enabled) {
