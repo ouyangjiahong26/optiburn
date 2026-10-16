@@ -531,11 +531,7 @@ fn busy_slot_text(lang: Lang, kind: JobKind, slot: &str) -> String {
 
 /// 占住设备槽：同一设备已有任务时拒绝，避免两个任务同时操作同一台光驱（写盘与
 /// 复制都经过这里），不同设备互不影响（issue #50）。
-fn begin_job(
-    state: &State<'_, JobState>,
-    slot: &str,
-    kind: JobKind,
-) -> Result<JobHandle, String> {
+fn begin_job(state: &State<'_, JobState>, slot: &str, kind: JobKind) -> Result<JobHandle, String> {
     state
         .begin(slot, kind)
         .map_err(|BusySlot(slot)| busy_slot_text(lang(), kind, &slot))
@@ -741,7 +737,15 @@ pub async fn start_append(
     let join = tauri::async_runtime::spawn_blocking(move || {
         let result = run_append_task(&worker, &cancel, seq, files, &device, &volume_id, options);
         match result {
-            Ok(message) => finish_job(&worker, &device, seq, JobKind::Append, "done", None, message),
+            Ok(message) => finish_job(
+                &worker,
+                &device,
+                seq,
+                JobKind::Append,
+                "done",
+                None,
+                message,
+            ),
             Err(e) => {
                 fail_job(&worker, &device, seq, JobKind::Append, e);
             }

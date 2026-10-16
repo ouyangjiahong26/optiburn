@@ -32,7 +32,15 @@ pub async fn salvage_disc(
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
         match salvage_blocking(&device, Path::new(&dest), &cancel) {
-            Ok(message) => finish_job(&worker, &device, seq, JobKind::Salvage, "done", None, message),
+            Ok(message) => finish_job(
+                &worker,
+                &device,
+                seq,
+                JobKind::Salvage,
+                "done",
+                None,
+                message,
+            ),
             Err(error) => {
                 if !matches!(error, JobError::Cancelled { .. }) {
                     eprintln!(
