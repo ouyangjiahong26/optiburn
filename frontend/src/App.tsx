@@ -10,6 +10,7 @@ import { t } from "./i18n";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ProgressBar } from "./components/ProgressBar";
 import { UpdaterSection } from "./components/UpdaterSection";
+import { VersionBadge } from "./components/VersionBadge";
 import { AppendPage } from "./pages/AppendPage";
 import { BuildPage } from "./pages/BuildPage";
 import { BurnPage } from "./pages/BurnPage";
@@ -159,8 +160,12 @@ export function App() {
             </button>
           ))}
         </nav>
-        {/* 检查更新固定在侧栏底部，不可就地更新的安装形态（Linux deb）组件自返回 null。 */}
-        <UpdaterSection locked={jobs.length > 0} />
+        {/* 侧栏底部：版本提示恒显示，更新入口只在能就地更新的安装形态出现
+            （Linux deb 与开发态运行返回 null）。 */}
+        <div className="sidebar-footer">
+          <VersionBadge />
+          <UpdaterSection locked={jobs.length > 0} />
+        </div>
       </aside>
       <main className="content">
         {jobs.length > 0 && (

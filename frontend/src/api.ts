@@ -150,7 +150,7 @@ export function canSelfUpdate(): Promise<boolean> {
   return invoke("can_self_update");
 }
 
-// 本机应用版本，显示在“检查更新”入口上方。
+// 本机应用版本，由侧栏左下的版本提示（VersionBadge）显示。
 export function appVersion(): Promise<string> {
   return getVersion();
 }

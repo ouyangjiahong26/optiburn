@@ -78,4 +78,4 @@ Status 选项 ID：
 
 `Priority`（`P0`–`P3`）、`Start Date` 等其他字段按同样格式记录字段 ID 与选项 ID。没记录的字段，技能不写。状态迁移规则见 `/github-project`。
 
-注：分诊流程期望的状态 Inbox、Backlog、Ready、In review、No action 在此 Project 中不存在。GitHub API 不支持给已有单选字段追加选项，需要时在 Project 网页界面的 Status 字段设置里添加，再回填本表。
+2026-10-16 用 `gh project field-list` 复核：Status 仍只有以上三个选项。`/github-project` 的状态迁移需要 `Inbox`（新 issue）、`Backlog`（分诊确认未排期）、`Ready`（已排期）、`In review`（创建 PR）、`No action`（明确拒绝）。这五个选项要维护者在 Project 网页界面的 Status 字段设置里添加，API 追加不了单选选项。加好后把选项 ID 回填到上表，删除本段即可。
