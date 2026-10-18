@@ -58,6 +58,60 @@ impl BlockSource for MemoryBlocks {
     }
 }
 
+/// 指定 LBA 读失败的块源：模拟坏块，其余块从内存盘原样读。
+struct FaultyBlocks {
+    data: Vec<u8>,
+    fail_lba: u32,
+}
+
+impl BlockSource for FaultyBlocks {
+    fn read_blocks_at(&mut self, lba: u32, out: &mut [u8]) -> Result<(), BurnError> {
+        let blocks = (out.len() / SECTOR_BYTES) as u32;
+        if (lba..lba.saturating_add(blocks)).contains(&self.fail_lba) {
+            return Err(BurnError::ReadFailed("测试注入的坏块".to_string()));
+        }
+        let start = lba as usize * SECTOR_BYTES;
+        let end = start + out.len();
+        let Some(data) = self.data.get(start..end) else {
+            return Err(BurnError::ReadFailed(format!(
+                "测试盘只有 {} 块，却要读第 {lba} 块",
+                self.data.len() / SECTOR_BYTES
+            )));
+        };
+        out.copy_from_slice(data);
+        Ok(())
+    }
+}
+
+/// 在镜像字节里找一段文件内容，返回它所在的块号。
+fn content_lba(image: &[u8], content: &[u8]) -> u32 {
+    let offset = image
+        .windows(content.len())
+        .position(|window| window == content)
+        .expect("文件内容应在镜像里");
+    (offset / SECTOR_BYTES) as u32
+}
+
+/// 用给定的目录树造一张 UDF-only 镜像，按标准位置搬好 VRS。
+fn write_udf_image(tmp: &TempDir, tag: &str, tree: FileTree) -> PathBuf {
+    let path = tmp.path().join(format!("{tag}.iso"));
+    let options = OpticalImageOptions::default()
+        .volume_id("FAULTY")
+        .udf_only();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .expect("create the image file");
+    OpticalImageWriter::new(file, options)
+        .finish(tree)
+        .expect("write the UDF-only image");
+    relocate_vrs(&path);
+    path
+}
+
 /// 中文名文件的内容。
 pub(crate) fn zh_content() -> Vec<u8> {
     "中文内容".as_bytes().to_vec()
@@ -429,9 +483,11 @@ fn udf_only_image_volume_id_list_and_extract() {
         }
     }
 
-    // 整树抽取逐字节比对（含空文件）。
+    // 整树抽取逐字节比对（含空文件），报告里每个文件都是完整。
     let tree_out = tmp.path().join("tree-out");
-    extract_tree(&volume, &tree_out, &cancel).expect("extract the tree");
+    let report = extract_tree(&volume, &tree_out, &cancel).expect("extract the tree");
+    assert_eq!(report.complete(), 4);
+    assert_eq!(report.unreadable(), 0);
     assert_eq!(
         std::fs::read(tree_out.join("自述.txt")).unwrap(),
         zh_content()
@@ -446,15 +502,17 @@ fn udf_only_image_volume_id_list_and_extract() {
     );
     assert_eq!(std::fs::read(tree_out.join("空.txt")).unwrap(), b"");
 
-    // 按路径抽取：一个文件加一个目录，没要的不抽。
+    // 按路径抽取：一个文件加一个目录，没要的不抽，报告按文件逐条给出。
     let paths_out = tmp.path().join("paths-out");
-    extract_paths(
+    let report = extract_paths(
         &volume,
         &["/自述.txt".to_string(), "/资料".to_string()],
         &paths_out,
         &cancel,
     )
     .expect("extract by path");
+    assert_eq!(report.complete(), 3);
+    assert_eq!(report.unreadable(), 0);
     assert_eq!(
         std::fs::read(paths_out.join("自述.txt")).unwrap(),
         zh_content()
@@ -464,10 +522,10 @@ fn udf_only_image_volume_id_list_and_extract() {
         bin_content()
     );
     assert!(!paths_out.join("空.txt").exists(), "没要的不抽");
-    assert!(matches!(
-        extract_paths(&volume, &["/没有这个".to_string()], &paths_out, &cancel),
-        Err(BurnError::ReadFailed(_))
-    ));
+    let report = extract_paths(&volume, &["/没有这个".to_string()], &paths_out, &cancel)
+        .expect("a missing path is a per-file result");
+    assert_eq!(report.unreadable(), 1);
+    assert_eq!(report.files[0].path, "/没有这个");
     assert!(matches!(
         extract_paths(&volume, &["/../逃逸".to_string()], &paths_out, &cancel),
         Err(BurnError::UnsafePath(_))
@@ -492,9 +550,10 @@ fn udf_only_image_volume_id_list_and_extract() {
         expected_paths
     );
     let seam_out = tmp.path().join("seam-out");
-    backend
+    let report = backend
         .extract_tree(&image, &seam_out, &cancel)
         .expect("extract through the backend");
+    assert_eq!(report.complete(), 4);
     assert_eq!(
         std::fs::read(seam_out.join("资料/照片/清单.bin")).unwrap(),
         bin_content()
@@ -690,6 +749,62 @@ fn missing_vrs_reports_no_session() {
     assert!(
         matches!(result, Err(BurnError::NoIsoSession)),
         "没有 VRS 的合成盘"
+    );
+}
+
+#[test]
+fn a_bad_udf_file_is_recorded_and_later_files_are_still_extracted() {
+    let tmp = TempDir::new("udf-bad-file");
+    let mut tree = FileTree::new();
+    let filler: Vec<u8> = (0..128 * 1024u32)
+        .map(|index| (index % 253) as u8)
+        .collect();
+    tree.add_file(FileEntry::from_buffer("a-filler.bin", filler));
+    let target = b"TARGET-UDF-CONTENT";
+    tree.add_file(FileEntry::from_buffer("b-target.txt", target.to_vec()));
+    tree.add_file(FileEntry::from_buffer(
+        "c-after.txt",
+        b"after payload".to_vec(),
+    ));
+    let image = write_udf_image(&tmp, "udf-faulty", tree);
+    let bytes = std::fs::read(&image).expect("read the image");
+    let fail_lba = content_lba(&bytes, target);
+    let len = bytes.len() as u64;
+
+    let cancel = CancelToken::default();
+    let volume = open_udf_view(
+        Box::new(FaultyBlocks {
+            data: bytes,
+            fail_lba,
+        }),
+        0,
+        len,
+        &cancel,
+    )
+    .expect("open the faulty UDF view");
+    let out = tmp.path().join("out");
+    let report = extract_tree(&volume, &out, &cancel).expect("partial extraction is not an error");
+
+    let target = report
+        .files
+        .iter()
+        .find(|file| file.path == "/b-target.txt")
+        .expect("target entry");
+    assert!(
+        matches!(target.state, ExtractState::Unreadable { .. }),
+        "{target:?}"
+    );
+    assert!(!out.join("b-target.txt").exists(), "读不出的文件不落盘");
+
+    let after = report
+        .files
+        .iter()
+        .find(|file| file.path == "/c-after.txt")
+        .expect("after entry");
+    assert_eq!(after.state, ExtractState::Complete);
+    assert_eq!(
+        std::fs::read(out.join("c-after.txt")).unwrap(),
+        b"after payload"
     );
 }
 

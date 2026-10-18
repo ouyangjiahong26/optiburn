@@ -27,9 +27,10 @@ export type ImageInfoDto = {
   filesystems: string[];
 };
 
-// 回读校验结果：差异为空表示盘上内容与源一致，条目是按界面语言生成的描述，直接展示。
+// 回读校验结果：差异与读不出的文件都为空才算通过，条目是按界面语言生成的描述，直接展示。
 export type VerifyReport = {
   differences: string[];
+  unreadable: string[];
 };
 
 export type DiscProfile = "cd" | "dvd" | "bd";

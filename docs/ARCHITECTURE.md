@@ -115,8 +115,10 @@ xorriso 增长模式（ADR-0027）。界面与 `OPTIBURN_GROW_BACKEND` 可以显
 选择不回退。原生引擎拒绝时会给出结构化的 `NativeGap`。进度都通过
 `&mut dyn FnMut(f32)` 回调。
 另有读侧的五个能力 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
-`last_session_is_iso`，接在 `ReadBackend` 接缝上（`XorrisoRead` 子进程与 `NativeRead`
-原生块读加 ISO 9660/UDF 解析，Windows 默认原生，见 ADR-0018 与 ADR-0021），
+`iso_session_state`，接在 `ReadBackend` 接缝上（`XorrisoRead` 子进程与 `NativeRead`
+原生块读加 ISO 9660/UDF 解析，Windows 默认原生，见 ADR-0018 与 ADR-0021）。
+`extract_tree` 与 `extract_paths` 返回逐项报告，单个文件读失败记进报告并继续，不把
+整次抽取压成失败（ADR-0029）。
 `grow_size`（增长模式预演，返回即将写入的新区段字节数，供写前容量门禁比较。
 默认是原生会话计划的尺寸，回退到 xorriso 时是 `xorriso -print_size`，见 ADR-0027）、
 `append_gate_session_state`（写前门禁的末区段判定，读法跟随写盘引擎，见
@@ -138,7 +140,8 @@ ADR-0020）。
 与写入百分比同格式，且成功时统一补发 1.0。原生引擎的进度按已写块数算，是精确的。
 原生引擎的缺口（倍速、写失败重试）见 ADR-0017。原生增长的形状限制（无 Joliet、
 启动记录、多 extent、Rock Ridge 元数据不结转）见 ADR-0020。UDF 读侧的能力边界见
-ADR-0021。
+ADR-0021。读侧逐项报告只有原生后端给得出，显式选择 xorriso 时抽取遇到坏文件仍是
+整体失败，见 ADR-0029。
 
 ### optiburn-cli
 

@@ -186,13 +186,14 @@ fn native_grow_and_read_back_real() {
     let out = std::env::temp_dir().join(format!("optiburn-grow-out-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).expect("create output dir");
-    crate::extract_paths(
+    let report = crate::extract_paths(
         &device,
         &["/grow-probe.txt".to_string(), "/中文追加.txt".to_string()],
         &out,
         &CancelToken::default(),
     )
     .expect("extract the appended files");
+    assert_eq!(report.complete(), 2);
     assert_eq!(std::fs::read(out.join("grow-probe.txt")).unwrap(), ascii);
     assert_eq!(std::fs::read(out.join("中文追加.txt")).unwrap(), chinese);
     let _ = std::fs::remove_dir_all(&out);

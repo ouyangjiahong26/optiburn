@@ -9,11 +9,19 @@
 
 **中文**
 
+### 特性
+
+- 读盘抽取改为逐项报告：整树抽取与按路径抽取遇到个别文件读不出时，返回完整文件与读不出文件的清单，不再把部分失败压成整棵失败。GUI 的离盘复制保留完整文件并列出读不出的路径，回读校验把读不出的文件与内容差异分开报。xorriso 后端只按落盘结果报告完整文件，显式选择它时拿不到逐项状态（ADR-0029）。
+
 ### 修复
 
 - Linux 上侧栏左下角的版本提示不再消失：版本行此前与“检查更新”入口共用一个开关，安装形态不能就地更新时（deb 安装、开发态运行）整个区域返回 null，版本号被一并隐藏。现在版本提示单列成一个恒定显示的组件，版本号取自应用自身的版本，Windows 与 AppImage 的表现不变。
 
 **English**
+
+### FEAT
+
+- Disc extraction now returns a per-file report: when one or more files cannot be read, whole-tree and by-path extraction return the complete files plus the unreadable paths instead of failing as a whole. The GUI copy keeps the complete files and lists the unreadable paths, and read-back verification reports unreadable files separately from content differences. The xorriso backend only reports files it landed, so an explicit xorriso selection still lacks per-file status (ADR-0029).
 
 ### FIX
 
