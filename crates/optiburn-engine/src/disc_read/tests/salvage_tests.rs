@@ -402,3 +402,96 @@ fn zip_with_too_many_entries_keeps_the_raw_bytes() {
     assert_eq!(std::fs::read(&path).unwrap(), zip, "原始字节要留着");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// 驱动器登记了未关闭轨道但数据区一个块都没写：描述符区读不出来应按没有可抢救
+/// 内容处理，而不是以 SCSI 错误退出（issue #51）。
+#[test]
+fn unwritten_open_track_is_nothing_to_salvage() {
+    let dir = TempDir::new("salvage-unwritten-track");
+    let disc = ScriptedDisc::new(
+        vec![0u8; 2000 * SECTOR_BYTES],
+        1000,
+        vec![(1, 0), (2, 1000), (3, 2000)],
+    )
+    .with_open_track(2000);
+    let mmc = MmcDevice::new(Box::new(disc));
+    let report = salvage_unclosed_session_on_device(mmc, dir.path(), &CancelToken::default())
+        .expect("预期内的探测失败不该报成错误");
+    assert!(report.is_none(), "数据区没落盘应判为没有可抢救内容");
+    assert_eq!(
+        std::fs::read_dir(dir.path()).unwrap().count(),
+        0,
+        "没有可抢救内容时目标目录应为空"
+    );
+}
+
+/// 描述符区可读的未关闭轨道仍照旧抢救：列出文件、定性、抽取。
+#[test]
+fn readable_open_track_still_salvages() {
+    const BASE: u32 = 2000;
+    let session = session_bytes(BASE, "SALVAGE", &[("keep.txt", "kept")]);
+    let blocks = BASE + (session.len() / SECTOR_BYTES) as u32;
+    let disc = ScriptedDisc::new(
+        disc_with_session(BASE, blocks, &session),
+        1000,
+        vec![(1, 0), (2, 1000), (3, BASE)],
+    )
+    .with_open_track(BASE);
+    let mmc = MmcDevice::new(Box::new(disc));
+    let dir = TempDir::new("salvage-readable-track");
+    let report = salvage_unclosed_session_on_device(mmc, dir.path(), &CancelToken::default())
+        .expect("可读的未关闭轨道应能抢救")
+        .expect("应产出报告");
+    assert!(
+        report
+            .files
+            .iter()
+            .any(|file| file.path == "/keep.txt" && file.state == SalvageState::Complete),
+        "{:?}",
+        report.files
+    );
+    assert_eq!(std::fs::read(dir.path().join("keep.txt")).unwrap(), b"kept");
+}
+
+/// 轨道起点不晚于末个已关闭区段：不是未关闭轨道，返回 None。
+#[test]
+fn open_track_not_after_last_session_is_none() {
+    let dir = TempDir::new("salvage-no-open-track");
+    let disc = ScriptedDisc::new(vec![], 2000, vec![(1, 0), (2, 2000)]).with_open_track(2000);
+    let mmc = MmcDevice::new(Box::new(disc));
+    assert!(
+        salvage_unclosed_session_on_device(mmc, dir.path(), &CancelToken::default())
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// 描述符区读得出来但没有 CD001：与改动前一致，返回 None。
+#[test]
+fn non_iso_descriptor_on_open_track_is_none() {
+    let dir = TempDir::new("salvage-non-iso-track");
+    let disc = ScriptedDisc::new(
+        vec![0u8; 2100 * SECTOR_BYTES],
+        1000,
+        vec![(1, 0), (2, 1000), (3, 2000)],
+    )
+    .with_open_track(2000);
+    let mmc = MmcDevice::new(Box::new(disc));
+    assert!(
+        salvage_unclosed_session_on_device(mmc, dir.path(), &CancelToken::default())
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// READ TRACK INFORMATION 失败仍是错误，不并进 None。
+#[test]
+fn track_info_failure_is_still_an_error() {
+    let dir = TempDir::new("salvage-track-info-fail");
+    let disc = ScriptedDisc::new(vec![], 1000, vec![(1, 0), (2, 1000)]);
+    let mmc = MmcDevice::new(Box::new(disc));
+    assert!(matches!(
+        salvage_unclosed_session_on_device(mmc, dir.path(), &CancelToken::default()),
+        Err(BurnError::Mmc(_))
+    ));
+}

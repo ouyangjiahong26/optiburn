@@ -11,12 +11,14 @@
 
 ### 修复
 
+- 抢救不再把“未关闭轨道登记了但数据区没落盘”报成 SCSI 错误：未关闭轨道从起点起一个块都没写过时，探测卷描述符区会以 ILLEGAL REQUEST 加地址越界失败，现在按没有可抢救内容处理，与描述符不是 `CD001` 走同一分支，CLI 退出码 0 并给出结论。描述符区可读之后的目录与文件读取失败仍按错误上抛（ADR-0022 补记）。
 - Linux 上侧栏左下角的版本提示不再消失：版本行此前与“检查更新”入口共用一个开关，安装形态不能就地更新时（deb 安装、开发态运行）整个区域返回 null，版本号被一并隐藏。现在版本提示单列成一个恒定显示的组件，版本号取自应用自身的版本，Windows 与 AppImage 的表现不变。
 
 **English**
 
 ### FIX
 
+- Salvage no longer reports a SCSI error when an unclosed track is registered but its data area was never written: if not a single block was written, probing the volume descriptor area fails with ILLEGAL REQUEST and LBA out of range, and that shape is now treated as nothing to salvage, the same branch as a descriptor area without `CD001`, so the CLI exits 0 with a conclusion. Read failures after the descriptor area is readable still surface as errors (ADR-0022 addendum).
 - The version label in the bottom-left corner no longer disappears on Linux: it shared one switch with the Check for updates entry, so installations that cannot update in place (deb packages, development runs) returned null for the whole area and hid the version together with it. The label is now a separate component that always renders, taking the version from the application itself; Windows and AppImage look unchanged.
 
 ## [0.1.8] - 2026-10-16

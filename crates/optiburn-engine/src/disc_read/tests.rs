@@ -417,14 +417,16 @@ fn write_dir_record(record: &mut [u8], extent: u32, size: u32, flags: u8, name: 
     record[32] = name.len() as u8;
     record[33..33 + name.len()].copy_from_slice(name);
 }
-/// 假光驱：盘片信息与两级 TOC 按脚本回，READ(10) 从合成盘取数据。区段候选枚举与
-/// 回退逻辑靠它测（真机路径只是多一层按路径打开设备）。
+/// 假光驱：盘片信息、两级 TOC 与轨道信息按脚本回，READ(10) 从合成盘取数据。区段
+/// 候选枚举、回退逻辑与抢救靠它测（真机路径只是多一层按路径打开设备）。
 struct ScriptedDisc {
     disc: Vec<u8>,
     /// READ TOC Format 1 报的末区段起点。
     last_session_start: u32,
     /// READ TOC Format 0 报的轨道（编号与起点），调用方按需要放导出区。
     tracks: Vec<(u8, u32)>,
+    /// READ TRACK INFORMATION 轨道 0xFF 报的未关闭轨道起点。None 时报命令失败。
+    open_track: Option<u32>,
 }
 
 impl ScriptedDisc {
@@ -433,7 +435,14 @@ impl ScriptedDisc {
             disc,
             last_session_start,
             tracks,
+            open_track: None,
         }
+    }
+
+    /// 让 READ TRACK INFORMATION 报出未关闭轨道起点（抢救测试用）。
+    fn with_open_track(mut self, start: u32) -> Self {
+        self.open_track = Some(start);
+        self
     }
 
     /// READ DISC INFORMATION：可追加，区段数与末轨号按轨道数凑一个可信值。
@@ -522,6 +531,17 @@ impl optiburn_transport::ScsiTransport for ScriptedDisc {
         match cdb[0] {
             0x00 => {}
             0x51 => self.answer_disc_info(data),
+            0x52 => match self.open_track {
+                Some(start) => {
+                    if data.len() >= 20 {
+                        data[7] = 1; // NWA_V
+                        data[8..12].copy_from_slice(&start.to_be_bytes());
+                        data[12..16].copy_from_slice(&start.to_be_bytes());
+                        data[16..20].copy_from_slice(&0u32.to_be_bytes());
+                    }
+                }
+                None => return Err(scripted_fail(cdb)),
+            },
             0x43 => self.answer_toc(cdb, data)?,
             0x28 if dir == optiburn_transport::Direction::FromDevice => {
                 self.answer_read10(cdb, data)?

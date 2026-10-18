@@ -81,26 +81,40 @@ pub(crate) fn classify_salvage_state(extent: u32, size: u64, boundary: u32) -> S
     }
 }
 
-/// 抢救主体（[`crate::salvage`] 的原生实现）：打开未关闭轨道、探写入边界、按边界
-/// 给每个文件定性、把能读的部分抽到 `dest`。
-///
-/// 这种会话不在 TOC 里（驱动器只把已关闭的轨道登记进 TOC），起点由
-/// `READ TRACK INFORMATION` 的开放轨道报出来。实测（2026-10-11）中断的写入可能把
-/// 描述符与目录树完整写下去，只是没关轨道与区段，此时它的树可以读，文件数据则只
-/// 有中断点之前的部分。
-///
-/// 普通读路径与追加门禁不用这个视图（标准读取器挂载的是最后一个已关闭会话，用
-/// 未关闭的会话会看到残缺的树），只有显式抢救才走这里。镜像文件没有开放轨道的
-/// 概念，返回 `None`。
-///
-/// 目录树用增长模式那套盘级地址读法（[`crate::grow::read_old_session`]），因此
-/// 相对与绝对两种区段约定都能处理。
+/// 抢救入口：镜像文件没有未关闭轨道的概念，返回 `None`；设备路径按原生读侧打开
+/// 后交给 [`salvage_unclosed_session_on_device`]。
 pub(super) fn salvage_unclosed_session(
     source: &str,
     dest: &Path,
     cancel: &CancelToken,
 ) -> Result<Option<SalvageReport>, BurnError> {
-    let Some((mut mmc, start, vss)) = open_unclosed_track(source)? else {
+    let SourceKind::Device(device) = classify_source(Path::new(source)) else {
+        return Ok(None);
+    };
+    let transport =
+        optiburn_transport::open(&device).map_err(|e| BurnError::Mmc(MmcError::Transport(e)))?;
+    salvage_unclosed_session_on_device(MmcDevice::new(transport), dest, cancel)
+}
+
+/// 抢救主体（[`crate::salvage`] 的原生实现）：在已打开的设备上定位未关闭轨道、探
+/// 写入边界、按边界给每个文件定性、把能读的部分抽到 `dest`。
+///
+/// 这种轨道不在 TOC 里（驱动器只把已关闭的轨道登记进 TOC），起点由
+/// `READ TRACK INFORMATION` 的未关闭轨道报出来。实测（2026-10-11）中断的写入可能把
+/// 描述符与目录树完整写下去，只是没关轨道与区段，此时它的树可以读，文件数据则只
+/// 有中断点之前的部分。
+///
+/// 普通读路径与追加门禁不用这个视图（标准读取器挂载的是最后一个已关闭区段，用
+/// 未关闭的轨道会看到残缺的树），只有显式抢救才走这里。
+///
+/// 目录树用增长模式那套盘级地址读法（[`crate::grow::read_old_session`]），因此
+/// 相对与绝对两种区段约定都能处理。
+pub(super) fn salvage_unclosed_session_on_device(
+    mut mmc: MmcDevice,
+    dest: &Path,
+    cancel: &CancelToken,
+) -> Result<Option<SalvageReport>, BurnError> {
+    let Some((start, vss)) = open_unclosed_track(&mut mmc)? else {
         return Ok(None);
     };
     let tree = {
@@ -126,17 +140,11 @@ pub(super) fn salvage_unclosed_session(
     }))
 }
 
-/// 打开设备并确认盘上确有可抢救的未关闭轨道，返回轨道起点与卷空间大小（PVD 的
-/// 偏移 80..84）。没有可抢救对象时返回 `None`：镜像文件、空盘、没有区段信息、
-/// 开放轨道不晚于末个已关闭区段、描述符不是 ISO 9660。
-fn open_unclosed_track(source: &str) -> Result<Option<(MmcDevice, u32, u32)>, BurnError> {
-    let SourceKind::Device(device) = classify_source(Path::new(source)) else {
-        return Ok(None);
-    };
-    let transport =
-        optiburn_transport::open(&device).map_err(|e| BurnError::Mmc(MmcError::Transport(e)))?;
-    let mut mmc = MmcDevice::new(transport);
-    wait_until_ready(&mut mmc)?;
+/// 确认盘上确有可抢救的未关闭轨道，返回轨道起点与卷空间大小（PVD 的偏移 80..84）。
+/// 没有可抢救对象时返回 `None`：空盘、没有区段信息、未关闭轨道不晚于末个已关闭
+/// 区段、描述符区没落盘（读不出来）、描述符不是 ISO 9660。
+fn open_unclosed_track(mmc: &mut MmcDevice) -> Result<Option<(u32, u32)>, BurnError> {
+    wait_until_ready(mmc)?;
     let info = mmc.read_disc_information()?;
     if info.status == DiscStatus::Empty {
         return Ok(None);
@@ -145,18 +153,26 @@ fn open_unclosed_track(source: &str) -> Result<Option<(MmcDevice, u32, u32)>, Bu
         return Ok(None);
     };
     let track = mmc.read_track_information(crate::native::LAST_TRACK)?;
-    // 开放轨道的起点必须晚于末个已关闭区段，否则盘上没有未关闭轨道。
+    // 未关闭轨道的起点必须晚于末个已关闭区段，否则盘上没有未关闭轨道。
     if track.start_lba <= session.last_session_start {
         return Ok(None);
     }
     let start = track.start_lba;
     let mut pvd = vec![0u8; SECTOR_BYTES];
-    mmc.read_blocks(start + crate::grow::DESC_START, &mut pvd)?;
+    // 驱动器可能登记了未关闭轨道但一个块都没写下去：描述符区读失败说明没有可
+    // 列出的目录树，与不是 CD001 同属“没有可抢救内容”，不把预期内的探测失败
+    // 报成用户可见错误（issue #51）。
+    if mmc
+        .read_blocks(start + crate::grow::DESC_START, &mut pvd)
+        .is_err()
+    {
+        return Ok(None);
+    }
     if pvd[1..6] != *b"CD001" {
         return Ok(None);
     }
     let vss = u32::from_le_bytes([pvd[80], pvd[81], pvd[82], pvd[83]]);
-    Ok(Some((mmc, start, vss)))
+    Ok(Some((start, vss)))
 }
 
 /// 遍历目录树，按边界给每个文件定性并把能读的部分抽出去（目录按原样建出来）。
