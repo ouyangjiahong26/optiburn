@@ -51,6 +51,7 @@
 | UDF 卷识别序列（VRS） | UDF 盘从逻辑块 16 起的识别结构（`BEA01` / `NSR02` 或 `NSR03` / `TEA01`），UDF Bridge 盘的这一区段里还有 ISO 9660 的 `CD001` 描述符。读侧按它判断“这一区段有没有 UDF”。 | 卷识别区、VRS 扇区 |
 | 锚点（AVDP） | UDF 的 Anchor Volume Descriptor Pointer：定位主卷描述符序列的入口，固定出现在块 256（区段内相对）与盘的末端位置。它的 tag_location 字段是判断该区段用哪种地址约定的依据（ADR-0021）。 | 锚描述符、AVDP 扇区 |
 | 读盘（Disc Reading） | 读出盘上末区段内容的五个能力：卷标、末区段是否 ISO 9660、目录树列举、整树抽取、按路径抽取。接在 `ReadBackend` 接缝上，后端是 xorriso 子进程或原生解析（ISO 9660 见 ADR-0018，UDF 见 ADR-0021）。 | 读碟、光盘读取 |
+| 抽取报告（Extract Report） | 读盘抽取的逐文件结果：每个文件记完整或读不出，单个文件读失败不中断整次抽取。对应 `ExtractReport`、`ExtractedFile`、`ExtractState`（ADR-0029）。 | 提取报告、部分失败列表 |
 | 后端回退（Backend Fallback） | 读盘时 xorriso 读不到 ISO 9660（输出报空镜像兜底或读侧报错），改用原生读侧重试同一次操作的动作。与损坏末区段的候选区段回退（`SessionFallback`）是两回事。 | 回退、降级、兜底、切后端 |
 | 保守开关（Conservative Switch） | 置位后退回改动前行为的环境变量，用于对照与止损。现有 `OPTIBURN_LAST_SESSION_ONLY`、`OPTIBURN_READ_BACKEND` 与 `OPTIBURN_GROW_BACKEND`。 | 逃生开关、兼容开关 |
 | 阶段计时（stage timing） | 写盘前各段耗时的诊断输出：`OPTIBURN_TIMING` 置位后 CLI 与 GUI 命令层的 `burn`、`append` 每段完成往 stderr 打一行（`阶段 尺寸预演：4.2 秒`，GUI 多一段暂存拷贝）。用来在真机上分辨等待花在哪一段，见 ADR-0028。 | 性能日志、耗时统计 |

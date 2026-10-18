@@ -31,7 +31,10 @@ use optiburn_mmc::{DiscStatus, MmcDevice, MmcError, SECTOR_BYTES, wait_until_rea
 
 use self::udf::UdfSource;
 use crate::readback::{DiscEntry, ReadBackend, safe_relative_path};
-use crate::{BurnError, CancelToken, IsoSessionState, SalvageReport, SessionFallback};
+use crate::{
+    BurnError, CancelToken, ExtractReport, ExtractState, ExtractedFile, IsoSessionState,
+    SalvageReport, SessionFallback,
+};
 
 mod salvage;
 pub(crate) mod udf;
@@ -314,12 +317,14 @@ impl ReadBackend for NativeRead {
         source: &Path,
         dest: &Path,
         cancel: &CancelToken,
-    ) -> Result<(), BurnError> {
+    ) -> Result<ExtractReport, BurnError> {
         match open_session(source, cancel)? {
             DiscSession::Iso(iso) => {
                 let root = iso.root_dir();
                 let joliet = is_joliet_root(&root.entry_type());
-                extract_dir(&iso, root.dir_ref(), joliet, dest, cancel)
+                let mut report = ExtractReport::default();
+                extract_dir(&iso, root.dir_ref(), joliet, "", dest, cancel, &mut report)?;
+                Ok(report)
             }
             DiscSession::Udf(volume) => udf::extract_tree(&volume, dest, cancel),
         }
@@ -331,7 +336,7 @@ impl ReadBackend for NativeRead {
         paths: &[String],
         dest: &Path,
         cancel: &CancelToken,
-    ) -> Result<(), BurnError> {
+    ) -> Result<ExtractReport, BurnError> {
         match open_session(Path::new(source), cancel)? {
             DiscSession::Iso(iso) => extract_iso_paths(&iso, paths, dest, cancel),
             DiscSession::Udf(volume) => udf::extract_paths(&volume, paths, dest, cancel),
@@ -357,30 +362,38 @@ fn extract_iso_paths(
     paths: &[String],
     dest: &Path,
     cancel: &CancelToken,
-) -> Result<(), BurnError> {
+) -> Result<ExtractReport, BurnError> {
     let joliet = is_joliet_root(&iso.root_dir().entry_type());
+    let mut report = ExtractReport::default();
     for path in paths {
         // 先过安全过滤再碰盘：不安全路径没有必要读盘，也避免中途才发现要拒绝。
-        let target = dest.join(safe_relative_path(path)?);
+        let relative = safe_relative_path(path)?;
+        let prefix = disc_path(&relative);
+        let target = dest.join(&relative);
         // find_path 的逐段匹配覆盖三种命名空间（RRIP 精确、Joliet 解码后比较、
         // 平面名忽略大小写）。
         let Some(entry) = iso.find_path(path).map_err(|e| hadris_error(e, cancel))? else {
-            return Err(BurnError::ReadFailed(format!(
-                "path not found on the disc: {path}"
-            )));
+            report.files.push(ExtractedFile {
+                path: prefix,
+                size: 0,
+                state: ExtractState::Unreadable {
+                    reason: format!("path not found on the disc: {path}"),
+                },
+            });
+            continue;
         };
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
         if entry.is_directory() {
             let dir = entry.as_dir_ref(iso).map_err(|e| hadris_error(e, cancel))?;
-            extract_dir(iso, dir, joliet, &target, cancel)?;
+            extract_dir(iso, dir, joliet, &prefix, &target, cancel, &mut report)?;
         } else {
-            let data = iso.read_file(&entry).map_err(|e| hadris_error(e, cancel))?;
-            std::fs::write(&target, &data)?;
+            let size = entry.total_size();
+            extract_one_file(iso, &entry, &prefix, size, &target, cancel, &mut report)?;
         }
     }
-    Ok(())
+    Ok(report)
 }
 
 /// 候选区段起点，新到旧。设备路径用 READ TOC：Format 1 的末区段起点加 Format 0
@@ -750,12 +763,16 @@ pub(crate) fn walk_list(
 
 /// 把一个目录树抽到本地。名字按盘上记录落盘，写盘前逐段过安全过滤（盘内容不是
 /// 可信输入，与 xorriso 路径共用 [`safe_relative_path`] 的规则）。
+///
+/// 单个文件的读失败记进报告后继续，目录读失败与本地写失败仍整体上抛（ADR-0029）。
 fn extract_dir(
     iso: &IsoImage<SessionSource>,
     dir: DirectoryRef,
     joliet: bool,
+    prefix: &str,
     dest: &Path,
     cancel: &CancelToken,
+    report: &mut ExtractReport,
 ) -> Result<(), BurnError> {
     std::fs::create_dir_all(dest)?;
     for entry in iso.open_dir(dir).entries() {
@@ -767,16 +784,77 @@ fn extract_dir(
             continue;
         }
         let name = entry_name(&entry, joliet);
+        let path = format!("{prefix}/{name}");
         let target = dest.join(safe_relative_path(&format!("/{name}"))?);
         if entry.is_directory() {
             let sub = entry.as_dir_ref(iso).map_err(|e| hadris_error(e, cancel))?;
-            extract_dir(iso, sub, joliet, &target, cancel)?;
+            extract_dir(iso, sub, joliet, &path, &target, cancel, report)?;
         } else {
-            let data = iso.read_file(&entry).map_err(|e| hadris_error(e, cancel))?;
-            std::fs::write(&target, &data)?;
+            let size = entry.total_size();
+            extract_one_file(iso, &entry, &path, size, &target, cancel, report)?;
         }
     }
     Ok(())
+}
+
+/// 抽一个文件：读成功就落盘并记完整，读失败记读不出并返回 Ok，让调用方继续。
+///
+/// 取消在 `record_unreadable` 里单独归因，不能记成某个文件的读不出。
+fn extract_one_file(
+    iso: &IsoImage<SessionSource>,
+    entry: &DirEntry,
+    path: &str,
+    size: u64,
+    target: &Path,
+    cancel: &CancelToken,
+    report: &mut ExtractReport,
+) -> Result<(), BurnError> {
+    match iso.read_file(entry) {
+        Ok(data) => {
+            std::fs::write(target, &data)?;
+            report.files.push(ExtractedFile {
+                path: path.to_string(),
+                size,
+                state: ExtractState::Complete,
+            });
+            Ok(())
+        }
+        Err(error) => {
+            record_unreadable(report, path.to_string(), size, hadris_error(error, cancel))
+        }
+    }
+}
+
+/// 把一个文件的读失败记进报告。取消不算单文件失败，原样上抛。
+pub(crate) fn record_unreadable(
+    report: &mut ExtractReport,
+    path: String,
+    size: u64,
+    error: BurnError,
+) -> Result<(), BurnError> {
+    if matches!(error, BurnError::Cancelled) {
+        return Err(error);
+    }
+    report.files.push(ExtractedFile {
+        path,
+        size,
+        state: ExtractState::Unreadable {
+            reason: error.to_string(),
+        },
+    });
+    Ok(())
+}
+
+/// 本地相对路径到报告里的盘上路径：分量用 `/` 连接并补前导斜杠。
+fn disc_path(relative: &Path) -> String {
+    let mut path = String::new();
+    for component in relative.components() {
+        if let std::path::Component::Normal(part) = component {
+            path.push('/');
+            path.push_str(&part.to_string_lossy());
+        }
+    }
+    path
 }
 
 /// hadris 的读错误到读侧错误的归一。令牌已置位时按取消归因：读中途的取消在
