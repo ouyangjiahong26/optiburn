@@ -60,6 +60,8 @@ fn disc_is_empty(device: &str) -> bool {
 struct CopyReport {
     count: usize,
     bytes: u64,
+    /// 盘上读不出的文件路径，空表示全部复制成功。
+    unreadable: Vec<String>,
 }
 
 /// 每次复制使用一个新的序号子目录，复制成功后清掉更早的暂存。
@@ -97,26 +99,22 @@ pub async fn copy_disc_files(
     let worker = app.clone();
     let join = tauri::async_runtime::spawn_blocking(move || {
         match copy_disc_files_blocking(&device, &paths, &cancel) {
-            Ok(report) => finish_job(
-                &worker,
-                &device,
-                seq,
-                JobKind::Copy,
-                "done",
-                None,
-                match lang() {
-                    Lang::Zh => format!(
-                        "已复制 {} 个文件（{}）到系统剪贴板，去文件管理器里粘贴即可。",
-                        report.count,
-                        human_bytes(lang(), report.bytes)
-                    ),
-                    Lang::En => format!(
-                        "Copied {} files ({}) to the clipboard — paste them in your file manager.",
-                        report.count,
-                        human_bytes(lang(), report.bytes)
-                    ),
-                },
-            ),
+            Ok(report) => {
+                let outcome = if report.unreadable.is_empty() {
+                    "done"
+                } else {
+                    "failed"
+                };
+                finish_job(
+                    &worker,
+                    &device,
+                    seq,
+                    JobKind::Copy,
+                    outcome,
+                    None,
+                    copy_message(lang(), &report),
+                )
+            }
             Err(error) => {
                 // 失败原因随失败事件广播，同时写一份到 stderr 备查（取消不算失败）。
                 if !matches!(error, JobError::Cancelled { .. }) {
@@ -171,16 +169,27 @@ fn copy_disc_files_blocking(
         Lang::Zh => JobError::Input(format!("创建暂存目录失败：{e}")),
         Lang::En => JobError::Input(format!("Failed to create the staging directory: {e}")),
     })?;
-    if let Err(error) = extract_paths(device, paths, &staging, cancel) {
-        let _ = std::fs::remove_dir_all(&staging);
-        return Err(match error {
-            BurnError::Cancelled => JobError::Cancelled {
-                zh: "复制",
-                en: "copy",
-            },
-            other => JobError::Input(disc_read_error(lang(), device, other)),
-        });
-    }
+    let report = match extract_paths(device, paths, &staging, cancel) {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(match error {
+                BurnError::Cancelled => JobError::Cancelled {
+                    zh: "复制",
+                    en: "copy",
+                },
+                other => JobError::Input(disc_read_error(lang(), device, other)),
+            });
+        }
+    };
+    let unreadable: Vec<String> = report
+        .files
+        .iter()
+        .filter_map(|file| match &file.state {
+            optiburn_engine::ExtractState::Unreadable { .. } => Some(file.path.clone()),
+            optiburn_engine::ExtractState::Complete => None,
+        })
+        .collect();
     let mut files = Vec::new();
     if let Err(e) = collect_files(&staging, &mut files) {
         let _ = std::fs::remove_dir_all(&staging);
@@ -188,6 +197,18 @@ fn copy_disc_files_blocking(
             Lang::Zh => format!("扫描暂存目录失败：{e}"),
             Lang::En => format!("Failed to scan the staging directory: {e}"),
         }));
+    }
+    // 一个完整文件都没有时没有可粘贴的内容，按失败处理并列出读不出的路径。
+    if files.is_empty() && !unreadable.is_empty() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(JobError::Input(copy_message(
+            lang(),
+            &CopyReport {
+                count: 0,
+                bytes: 0,
+                unreadable,
+            },
+        )));
     }
     if let Err(e) = crate::clipboard::copy_files(&files) {
         let _ = std::fs::remove_dir_all(&staging);
@@ -209,7 +230,44 @@ fn copy_disc_files_blocking(
     Ok(CopyReport {
         count: files.len(),
         bytes,
+        unreadable,
     })
+}
+
+/// 复制结果的文案：全部成功时沿用原文案，有读不出的文件时列出路径并说明部分完成。
+fn copy_message(lang: Lang, report: &CopyReport) -> String {
+    let list = match lang {
+        Lang::Zh => report.unreadable.join("、"),
+        Lang::En => report.unreadable.join(", "),
+    };
+    match lang {
+        Lang::Zh if report.unreadable.is_empty() => format!(
+            "已复制 {} 个文件（{}）到系统剪贴板，去文件管理器里粘贴即可。",
+            report.count,
+            human_bytes(lang, report.bytes)
+        ),
+        Lang::Zh if report.count == 0 => format!("所选文件都读不出：{list}。"),
+        Lang::Zh => format!(
+            "已复制 {} 个文件（{}）到系统剪贴板，{} 个文件读不出：{list}。",
+            report.count,
+            human_bytes(lang, report.bytes),
+            report.unreadable.len()
+        ),
+        Lang::En if report.unreadable.is_empty() => format!(
+            "Copied {} files ({}) to the clipboard — paste them in your file manager.",
+            report.count,
+            human_bytes(lang, report.bytes)
+        ),
+        Lang::En if report.count == 0 => {
+            format!("None of the selected files could be read: {list}.")
+        }
+        Lang::En => format!(
+            "Copied {} files ({}) to the clipboard. {} files could not be read: {list}.",
+            report.count,
+            human_bytes(lang, report.bytes),
+            report.unreadable.len()
+        ),
+    }
 }
 
 /// 递归收集目录下的全部文件。
@@ -316,5 +374,45 @@ mod tests {
         assert_eq!(human_bytes(Lang::Zh, 512), "512 字节");
         assert_eq!(human_bytes(Lang::Zh, 1536), "1.5 KB");
         assert_eq!(human_bytes(Lang::Zh, 3_000_000), "3.0 MB");
+    }
+
+    /// 部分读不出时文案点名路径与数量，全部读不出时说明没有可复制的内容。
+    #[test]
+    fn copy_message_names_unreadable_files() {
+        let partial = CopyReport {
+            count: 2,
+            bytes: 1024,
+            unreadable: vec!["/坏文件.txt".to_string(), "/另一个.bin".to_string()],
+        };
+        assert_eq!(
+            copy_message(Lang::Zh, &partial),
+            "已复制 2 个文件（1.0 KB）到系统剪贴板，2 个文件读不出：/坏文件.txt、/另一个.bin。"
+        );
+        assert_eq!(
+            copy_message(Lang::En, &partial),
+            "Copied 2 files (1.0 KB) to the clipboard. 2 files could not be read: /坏文件.txt, /另一个.bin."
+        );
+
+        let none = CopyReport {
+            count: 0,
+            bytes: 0,
+            unreadable: vec!["/坏文件.txt".to_string()],
+        };
+        assert_eq!(
+            copy_message(Lang::Zh, &none),
+            "所选文件都读不出：/坏文件.txt。"
+        );
+        assert_eq!(
+            copy_message(Lang::En, &none),
+            "None of the selected files could be read: /坏文件.txt."
+        );
+
+        let all = CopyReport {
+            count: 2,
+            bytes: 2048,
+            unreadable: Vec::new(),
+        };
+        assert!(copy_message(Lang::Zh, &all).contains("已复制 2 个文件"));
+        assert!(copy_message(Lang::En, &all).contains("Copied 2 files"));
     }
 }

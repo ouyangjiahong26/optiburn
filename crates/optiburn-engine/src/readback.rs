@@ -10,7 +10,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::{BurnError, CancelToken, IsoSessionState, SalvageReport, TAIL_LINES, XORRISO};
+use crate::{
+    BurnError, CancelToken, ExtractReport, ExtractState, ExtractedFile, IsoSessionState,
+    SalvageReport, TAIL_LINES, XORRISO,
+};
 
 use super::disc_read::NativeRead;
 use super::xorriso::{local_charset_args, run};
@@ -25,14 +28,14 @@ pub(crate) trait ReadBackend {
         source: &Path,
         dest: &Path,
         cancel: &CancelToken,
-    ) -> Result<(), BurnError>;
+    ) -> Result<ExtractReport, BurnError>;
     fn extract_paths(
         &self,
         source: &str,
         paths: &[String],
         dest: &Path,
         cancel: &CancelToken,
-    ) -> Result<(), BurnError>;
+    ) -> Result<ExtractReport, BurnError>;
     /// 抢救未关闭轨道里的数据，见 [`crate::salvage`]。
     fn salvage(
         &self,
@@ -179,7 +182,7 @@ impl ReadBackend for FallbackRead {
         source: &Path,
         dest: &Path,
         cancel: &CancelToken,
-    ) -> Result<(), BurnError> {
+    ) -> Result<ExtractReport, BurnError> {
         fallback(XORRISO_READ.extract_tree(source, dest, cancel), || {
             NATIVE_READ.extract_tree(source, dest, cancel)
         })
@@ -191,7 +194,7 @@ impl ReadBackend for FallbackRead {
         paths: &[String],
         dest: &Path,
         cancel: &CancelToken,
-    ) -> Result<(), BurnError> {
+    ) -> Result<ExtractReport, BurnError> {
         fallback(
             XORRISO_READ.extract_paths(source, paths, dest, cancel),
             || NATIVE_READ.extract_paths(source, paths, dest, cancel),
@@ -284,7 +287,7 @@ impl ReadBackend for XorrisoRead {
         source: &Path,
         dest: &Path,
         cancel: &CancelToken,
-    ) -> Result<(), BurnError> {
+    ) -> Result<ExtractReport, BurnError> {
         let stderr = run(XORRISO, &extract_args(source, dest), &mut |_| {}, cancel)
             .map_err(read_side_error)?;
         // 兜底空镜像时 xorriso 照常成功，但抽出来的是空目录：判成读不到，交给
@@ -292,7 +295,7 @@ impl ReadBackend for XorrisoRead {
         if is_blank_image_fallback(&stderr) {
             return Err(BurnError::NoIsoSession);
         }
-        Ok(())
+        report_landed_files(dest)
     }
 
     fn extract_paths(
@@ -301,7 +304,7 @@ impl ReadBackend for XorrisoRead {
         paths: &[String],
         dest: &Path,
         cancel: &CancelToken,
-    ) -> Result<(), BurnError> {
+    ) -> Result<ExtractReport, BurnError> {
         // 路径来自盘片本身，逐条校验并落成本地相对路径后再交给 xorriso。
         let mut targets = Vec::with_capacity(paths.len());
         for path in paths {
@@ -321,8 +324,45 @@ impl ReadBackend for XorrisoRead {
         if is_blank_image_fallback(&stderr) {
             return Err(BurnError::NoIsoSession);
         }
-        Ok(())
+        report_landed_files(dest)
     }
+}
+
+/// xorriso 成功抽取后按 `dest` 里落盘的文件生成报告。
+///
+/// xorriso 只给进程退出码与 stderr，没有逐文件结果，这里列出的文件只表示它落盘了，
+/// 不代表每个文件字节可读（完整性由回读校验负责）。调用方用空目录或专用目录时
+/// 清单才等于本次抽取的文件。
+fn report_landed_files(dest: &Path) -> Result<ExtractReport, BurnError> {
+    let mut report = ExtractReport::default();
+    if !dest.exists() {
+        return Ok(report);
+    }
+    collect_landed_files(dest, "", &mut report)?;
+    Ok(report)
+}
+
+/// 递归收集 `dest` 下的文件，路径转成以 `/` 开头的盘上形态。
+fn collect_landed_files(
+    dir: &Path,
+    prefix: &str,
+    report: &mut ExtractReport,
+) -> Result<(), BurnError> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let path = format!("{prefix}/{}", name.to_string_lossy());
+        if entry.file_type()?.is_dir() {
+            collect_landed_files(&entry.path(), &path, report)?;
+        } else {
+            report.files.push(ExtractedFile {
+                path,
+                size: entry.metadata()?.len(),
+                state: ExtractState::Complete,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// 从盘上最后一个区段读卷标（PVD 的 `Volume Id`），用于 GUI 追加页预填
@@ -381,7 +421,15 @@ pub fn native_iso_session_state(source: &str) -> Result<IsoSessionState, BurnErr
 /// xorriso 路径的 `-osirrox on` 打开抽取权限，`-extract / <目标>` 把整树落到目标
 /// 目录。xorriso 会尽力还原时间戳，但抽出的文件 ctime 必然是新值，所以校验只在
 /// 本地按名字与内容对比，不比较属性。
-pub fn extract_tree(source: &Path, dest: &Path, cancel: &CancelToken) -> Result<(), BurnError> {
+///
+/// 返回逐项报告：单个文件的数据读失败记 `Unreadable` 后继续，不把整棵树压成失败
+/// （ADR-0029）。打不开设备、没有可用的 ISO 9660 区段、取消、不安全路径与本地写
+/// 失败仍是 `Err`。xorriso 后端成功时按落盘文件报告，显式选择它时拿不到逐项状态。
+pub fn extract_tree(
+    source: &Path,
+    dest: &Path,
+    cancel: &CancelToken,
+) -> Result<ExtractReport, BurnError> {
     selected_read_backend()?.extract_tree(source, dest, cancel)
 }
 
@@ -556,12 +604,15 @@ fn parse_quoted_name(text: &str, start: usize) -> Option<(String, usize)> {
 ///
 /// 每个 ISO 路径落到 `dest` 下同名的相对位置，父目录预先建好。只读打开
 /// （xorriso 路径带 `-drive_access shared`），供 GUI 把盘上文件复制到本地。
+///
+/// 返回逐项报告：找不到的路径与单个文件的数据读失败记 `Unreadable` 后继续处理
+/// 其余路径（ADR-0029）。不安全路径、取消、盘片级错误与本地写失败仍是 `Err`。
 pub fn extract_paths(
     device: &str,
     paths: &[String],
     dest: &Path,
     cancel: &CancelToken,
-) -> Result<(), BurnError> {
+) -> Result<ExtractReport, BurnError> {
     selected_read_backend()?.extract_paths(device, paths, dest, cancel)
 }
 
@@ -1186,11 +1237,13 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
             expected
         );
 
-        // 整树抽取：中文名与跨扇区二进制逐字节一致。
+        // 整树抽取：中文名与跨扇区二进制逐字节一致，报告里四个文件都完整。
         let tree_out = tmp.path().join("fallback-tree-out");
-        FallbackRead
+        let report = FallbackRead
             .extract_tree(&image, &tree_out, &cancel)
             .expect("extract the tree");
+        assert_eq!(report.complete(), 4);
+        assert_eq!(report.unreadable(), 0);
         assert_eq!(
             std::fs::read(tree_out.join("自述.txt")).unwrap(),
             zh_content()
@@ -1200,11 +1253,13 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
             bin_content()
         );
 
-        // 按路径抽取：只抽要的那一个。
+        // 按路径抽取：只抽要的那一个，报告只有一条完整。
         let paths_out = tmp.path().join("fallback-paths-out");
-        FallbackRead
+        let report = FallbackRead
             .extract_paths(source, &["/资料/说明.md".to_string()], &paths_out, &cancel)
             .expect("extract by path");
+        assert_eq!(report.complete(), 1);
+        assert_eq!(report.files[0].path, "/资料/说明.md");
         assert_eq!(
             std::fs::read(paths_out.join("资料/说明.md")).unwrap(),
             b"top level notes"
@@ -1245,10 +1300,36 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
 
         assert_eq!(FallbackRead.read_volume_id(source).unwrap(), "EMPTY");
         let tree_out = tmp.path().join("empty-tree-out");
-        FallbackRead
+        let report = FallbackRead
             .extract_tree(&image, &tree_out, &CancelToken::default())
             .expect("extract the empty tree");
+        assert!(report.files.is_empty(), "{report:?}");
         assert_eq!(count_files(&tree_out), 0);
+    }
+
+    /// xorriso 成功路径的报告按落盘文件生成：嵌套目录与中文名都转成盘上路径。
+    #[test]
+    fn landed_files_report_uses_disc_paths() {
+        let root = std::env::temp_dir().join(format!("optiburn-landed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("子目录")).expect("create the tree");
+        std::fs::write(root.join("a.txt"), b"alpha").expect("write a.txt");
+        std::fs::write(root.join("子目录/中文.bin"), b"data!").expect("write the nested file");
+
+        let mut report = report_landed_files(&root).expect("report the landed files");
+        report
+            .files
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        assert_eq!(report.complete(), 2);
+        assert_eq!(report.files[0].path, "/a.txt");
+        assert_eq!(report.files[0].size, 5);
+        assert_eq!(report.files[1].path, "/子目录/中文.bin");
+        assert_eq!(report.files[1].size, 5);
+
+        // 目标目录不存在时给空报告（合法空 ISO 的抽取会走这里）。
+        let missing = report_landed_files(&root.join("missing")).expect("missing is empty");
+        assert!(missing.files.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 递归数目标目录里的文件数（目录不算）。

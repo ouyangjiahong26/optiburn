@@ -21,9 +21,11 @@ use hadris_udf::UdfVolume;
 use hadris_udf::dir::{UdfDir, UdfDirEntry};
 use optiburn_mmc::{DiscStatus, MmcDevice, MmcError, SECTOR_BYTES, wait_until_ready};
 
-use super::{BlockSource, DiscBlocks, FileBlocks, SourceKind, classify_source};
+use super::{
+    BlockSource, DiscBlocks, FileBlocks, SourceKind, classify_source, disc_path, record_unreadable,
+};
 use crate::readback::{DiscEntry, safe_relative_path};
-use crate::{BurnError, CancelToken};
+use crate::{BurnError, CancelToken, ExtractReport, ExtractState, ExtractedFile};
 
 /// 一次填补内部缓冲的块数，与 MMC 读侧的单命令上限对齐（64 KiB）。
 const CHUNK_BLOCKS: u64 = optiburn_mmc::MAX_READ_BLOCKS as u64;
@@ -375,21 +377,27 @@ fn walk_list(
 
 /// 把整棵 UDF 树抽到本地。名字按盘上记录落盘，逐段过安全过滤（盘内容不是可信
 /// 输入，与 ISO 侧共用 [`safe_relative_path`] 的规则）。
+///
+/// 单个文件的读失败记进报告后继续，目录读失败与本地写失败仍整体上抛（ADR-0029）。
 pub(crate) fn extract_tree(
     volume: &UdfVolume<UdfSource>,
     dest: &Path,
     cancel: &CancelToken,
-) -> Result<(), BurnError> {
+) -> Result<ExtractReport, BurnError> {
     let root = volume.root_dir().map_err(|e| udf_error(e, cancel))?;
-    extract_dir(volume, &root, dest, 0, cancel)
+    let mut report = ExtractReport::default();
+    extract_dir(volume, &root, "", dest, 0, cancel, &mut report)?;
+    Ok(report)
 }
 
 fn extract_dir(
     volume: &UdfVolume<UdfSource>,
     dir: &UdfDir,
+    prefix: &str,
     dest: &Path,
     depth: usize,
     cancel: &CancelToken,
+    report: &mut ExtractReport,
 ) -> Result<(), BurnError> {
     check_depth(depth)?;
     std::fs::create_dir_all(dest)?;
@@ -397,18 +405,46 @@ fn extract_dir(
         if cancel.is_cancelled() {
             return Err(BurnError::Cancelled);
         }
+        let path = format!("{prefix}/{}", entry.name);
         let target = dest.join(safe_relative_path(&format!("/{}", entry.name))?);
         if entry.is_directory {
             let sub = volume
                 .read_directory(&entry.icb)
                 .map_err(|e| udf_error(e, cancel))?;
-            extract_dir(volume, &sub, &target, depth + 1, cancel)?;
+            extract_dir(volume, &sub, &path, &target, depth + 1, cancel, report)?;
         } else {
-            let data = volume.read_file(entry).map_err(|e| udf_error(e, cancel))?;
-            std::fs::write(&target, &data)?;
+            extract_one_file(volume, entry, &path, &target, cancel, report)?;
         }
     }
     Ok(())
+}
+
+/// 抽一个 UDF 文件：读成功就落盘并记完整，读失败记读不出并返回 Ok。
+fn extract_one_file(
+    volume: &UdfVolume<UdfSource>,
+    entry: &UdfDirEntry,
+    path: &str,
+    target: &Path,
+    cancel: &CancelToken,
+    report: &mut ExtractReport,
+) -> Result<(), BurnError> {
+    match volume.read_file(entry) {
+        Ok(data) => {
+            std::fs::write(target, &data)?;
+            report.files.push(ExtractedFile {
+                path: path.to_string(),
+                size: entry.size,
+                state: ExtractState::Complete,
+            });
+            Ok(())
+        }
+        Err(error) => record_unreadable(
+            report,
+            path.to_string(),
+            entry.size,
+            udf_error(error, cancel),
+        ),
+    }
 }
 
 /// 从盘上按 UDF 路径抽取若干文件或目录到本地目录。逐段按名字精确匹配（大小写
@@ -418,14 +454,22 @@ pub(crate) fn extract_paths(
     paths: &[String],
     dest: &Path,
     cancel: &CancelToken,
-) -> Result<(), BurnError> {
+) -> Result<ExtractReport, BurnError> {
+    let mut report = ExtractReport::default();
     for path in paths {
         // 先过安全过滤再碰盘：不安全路径没有必要读盘，也避免中途才发现要拒绝。
-        let target = dest.join(safe_relative_path(path)?);
+        let relative = safe_relative_path(path)?;
+        let prefix = disc_path(&relative);
+        let target = dest.join(&relative);
         let Some(entry) = find_entry(volume, path, cancel)? else {
-            return Err(BurnError::ReadFailed(format!(
-                "path not found on the disc: {path}"
-            )));
+            report.files.push(ExtractedFile {
+                path: prefix,
+                size: 0,
+                state: ExtractState::Unreadable {
+                    reason: format!("path not found on the disc: {path}"),
+                },
+            });
+            continue;
         };
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
@@ -434,13 +478,12 @@ pub(crate) fn extract_paths(
             let dir = volume
                 .read_directory(&entry.icb)
                 .map_err(|e| udf_error(e, cancel))?;
-            extract_dir(volume, &dir, &target, 0, cancel)?;
+            extract_dir(volume, &dir, &prefix, &target, 0, cancel, &mut report)?;
         } else {
-            let data = volume.read_file(&entry).map_err(|e| udf_error(e, cancel))?;
-            std::fs::write(&target, &data)?;
+            extract_one_file(volume, &entry, &prefix, &target, cancel, &mut report)?;
         }
     }
-    Ok(())
+    Ok(report)
 }
 
 /// 按盘上路径逐级查条目。路径段为空（前导斜杠、连续斜杠）忽略；中间段不是目录

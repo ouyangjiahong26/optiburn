@@ -135,7 +135,8 @@ CD-R 已在 Windows 真机验证，DVD-R 已在 Linux 真机验证。DVD-R 的�
 读侧五个能力 `read_volume_id`、`iso_session_state`、`list_tree`、`extract_tree`、
 `extract_paths` 接在 `ReadBackend` 接缝上。`XorrisoRead` 是子进程，`NativeRead`
 是原生块读加 ISO 9660 与 UDF 解析（ADR-0018、ADR-0021、ADR-0024）。Windows 默认原生，
-Linux 先走 xorriso，读不到 ISO 9660 时回退原生。
+Linux 先走 xorriso，读不到 ISO 9660 时回退原生。`extract_tree` 与 `extract_paths`
+返回逐项报告，单个文件读失败记进报告并继续，不把整次抽取压成失败（ADR-0029）。
 
 #### 门禁与校验
 
@@ -161,7 +162,8 @@ Linux 先走 xorriso，读不到 ISO 9660 时回退原生。
 与写入百分比同格式，成功时统一补发 1.0。原生引擎的进度按已写块数算，是精确的。原生
 引擎还缺倍速协商、写失败重试、DVD+R 族与 BD-R 的封盘路径（ADR-0017、ADR-0027）。
 原生增长不结转 Rock Ridge 元数据，也没有 Joliet 之外的名字扩展（ADR-0020）。UDF 读侧
-的能力边界见 ADR-0021。
+的能力边界见 ADR-0021。读侧逐项报告只有原生后端给得出，显式选择 xorriso 时抽取遇到
+坏文件仍是整体失败，见 ADR-0029。
 
 ### optiburn-cli
 

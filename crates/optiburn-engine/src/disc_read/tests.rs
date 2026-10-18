@@ -144,11 +144,14 @@ fn roundtrip_volume_id_list_and_extract() {
         ]
     );
 
-    // 整树抽取，逐字节比对。
+    // 整树抽取，逐字节比对，报告里每个文件都是完整。
     let tree_out = tmp.path().join("tree-out");
-    backend
+    let report = backend
         .extract_tree(&iso, &tree_out, &CancelToken::default())
         .expect("extract tree");
+    assert_eq!(report.complete(), 3);
+    assert_eq!(report.unreadable(), 0);
+    assert_eq!(report.files.len(), 3);
     assert_eq!(
         std::fs::read(tree_out.join("a.md")).unwrap(),
         b"alpha notes"
@@ -163,9 +166,9 @@ fn roundtrip_volume_id_list_and_extract() {
         expected_bin
     );
 
-    // 按路径抽取：一个文件加一个目录。
+    // 按路径抽取：一个文件加一个目录，报告按文件逐条给出。
     let paths_out = tmp.path().join("paths-out");
-    backend
+    let report = backend
         .extract_paths(
             &iso_text,
             &["/a.md".to_string(), "/子目录".to_string()],
@@ -173,6 +176,8 @@ fn roundtrip_volume_id_list_and_extract() {
             &CancelToken::default(),
         )
         .expect("extract paths");
+    assert_eq!(report.complete(), 2);
+    assert_eq!(report.unreadable(), 0);
     assert_eq!(
         std::fs::read(paths_out.join("a.md")).unwrap(),
         b"alpha notes"
@@ -183,15 +188,20 @@ fn roundtrip_volume_id_list_and_extract() {
     );
     assert!(!paths_out.join("随机数据.bin").exists(), "没要的不抽");
 
-    // 盘上没有的路径与不安全的路径分开报。
-    assert!(matches!(
-        backend.extract_paths(
+    // 盘上没有的路径记进报告，不安全的路径仍整次拒绝。
+    let report = backend
+        .extract_paths(
             &iso_text,
             &["/没有这个文件".to_string()],
             &paths_out,
-            &CancelToken::default()
-        ),
-        Err(BurnError::ReadFailed(_))
+            &CancelToken::default(),
+        )
+        .expect("a missing path is a per-file result");
+    assert_eq!(report.unreadable(), 1);
+    assert_eq!(report.files[0].path, "/没有这个文件");
+    assert!(matches!(
+        report.files[0].state,
+        ExtractState::Unreadable { .. }
     ));
     assert!(matches!(
         backend.extract_paths(
@@ -216,6 +226,152 @@ fn cancelled_extract_tree_stops_before_any_file() {
         NativeRead.extract_tree(&iso, &out, &token),
         Err(BurnError::Cancelled)
     ));
+}
+
+/// 指定 LBA 读失败的块源：模拟坏块，其余块从内存盘原样读。
+struct FaultyBlocks {
+    data: Vec<u8>,
+    fail_lba: u32,
+}
+
+impl BlockSource for FaultyBlocks {
+    fn read_blocks_at(&mut self, lba: u32, out: &mut [u8]) -> Result<(), BurnError> {
+        let blocks = (out.len() / SECTOR_BYTES) as u32;
+        if (lba..lba.saturating_add(blocks)).contains(&self.fail_lba) {
+            return Err(BurnError::ReadFailed("测试注入的坏块".to_string()));
+        }
+        let start = lba as usize * SECTOR_BYTES;
+        let end = start + out.len();
+        let Some(data) = self.data.get(start..end) else {
+            return Err(BurnError::ReadFailed(format!(
+                "测试盘只有 {} 块，却要读第 {lba} 块",
+                self.data.len() / SECTOR_BYTES
+            )));
+        };
+        out.copy_from_slice(data);
+        Ok(())
+    }
+}
+
+/// 在镜像字节里找一段文件内容，返回它所在的块号。
+fn content_lba(image: &[u8], content: &[u8]) -> u32 {
+    let offset = image
+        .windows(content.len())
+        .position(|window| window == content)
+        .expect("文件内容应在镜像里");
+    (offset / SECTOR_BYTES) as u32
+}
+
+/// 造一张带坏块场景的镜像：128 KiB 填充文件、目标文件、目标之后的文件。
+///
+/// 目标之前放大填充，让目标的数据块落在目录区 64 KiB 读缓冲之外，坏块注入才只
+/// 影响目标文件（填充文件的末尾块可能连带失败，不影响继续抽取的断言）。
+fn faulty_image(tmp: &TempDir) -> (Vec<u8>, u32) {
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).expect("create source tree");
+    let filler: Vec<u8> = (0..128 * 1024u32)
+        .map(|index| (index % 253) as u8)
+        .collect();
+    std::fs::write(src.join("a-filler.bin"), &filler).expect("write filler");
+    let target = b"TARGET-CONTENT-UNIQUE";
+    std::fs::write(src.join("b-target.txt"), target).expect("write target");
+    std::fs::write(src.join("c-after.txt"), b"after payload").expect("write after");
+    let iso = tmp.path().join("faulty.iso");
+    build_image(
+        &src,
+        &iso,
+        &ImageSpec {
+            profile: DiscProfile::Dvd,
+            volume_id: "FAULTY".to_string(),
+            joliet: true,
+        },
+    )
+    .expect("build image");
+    let bytes = std::fs::read(&iso).expect("read the image");
+    let fail_lba = content_lba(&bytes, target);
+    (bytes, fail_lba)
+}
+
+#[test]
+fn a_bad_file_is_recorded_and_later_files_are_still_extracted() {
+    let tmp = TempDir::new("bad-file");
+    let (bytes, fail_lba) = faulty_image(&tmp);
+    let token = CancelToken::default();
+    let iso = open_session_view(
+        FaultyBlocks {
+            data: bytes,
+            fail_lba,
+        },
+        0,
+        u64::MAX,
+        &token,
+    )
+    .expect("open the session");
+    let root = iso.root_dir();
+    let joliet = is_joliet_root(&root.entry_type());
+    let out = tmp.path().join("out");
+    let mut report = ExtractReport::default();
+    extract_dir(&iso, root.dir_ref(), joliet, "", &out, &token, &mut report)
+        .expect("partial extraction is not an error");
+
+    let target = report
+        .files
+        .iter()
+        .find(|file| file.path == "/b-target.txt")
+        .expect("target entry");
+    assert!(
+        matches!(target.state, ExtractState::Unreadable { .. }),
+        "{target:?}"
+    );
+    assert_eq!(target.size, b"TARGET-CONTENT-UNIQUE".len() as u64);
+    assert!(!out.join("b-target.txt").exists(), "读不出的文件不落盘");
+
+    let after = report
+        .files
+        .iter()
+        .find(|file| file.path == "/c-after.txt")
+        .expect("after entry");
+    assert_eq!(after.state, ExtractState::Complete);
+    assert_eq!(
+        std::fs::read(out.join("c-after.txt")).unwrap(),
+        b"after payload"
+    );
+}
+
+#[test]
+fn extract_paths_continues_after_a_bad_file() {
+    let tmp = TempDir::new("bad-paths");
+    let (bytes, fail_lba) = faulty_image(&tmp);
+    let token = CancelToken::default();
+    let iso = open_session_view(
+        FaultyBlocks {
+            data: bytes,
+            fail_lba,
+        },
+        0,
+        u64::MAX,
+        &token,
+    )
+    .expect("open the session");
+    let out = tmp.path().join("out");
+    let report = extract_iso_paths(
+        &iso,
+        &["/b-target.txt".to_string(), "/c-after.txt".to_string()],
+        &out,
+        &token,
+    )
+    .expect("a bad path must not abort the batch");
+    assert_eq!(report.files.len(), 2);
+    assert_eq!(report.unreadable(), 1);
+    assert!(matches!(
+        report.files[0].state,
+        ExtractState::Unreadable { .. }
+    ));
+    assert_eq!(report.files[1].state, ExtractState::Complete);
+    assert_eq!(
+        std::fs::read(out.join("c-after.txt")).unwrap(),
+        b"after payload"
+    );
 }
 
 #[test]
@@ -332,8 +488,18 @@ fn absolute_session_with_joliet_volume_fallback_reads() {
 
     let out = TempDir::new("absolute");
     let target = out.path().join("extract");
-    extract_dir(&iso, image_root.dir_ref(), joliet, &target, &token)
-        .expect("extract the absolute session");
+    let mut report = ExtractReport::default();
+    extract_dir(
+        &iso,
+        image_root.dir_ref(),
+        joliet,
+        "",
+        &target,
+        &token,
+        &mut report,
+    )
+    .expect("extract the absolute session");
+    assert_eq!(report.complete(), 1);
     assert_eq!(std::fs::read(target.join("FILE.TXT")).unwrap(), payload);
 }
 
