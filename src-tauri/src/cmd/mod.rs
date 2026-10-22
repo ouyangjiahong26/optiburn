@@ -1478,7 +1478,7 @@ mod tests {
                     free: 4284481536,
                 }
             ),
-            "这张盘放不下本次写入：待写入约 4.4 GB，区段开销（lead-in 与 lead-out）还要约 16.0 MB，盘上可用容量约 4.0 GB。请减少待写内容或更换盘片。"
+            "这张盘放不下本次写入：待写入约 4.7 GB，区段开销（lead-in 与 lead-out）还要约 16.8 MB，盘上可用容量约 4.3 GB。请减少待写内容或更换盘片。"
         );
         assert_eq!(
             job_error_text(
@@ -1489,7 +1489,7 @@ mod tests {
                     free: 4284481536,
                 }
             ),
-            "The disc cannot hold this write: about 4.4 GB to write, about 16.0 MB more for the session overhead (lead-in and lead-out), 4.0 GB free on the disc. Remove some files or use another disc."
+            "The disc cannot hold this write: about 4.7 GB to write, about 16.8 MB more for the session overhead (lead-in and lead-out), 4.3 GB free on the disc. Remove some files or use another disc."
         );
         assert_eq!(
             gate_of(&JobError::Capacity {

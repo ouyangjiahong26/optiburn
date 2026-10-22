@@ -135,7 +135,8 @@ pub async fn copy_disc_files(
 
 /// 人类可读的字节数，口径与设备页一致（GB、MB、KB、字节/bytes）。
 pub(crate) fn human_bytes(lang: Lang, bytes: u64) -> String {
-    const UNITS: [(&str, u64); 3] = [("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)];
+    // 十进制口径（GB 3100），与 CLI 的 bytes_text 一致。
+    const UNITS: [(&str, u64); 3] = [("GB", 1_000_000_000), ("MB", 1_000_000), ("KB", 1_000)];
     for (unit, scale) in UNITS {
         if bytes >= scale {
             return format!("{:.1} {unit}", bytes as f64 / scale as f64);
@@ -314,6 +315,6 @@ mod tests {
     fn human_bytes_matches_device_page_wording() {
         assert_eq!(human_bytes(Lang::Zh, 512), "512 字节");
         assert_eq!(human_bytes(Lang::Zh, 1536), "1.5 KB");
-        assert_eq!(human_bytes(Lang::Zh, 3 * (1 << 20)), "3.0 MB");
+        assert_eq!(human_bytes(Lang::Zh, 3_000_000), "3.0 MB");
     }
 }

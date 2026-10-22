@@ -425,6 +425,10 @@ struct ScriptedDisc {
     last_session_start: u32,
     /// READ TOC Format 0 报的轨道（编号与起点），调用方按需要放导出区。
     tracks: Vec<(u8, u32)>,
+    /// 两个 TOC 格式都被拒：DVD、BD 上的实测形态（见 without_toc）。
+    toc_unavailable: bool,
+    /// 可追加盘上 NWA 处那条隐形轨道的编号（大小为 0，不是任何区段的起点）。
+    invisible_track: Option<u8>,
 }
 
 impl ScriptedDisc {
@@ -433,17 +437,59 @@ impl ScriptedDisc {
             disc,
             last_session_start,
             tracks,
+            toc_unavailable: false,
+            invisible_track: None,
         }
     }
 
+    /// 让 READ TOC 的两个格式都按 DVD 上的实测形态被拒（sense key 5、ASC 0x24），
+    /// 读侧只能靠轨道信息定位区段。
+    fn without_toc(mut self) -> Self {
+        self.toc_unavailable = true;
+        self
+    }
+
+    /// 标记一条隐形轨道：READ DISC INFORMATION 的末轨号指向它，它的轨道大小为 0。
+    fn with_invisible_track(mut self, track: u8) -> Self {
+        self.invisible_track = Some(track);
+        self
+    }
+
+    /// READ TRACK INFORMATION：按轨道号回起点与 NWA，未写过的轨道号按命令失败拒绝。
+    fn answer_track_info(
+        &self,
+        cdb: &[u8],
+        data: &mut [u8],
+    ) -> Result<(), optiburn_transport::TransportError> {
+        let track = u16::from_be_bytes([cdb[2], cdb[3]]) as u8;
+        let Some((_, lba)) = self.tracks.iter().find(|(number, _)| *number == track) else {
+            return Err(scripted_fail(cdb));
+        };
+        if data.len() >= 28 {
+            data[8..12].copy_from_slice(&lba.to_be_bytes());
+            data[12..16].copy_from_slice(&lba.to_be_bytes());
+            data[16..20].copy_from_slice(&1000u32.to_be_bytes());
+            // 隐形轨道还没有写过数据，轨道大小为 0。
+            let size: u32 = if self.invisible_track == Some(track) {
+                0
+            } else {
+                0x100
+            };
+            data[24..28].copy_from_slice(&size.to_be_bytes());
+        }
+        Ok(())
+    }
+
     /// READ DISC INFORMATION：可追加，区段数与末轨号按轨道数凑一个可信值。
+    /// 配了隐形轨道时，末区段首轨与末轨都指向它（真机上的形态）。
     fn answer_disc_info(&self, data: &mut [u8]) {
         if data.len() >= 7 {
+            let last = self.invisible_track.unwrap_or(self.tracks.len() as u8 + 1);
             data[2] = 0b01;
             data[3] = 1;
             data[4] = self.tracks.len() as u8;
-            data[5] = self.tracks.len() as u8 + 1;
-            data[6] = self.tracks.len() as u8 + 1;
+            data[5] = last;
+            data[6] = last;
         }
     }
 
@@ -502,6 +548,18 @@ impl ScriptedDisc {
     }
 }
 
+/// 命令被设备按“这条 CDB 对当前介质无定义”拒绝：ILLEGAL REQUEST 加 INVALID
+/// FIELD IN CDB（ASC 0x24）。DVD-R 上 READ TOC 的实测形态。
+fn invalid_cdb(cdb: &[u8]) -> optiburn_transport::TransportError {
+    optiburn_transport::TransportError::CommandFailed {
+        cdb: cdb.to_vec(),
+        scsi_status: 2,
+        sense: vec![
+            0x70, 0x00, 0x05, 0x00, 0, 0, 0, 0x0a, 0, 0, 0, 0, 0x24, 0x00,
+        ],
+    }
+}
+
 /// ScriptedDisc 的命令失败：ILLEGAL REQUEST（0x05）加 LBA out of range（0x21）。
 fn scripted_fail(cdb: &[u8]) -> optiburn_transport::TransportError {
     optiburn_transport::TransportError::CommandFailed {
@@ -522,7 +580,9 @@ impl optiburn_transport::ScsiTransport for ScriptedDisc {
         match cdb[0] {
             0x00 => {}
             0x51 => self.answer_disc_info(data),
+            0x43 if self.toc_unavailable => return Err(invalid_cdb(cdb)),
             0x43 => self.answer_toc(cdb, data)?,
+            0x52 => self.answer_track_info(cdb, data)?,
             0x28 if dir == optiburn_transport::Direction::FromDevice => {
                 self.answer_read10(cdb, data)?
             }
@@ -582,6 +642,72 @@ fn candidates_come_from_the_track_list_newest_first() {
         candidates,
         vec![3000, 2000, 1000],
         "新到旧、去重，导出区不参与"
+    );
+}
+
+#[test]
+fn a_drive_that_rejects_read_toc_falls_back_to_track_starts() {
+    // DVD-R 上驱动器对 READ TOC 的两个格式都回 sense 05/24（实测 HL-DT-ST
+    // GP75N）。这条命令在 DVD 上没有定义，候选只能从轨道信息来。
+    let session = session_bytes(0, "DVDTEST", &[("a.txt", "alpha")]);
+    let disc = ScriptedDisc::new(disc_with_session(0, 64, &session), 0, vec![(1, 0)]).without_toc();
+    let mut mmc = MmcDevice::new(Box::new(disc));
+    let candidates = session_candidates(&mut mmc).expect("candidates");
+    assert_eq!(candidates, vec![0], "单区段的 DVD 从轨道 1 的起点 0 起");
+}
+
+#[test]
+fn a_dvd_session_opens_without_any_read_toc_support() {
+    let session = session_bytes(0, "DVDTEST", &[("a.txt", "alpha")]);
+    let disc = ScriptedDisc::new(disc_with_session(0, 64, &session), 0, vec![(1, 0)]).without_toc();
+    let opened = open_on_device(disc).expect("TOC 不可用也要能打开末区段");
+    assert!(opened.fallback.is_none(), "只有一个候选，没有回退");
+    let root = opened.iso.root_dir();
+    let mut entries = Vec::new();
+    walk_list(
+        &opened.iso,
+        root.dir_ref(),
+        "",
+        is_joliet_root(&root.entry_type()),
+        &mut entries,
+        &CancelToken::default(),
+    )
+    .expect("walk the DVD session");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].path, "/a.txt");
+}
+
+#[test]
+fn the_invisible_track_is_not_taken_as_a_session_start() {
+    // 可追加盘的末轨号指向 NWA 处那条隐形轨道（轨道大小 0）。它的起点是下一个
+    // 可写地址，不是任何区段的起点：增长模式拿它去读旧区段会读到空白。
+    let good = session_bytes(1000, "OLD", &[("keep.txt", "kept")]);
+    let disc = ScriptedDisc::new(
+        disc_with_session(1000, 4096, &good),
+        1000,
+        vec![(1, 1000), (2, 3000)],
+    )
+    .with_invisible_track(2)
+    .without_toc();
+    let mut mmc = MmcDevice::new(Box::new(disc));
+    assert_eq!(
+        last_session_start(&mut mmc).expect("last session start"),
+        Some(1000),
+        "隐形轨道的 3000 不算区段起点"
+    );
+
+    let disc = ScriptedDisc::new(
+        disc_with_session(1000, 4096, &good),
+        1000,
+        vec![(1, 1000), (2, 3000)],
+    )
+    .with_invisible_track(2)
+    .without_toc();
+    let mut mmc = MmcDevice::new(Box::new(disc));
+    assert_eq!(
+        session_candidates(&mut mmc).expect("candidates"),
+        vec![1000],
+        "候选里也不含隐形轨道"
     );
 }
 

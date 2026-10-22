@@ -654,9 +654,11 @@ fn disc_status_text(status: DiscStatus) -> String {
 /// 面向人的容量数字：按 GB/MB/KB 取一位小数，不足 1 KB 按字节，与 GUI 的
 /// 展示口径一致（数值与单位之间留一个空格）。
 fn bytes_text(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * 1024;
-    const GB: u64 = 1024 * 1024 * 1024;
+    // 十进制口径（GB 3100 的法定单位，1 GB 是 10⁹ 字节）。盘片标称的 4.7 GB 就是
+    // 4.7 × 10⁹ 字节，按 1024 进制换算会显示成 4.4 GB，与盘面标称对不上。
+    const KB: u64 = 1_000;
+    const MB: u64 = 1_000_000;
+    const GB: u64 = 1_000_000_000;
     if bytes >= GB {
         format!("{:.1} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
@@ -904,9 +906,9 @@ mod tests {
     #[test]
     fn growth_and_capacity_failures_are_chinese() {
         let text = burn_error_text(&BurnError::NotEnoughSpace {
-            needed: 40 * 1024 * 1024,
-            headroom: 15 * 1024 * 1024,
-            free: 8 * 1024 * 1024,
+            needed: 40_000_000,
+            headroom: 15_000_000,
+            free: 8_000_000,
         });
         assert_eq!(
             text,
@@ -956,9 +958,9 @@ mod tests {
         // 不足 1 KB 按字节，与 GUI 的 human_bytes 同口径。
         assert_eq!(bytes_text(512), "512 字节");
         assert_eq!(bytes_text(1024), "1.0 KB");
-        assert_eq!(bytes_text(150 * 1024 * 1024), "150.0 MB");
-        // DVD+R 4.7 GB 盘的厂商口径（2295104 块 × 2048 字节）。
-        assert_eq!(bytes_text(2295104 * 2048), "4.4 GB");
+        assert_eq!(bytes_text(150_000_000), "150.0 MB");
+        // DVD+R 4.7 GB 盘的厂商口径（2295104 块 × 2048 字节 = 4.7 × 10⁹）。
+        assert_eq!(bytes_text(2295104 * 2048), "4.7 GB");
     }
 
     #[test]

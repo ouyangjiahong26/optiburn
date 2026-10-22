@@ -384,7 +384,9 @@ fn extract_iso_paths(
 }
 
 /// 候选区段起点，新到旧。设备路径用 READ TOC：Format 1 的末区段起点加 Format 0
-/// 的轨道起点（去掉驱动器报的导出区），去重后从新到旧。镜像文件只有一个起点 0。
+/// 的轨道起点（去掉驱动器报的导出区），去重后从新到旧。TOC 不可用的介质（DVD、
+/// BD 上驱动器按 MMC 拒这条命令）改问轨道信息，见 [`track_starts`]。镜像文件只有
+/// 一个起点 0。
 ///
 /// 每个区段的首条轨道起点就是该区段起点，所以轨道列表是区段起点集合的超集。同一
 /// 区段里的后续轨道会被验证步骤淘汰（它们的起点加 16 块处没有 ISO 描述符区）。
@@ -406,9 +408,52 @@ pub(crate) fn session_candidates(mmc: &mut MmcDevice) -> Result<Vec<u32>, BurnEr
             }
         }
     }
+    // TOC 整条不可用（DVD-R 实测两个格式都被拒）：轨道信息也能给出同一批起点。
+    if candidates.is_empty() {
+        candidates.extend(track_starts(mmc)?);
+    }
     candidates.sort_unstable_by(|left, right| right.cmp(left));
     candidates.dedup();
     Ok(candidates)
+}
+
+/// 末区段起点：CD 上问 READ TOC Format 1。TOC 在 DVD、BD 上没有定义，那条命令会
+/// 被驱动器拒（[`MmcError::is_illegal_request`]），改用轨道起点里最大的那个，也就是
+/// 末区段的首条轨道。两条路都拿不到返回 `None`。
+pub(crate) fn last_session_start(mmc: &mut MmcDevice) -> Result<Option<u32>, BurnError> {
+    if let Some(session) = mmc.read_toc_session_info()? {
+        return Ok(Some(session.last_session_start));
+    }
+    Ok(track_starts(mmc)?.into_iter().max())
+}
+
+/// 用 `READ DISC INFORMATION` 的轨道范围逐个问 `READ TRACK INFORMATION`，取轨道
+/// 起点。TOC 在 DVD、BD 上没有定义，这两条命令才是那类介质上的正路。
+///
+/// 大小为 0 的轨道跳过：可追加盘上 `last_session_last_track` 指向 NWA 处那条尚未
+/// 写入的隐形轨道（见 [`optiburn_mmc::DiscInformation::last_session_last_track`]），
+/// 它的起点就是下一个可写地址，不是任何区段的起点。把它当末区段起点会让增长模式
+/// 按 NWA 去读旧区段。
+///
+/// 空白盘没有轨道，返回空列表。轨道号都问不出来时，单区段盘按起点 0 试一次：
+/// 这类盘不可能有前序区段，末区段起点只能是 0。
+pub(crate) fn track_starts(mmc: &mut MmcDevice) -> Result<Vec<u32>, BurnError> {
+    let info = mmc.read_disc_information()?;
+    if info.status == DiscStatus::Empty || info.sessions == 0 {
+        return Ok(Vec::new());
+    }
+    let mut starts = Vec::new();
+    for track in info.first_track..=info.last_session_last_track {
+        if let Ok(track) = mmc.read_track_information(u32::from(track))
+            && track.track_blocks > 0
+        {
+            starts.push(track.start_lba);
+        }
+    }
+    if starts.is_empty() && info.sessions == 1 {
+        starts.push(0);
+    }
+    Ok(starts)
 }
 fn last_session_only() -> bool {
     last_session_only_value(std::env::var("OPTIBURN_LAST_SESSION_ONLY").ok().as_deref())
