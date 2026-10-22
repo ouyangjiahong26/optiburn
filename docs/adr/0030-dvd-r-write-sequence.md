@@ -14,7 +14,7 @@ SCSI command [5b, 00, 02, ...] failed: status=2, sense=[70, 00, 05, ..., 72, 03,
 sense key 5、ASC 0x72、ASCQ 0x03，即 SESSION FIXATION ERROR / INCOMPLETE TRACK IN
 SESSION，设备是 HL-DT-ST DVDRAM GP75N。同一张盘之前的另一个准备问题也一起暴露：
 空白 DVD-R 上 `READ CAPACITY` 回末块 0，引擎据此判定“镜像超出介质容量”，而盘实际
-有 4.4 GB。
+有 4.7 GB（十进制口径，2297888 块 × 2048 字节）。
 
 CD 路径此前全部通过，说明问题只出在 DVD 这一档：写序列与参数只按 CD 验证过。
 
