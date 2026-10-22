@@ -2,15 +2,17 @@
 // 设备页与追加页共用，与后端 human_bytes 同口径。
 import { t } from "./i18n";
 
+// 十进制口径（GB 3100 的法定单位，1 GB 是 10⁹ 字节），与后端 bytes_text 一致：
+// 盘片标称的 4.7 GB 显示成 4.7 GB，而不是 1024 进制下的 4.4。
 export function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  if (bytes >= 1_000_000_000) {
+    return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
   }
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1_000_000) {
+    return `${(bytes / 1_000_000).toFixed(1)} MB`;
   }
-  if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes >= 1_000) {
+    return `${(bytes / 1_000).toFixed(1)} KB`;
   }
   return `${bytes} ${t("bytes", "字节")}`;
 }
