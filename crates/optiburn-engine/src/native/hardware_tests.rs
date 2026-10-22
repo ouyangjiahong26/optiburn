@@ -144,6 +144,27 @@ fn native_grow_and_read_back_real() {
         .collect();
     println!("盘上原有 {} 个条目：{:?}", before.len(), before);
 
+    // 起点口径的诊断（ADR-0031）：增长会话的布局基址与写入位置都取 NWA，不做
+    // 16 块对齐补齐。这里把真机的 NWA 与对齐情况打出来，供 DVD+R 复核时对照。
+    {
+        let mut mmc = MmcDevice::new(
+            optiburn_transport::open(&device).expect("open device for the start probe"),
+        );
+        wait_until_ready(&mut mmc).expect("device ready");
+        let profile = mmc.get_configuration().expect("current profile");
+        println!("profile={:#06x} kind={:?}", profile.0, profile.media_kind());
+        match mmc.read_track_information(crate::native::LAST_TRACK) {
+            Ok(track) => println!(
+                "起点：nwa={} nwa_valid={} track_start={} nwa%16={}",
+                track.next_writable_address,
+                track.nwa_valid,
+                track.start_lba,
+                track.next_writable_address % 16
+            ),
+            Err(error) => println!("起点：READ TRACK INFORMATION 失败（{error}）"),
+        }
+    }
+
     let src = std::env::temp_dir().join(format!("optiburn-grow-real-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&src);
     std::fs::create_dir_all(&src).expect("create source dir");
