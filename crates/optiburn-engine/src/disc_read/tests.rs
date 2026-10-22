@@ -427,6 +427,8 @@ struct ScriptedDisc {
     tracks: Vec<(u8, u32)>,
     /// 两个 TOC 格式都被拒：DVD、BD 上的实测形态（见 without_toc）。
     toc_unavailable: bool,
+    /// 可追加盘上 NWA 处那条隐形轨道的编号（大小为 0，不是任何区段的起点）。
+    invisible_track: Option<u8>,
 }
 
 impl ScriptedDisc {
@@ -436,6 +438,7 @@ impl ScriptedDisc {
             last_session_start,
             tracks,
             toc_unavailable: false,
+            invisible_track: None,
         }
     }
 
@@ -443,6 +446,12 @@ impl ScriptedDisc {
     /// 读侧只能靠轨道信息定位区段。
     fn without_toc(mut self) -> Self {
         self.toc_unavailable = true;
+        self
+    }
+
+    /// 标记一条隐形轨道：READ DISC INFORMATION 的末轨号指向它，它的轨道大小为 0。
+    fn with_invisible_track(mut self, track: u8) -> Self {
+        self.invisible_track = Some(track);
         self
     }
 
@@ -456,21 +465,31 @@ impl ScriptedDisc {
         let Some((_, lba)) = self.tracks.iter().find(|(number, _)| *number == track) else {
             return Err(scripted_fail(cdb));
         };
-        if data.len() >= 16 {
+        if data.len() >= 28 {
             data[8..12].copy_from_slice(&lba.to_be_bytes());
             data[12..16].copy_from_slice(&lba.to_be_bytes());
+            data[16..20].copy_from_slice(&1000u32.to_be_bytes());
+            // 隐形轨道还没有写过数据，轨道大小为 0。
+            let size: u32 = if self.invisible_track == Some(track) {
+                0
+            } else {
+                0x100
+            };
+            data[24..28].copy_from_slice(&size.to_be_bytes());
         }
         Ok(())
     }
 
     /// READ DISC INFORMATION：可追加，区段数与末轨号按轨道数凑一个可信值。
+    /// 配了隐形轨道时，末区段首轨与末轨都指向它（真机上的形态）。
     fn answer_disc_info(&self, data: &mut [u8]) {
         if data.len() >= 7 {
+            let last = self.invisible_track.unwrap_or(self.tracks.len() as u8 + 1);
             data[2] = 0b01;
             data[3] = 1;
             data[4] = self.tracks.len() as u8;
-            data[5] = self.tracks.len() as u8 + 1;
-            data[6] = self.tracks.len() as u8 + 1;
+            data[5] = last;
+            data[6] = last;
         }
     }
 
@@ -656,6 +675,40 @@ fn a_dvd_session_opens_without_any_read_toc_support() {
     .expect("walk the DVD session");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].path, "/a.txt");
+}
+
+#[test]
+fn the_invisible_track_is_not_taken_as_a_session_start() {
+    // 可追加盘的末轨号指向 NWA 处那条隐形轨道（轨道大小 0）。它的起点是下一个
+    // 可写地址，不是任何区段的起点：增长模式拿它去读旧区段会读到空白。
+    let good = session_bytes(1000, "OLD", &[("keep.txt", "kept")]);
+    let disc = ScriptedDisc::new(
+        disc_with_session(1000, 4096, &good),
+        1000,
+        vec![(1, 1000), (2, 3000)],
+    )
+    .with_invisible_track(2)
+    .without_toc();
+    let mut mmc = MmcDevice::new(Box::new(disc));
+    assert_eq!(
+        last_session_start(&mut mmc).expect("last session start"),
+        Some(1000),
+        "隐形轨道的 3000 不算区段起点"
+    );
+
+    let disc = ScriptedDisc::new(
+        disc_with_session(1000, 4096, &good),
+        1000,
+        vec![(1, 1000), (2, 3000)],
+    )
+    .with_invisible_track(2)
+    .without_toc();
+    let mut mmc = MmcDevice::new(Box::new(disc));
+    assert_eq!(
+        session_candidates(&mut mmc).expect("candidates"),
+        vec![1000],
+        "候选里也不含隐形轨道"
+    );
 }
 
 #[test]

@@ -430,6 +430,11 @@ pub(crate) fn last_session_start(mmc: &mut MmcDevice) -> Result<Option<u32>, Bur
 /// 用 `READ DISC INFORMATION` 的轨道范围逐个问 `READ TRACK INFORMATION`，取轨道
 /// 起点。TOC 在 DVD、BD 上没有定义，这两条命令才是那类介质上的正路。
 ///
+/// 大小为 0 的轨道跳过：可追加盘上 `last_session_last_track` 指向 NWA 处那条尚未
+/// 写入的隐形轨道（见 [`optiburn_mmc::DiscInformation::last_session_last_track`]），
+/// 它的起点就是下一个可写地址，不是任何区段的起点。把它当末区段起点会让增长模式
+/// 按 NWA 去读旧区段。
+///
 /// 空白盘没有轨道，返回空列表。轨道号都问不出来时，单区段盘按起点 0 试一次：
 /// 这类盘不可能有前序区段，末区段起点只能是 0。
 pub(crate) fn track_starts(mmc: &mut MmcDevice) -> Result<Vec<u32>, BurnError> {
@@ -439,7 +444,9 @@ pub(crate) fn track_starts(mmc: &mut MmcDevice) -> Result<Vec<u32>, BurnError> {
     }
     let mut starts = Vec::new();
     for track in info.first_track..=info.last_session_last_track {
-        if let Ok(track) = mmc.read_track_information(u32::from(track)) {
+        if let Ok(track) = mmc.read_track_information(u32::from(track))
+            && track.track_blocks > 0
+        {
             starts.push(track.start_lba);
         }
     }

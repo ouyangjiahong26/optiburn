@@ -42,7 +42,10 @@ xorriso 在同一个驱动器上读这张盘也报 `Cannot obtain Table Of Conte
    READ TRACK INFORMATION，取轨道起点。轨道号全问不出来时，单区段盘按起点 0 试
    一次（这类盘不可能有前序区段）。
 4. `session_candidates` 在 TOC 拿不到任何候选时用 `track_starts` 兜底，命名与排序
-   规则不变（去重、新到旧、导出区不参与）。
+   规则不变（去重、新到旧、导出区不参与）。轨道大小为 0 的轨道跳过：可追加盘上
+   `READ DISC INFORMATION` 的末轨号指向 NWA 处那条尚未写入的隐形轨道，它的起点是
+   下一个可写地址，不是任何区段的起点（仓库自己对 `last_session_last_track` 的
+   注释记过这个形态）。不跳过的话增长模式会按 NWA 去读旧区段。
 5. 增长模式与抢救的末区段起点统一收在 `disc_read::last_session_start`：先问 TOC
    Format 1，取不到再用轨道起点里的最大值。
 6. 保守开关 `OPTIBURN_LAST_SESSION_ONLY` 的语义不动：置位后仍然只认 TOC 给出的
@@ -50,7 +53,8 @@ xorriso 在同一个驱动器上读这张盘也报 `Cannot obtain Table Of Conte
 
 ## 后果
 
-- DVD-R 与 DVD+R 上的读盘、回读校验、追加门禁、增长模式不再因为 TOC 被拒而失败。
+- DVD-R 与 DVD+R 上的读盘、回读校验与追加门禁不再因为 TOC 被拒而失败；增长模式的
+  末区段起点改由轨道起点给出（隐形轨道已排除），但 DVD 上的追加还没有介质实测。
 - CD 路径行为不变：TOC 正常时不会走到轨道兜底。
 - 单区段 DVD 的候选只有一个起点 0，与镜像文件的处理一致。
 - 已知边界：多区段 DVD+R 的候选是各轨道的起点，与 CD 上“每个区段的首条轨道起点

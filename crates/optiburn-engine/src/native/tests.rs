@@ -118,6 +118,8 @@ impl ScsiTransport for ScriptedDrive {
                     data[8..12].copy_from_slice(&start.to_be_bytes());
                     data[12..16].copy_from_slice(&self.nwa.to_be_bytes());
                     data[16..20].copy_from_slice(&self.free_blocks.to_be_bytes());
+                    // 轨道大小：0 表示可追加盘上 NWA 处那条隐形轨道。
+                    data[24..28].copy_from_slice(&0x100u32.to_be_bytes());
                 }
             }
             0x43 => match cdb[2] & 0x0F {
