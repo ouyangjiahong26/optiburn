@@ -21,6 +21,8 @@ struct ScriptedDrive {
     damaged: bool,
     /// 报 NWA_V 置位（地址字段可信）。中断刻录的实机形态是置 Damage、清 NWA_V。
     nwa_valid: bool,
+    /// READ FORMAT CAPACITIES 报的可格式化块数（空白 DVD 的容量口径）。
+    format_capacity: Option<u32>,
     /// READ TOC Format 1 报的末区段起点（旧区段内容的位置）。
     last_session_start: u32,
     /// READ TOC Format 0 报的轨道（编号与起点），候选枚举用它。
@@ -43,6 +45,7 @@ impl ScriptedDrive {
             open_track_start: None,
             damaged: false,
             nwa_valid: true,
+            format_capacity: None,
             last_session_start: 0x1000,
             tracks: vec![(1, 0), (2, 0x1000)],
             disc: Vec::new(),
@@ -69,6 +72,8 @@ impl ScsiTransport for ScriptedDrive {
                     data[2] = self.disc_status & 0b11;
                     data[3] = 1;
                     data[4] = 1;
+                    data[5] = 1;
+                    data[6] = 1;
                 }
             }
             0x46 => {
@@ -90,6 +95,18 @@ impl ScsiTransport for ScriptedDrive {
                     });
                 }
             },
+            0x23 => {
+                // READ FORMAT CAPACITIES：头 4 字节加一条类型 1 描述符（未格式化
+                // 介质的最大可格式化容量）。
+                if let Some(blocks) = self.format_capacity
+                    && data.len() >= 12
+                {
+                    data[1] = 8;
+                    data[3] = 8;
+                    data[4..8].copy_from_slice(&blocks.to_be_bytes());
+                    data[8] = 0x01;
+                }
+            }
             0x52 => {
                 // READ TRACK INFORMATION：起始地址 8-11，NWA 12-15，剩余块数 16-19，
                 // Damage 位在字节 5 的 bit 5、NWA_V 在字节 7 的 bit 0（libburn 的
@@ -378,6 +395,71 @@ fn image_larger_than_media_is_refused() {
         "{err:?}"
     );
     assert!(written.borrow().is_empty(), "拒绝发生在任何写入之前");
+}
+
+#[test]
+fn a_dvd_burn_pads_the_image_to_a_whole_recording_unit() {
+    // 实测 GP75N：最后一块缓冲不足 32 KB 时驱动器的轨道不能按整记录单位收尾
+    // （libburn 对 DVD 的增量写把 obs_pad 置 1，同样补到整 32 KB）。
+    let image = TempImage::new("dvdpad", &vec![0x11u8; 2 * SECTOR_BYTES]);
+    let drive = ScriptedDrive::new(CurrentProfile::DVD_R, 0);
+    let written = Rc::clone(&drive.written);
+    let (_, last) = run(drive, &image).expect("burn a DVD");
+    assert_eq!(last, 1.0);
+    assert_eq!(
+        written.borrow().len(),
+        16 * SECTOR_BYTES,
+        "两块镜像补齐到 16 块一整记录单位"
+    );
+    assert!(
+        written.borrow()[2 * SECTOR_BYTES..].iter().all(|b| *b == 0),
+        "补位部分是零"
+    );
+}
+
+#[test]
+fn a_cd_burn_does_not_pad_beyond_the_image() {
+    let image = TempImage::new("cdnopad", &vec![0x11u8; 2 * SECTOR_BYTES]);
+    let drive = ScriptedDrive::new(CurrentProfile::CD_R, 0);
+    let written = Rc::clone(&drive.written);
+    let (_, _) = run(drive, &image).expect("burn a CD");
+    assert_eq!(written.borrow().len(), 2 * SECTOR_BYTES, "CD 不补位");
+}
+
+#[test]
+fn a_dvd_burn_closes_the_track_before_the_session() {
+    // 实测 GP75N 加 DVD-R：先发 CLOSE SESSION 被拒（ASC 0x72/0x03，整条轨道
+    // 还没关），所以 DVD-R 族要先关轨道再关区段。
+    let image = TempImage::new("dvdclose", &vec![0u8; SECTOR_BYTES]);
+    let drive = ScriptedDrive::new(CurrentProfile::DVD_R, 0);
+    let (cdbs, _) = run(drive, &image).expect("burn a DVD");
+    let closes: Vec<&Vec<u8>> = cdbs.iter().filter(|cdb| cdb[0] == 0x5B).collect();
+    assert_eq!(closes.len(), 2, "关轨道加关区段两条命令");
+    assert_eq!(closes[0][2], 0b001, "先关轨道");
+    assert_eq!(closes[1][2], 0b010, "再关区段");
+}
+
+#[test]
+fn a_cd_burn_only_closes_the_session() {
+    let image = TempImage::new("cdclose", &vec![0u8; SECTOR_BYTES]);
+    let drive = ScriptedDrive::new(CurrentProfile::CD_R, 0);
+    let (cdbs, _) = run(drive, &image).expect("burn a CD");
+    let closes: Vec<&Vec<u8>> = cdbs.iter().filter(|cdb| cdb[0] == 0x5B).collect();
+    assert_eq!(closes.len(), 1, "CD 的 TAO 只发 CLOSE SESSION");
+    assert_eq!(closes[0][2], 0b010);
+}
+
+#[test]
+fn a_blank_dvd_with_zero_read_capacity_still_burns() {
+    // 空白 DVD-R 的实测形态：READ CAPACITY 回末块 0（盘上没有记录区），
+    // READ FORMAT CAPACITIES 回类型 1 描述符 2297888 块。0 不能当容量用。
+    let image = TempImage::new("blankdvd", &vec![0u8; SECTOR_BYTES]);
+    let mut drive = ScriptedDrive::new(CurrentProfile::DVD_R, 0);
+    drive.capacity = Some(0);
+    drive.format_capacity = Some(2_297_888);
+
+    let (_, last) = run(drive, &image).expect("空白 DVD-R 按格式化容量放行");
+    assert_eq!(last, 1.0);
 }
 
 #[test]

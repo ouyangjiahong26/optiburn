@@ -15,7 +15,7 @@
 | 增长后端回退（Grow Backend Fallback） | 默认档下因为设备事实改用 xorriso 增长模式的动作：判据只有随机可写介质、未知介质类型、指定倍速三条，只看驱动器的静态事实与调用方请求，不看写入过程中的报错（ADR-0027）。与读侧的“后端回退”是两回事。 | 回退、降级、兜底、切后端 |
 | 嫁接式增长（Grafting） | 原生增长模式的写法：新区段只写目录结构与新文件数据，旧文件的数据块原地引用，既不重读也不重写。对应 `grow.rs` 的会话生成器。 | 合入式追加、增量合并 |
 | 增长会话（Growth Session） | 增长模式生成并写下的那一个新区段：ISO 9660 加 Joliet（不带 UDF 描述符），目录记录里的地址是盘级绝对地址。对应 `SessionPlan`。 | 追加区段、新区段镜像 |
-| 候选区段（Session Candidate） | 回退时逐个尝试的区段起点：`READ TOC` 的轨道起点加末区段起点，去重后从新到旧。每个区段的首条轨道起点就是该区段起点。对应 `disc_read` 的 `session_candidates`。 | 备用区段、回退起点 |
+| 候选区段（Session Candidate） | 回退时逐个尝试的区段起点：`READ TOC` 的轨道起点加末区段起点，去重后从新到旧。每个区段的首条轨道起点就是该区段起点。DVD 与 BD 上 TOC 没有定义（驱动器回 ILLEGAL REQUEST），改用 `READ TRACK INFORMATION` 的轨道起点（ADR-0029）。对应 `disc_read` 的 `session_candidates`。 | 备用区段、回退起点 |
 | 损坏末区段（Damaged Last Session） | 固件把中断刻录的残片登记成末区段，读它的卷描述符区或目录树失败。读盘与会话选择回退到最新的可用候选，追加要求用户确认（ADR-0022）。对应 `IsoSessionState::Damaged`、`SessionFallback`、`GrowJob::allow_damaged_last_session`。 | 坏区段、坏会话、残片区段 |
 | 旧区段（Old Session） | 增长模式要嫁接的盘上末区段：引擎读出它的 Joliet 目录树（`OldSession`），新会话引用它里面文件的数据块。起点用 READ TOC Format 1 报的末区段起始地址（损坏末区段时用回退后的候选）。 | 旧会话、上一条区段、原区段 |
 | 未关闭轨道（Unclosed Track） | 刻录中断停下时留下的轨道：轨道与区段都没关上，因此不进 TOC，xorriso 一类的读取器看不见它，数据却还在盘上。起点取 `READ TRACK INFORMATION` 轨道号 0xFF 报出的地址（实测隐形轨道在这台驱动器上认不出来）。 | 开放轨道、未完成轨道、中断轨道 |

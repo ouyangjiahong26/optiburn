@@ -65,6 +65,24 @@ pub enum MmcError {
     UnsupportedMedia,
 }
 
+impl MmcError {
+    /// 设备以 ILLEGAL REQUEST（sense key 5）拒绝了这条命令：这条 CDB 或它的参数
+    /// 对当前介质没有定义。
+    ///
+    /// 实测 HL-DT-ST DVDRAM GP75N：DVD-R 上 READ TOC 的两个格式回 key 5 加 ASC
+    /// 0x24（INVALID FIELD IN CDB），READ TRACK INFORMATION 问轨道 0xFF 回 key 5
+    /// 加 ASC 0x21（LBA OUT OF RANGE），同一台驱动器换 CD-R 两条都正常。Format 1
+    /// 的区段信息与 0xFF 这个轨道号都只有 CD 有定义，DVD 的区段与轨道信息要走
+    /// READ DISC INFORMATION 与具体轨道号的 READ TRACK INFORMATION。这类回复不是
+    /// 传输故障也不是介质错误，调用方应当按“这个介质没有这个信息”处理。
+    pub fn is_illegal_request(&self) -> bool {
+        let Self::Transport(TransportError::CommandFailed { sense, .. }) = self else {
+            return false;
+        };
+        sense.get(2).is_some_and(|key| key & 0x7f == 0x05)
+    }
+}
+
 /// 设备的 INQUIRY 标识字段。尾部填充的空格与 NUL 已去掉。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inquiry {
@@ -291,19 +309,29 @@ impl MmcDevice {
     /// 区段描述符里。读侧用它定位末区段（[`DiscInformation::last_session_first_track`]
     /// 为什么不能用见那里的说明）。盘上没有已完结区段（空白盘）时数据不足一条
     /// 描述符，返回 `Ok(None)`，与命令失败区分开。
+    ///
+    /// 非 CD 介质上驱动器直接拒这条命令（见 [`MmcError::is_illegal_request`]），也按
+    /// `Ok(None)` 回：那里没有 Format 1 区段信息可言，调用方要用轨道信息兜底。
     pub fn read_toc_session_info(&mut self) -> Result<Option<SessionInfo>, MmcError> {
-        let data = self.read_into(&write::toc_session_info_cdb(), write::SESSION_INFO_LEN)?;
-        Ok(write::parse_session_info(&data))
+        match self.read_into(&write::toc_session_info_cdb(), write::SESSION_INFO_LEN) {
+            Ok(data) => Ok(write::parse_session_info(&data)),
+            Err(error) if error.is_illegal_request() => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// READ TOC/PMA/ATIP（0x43）Format 0：轨道列表（编号与起始 LBA）。
     ///
     /// 跳过损坏的末区段（issue #40）要靠它枚举候选区段起点：每个区段的首条轨道
     /// 起点就是该区段的起点，列表里还有驱动器报的导出区（轨道号 0xAA），它不是
-    /// 候选。读不到任何轨道时返回空列表，由调用方决定怎么办。
+    /// 候选。读不到任何轨道时返回空列表，由调用方决定怎么办。非 CD 介质上命令被
+    /// 拒同样归到空列表（实测 DVD-R 上 Format 0 与 Format 1 一起被拒）。
     pub fn read_toc_tracks(&mut self) -> Result<Vec<write::TrackStart>, MmcError> {
-        let data = self.read_into(&write::toc_track_list_cdb(), write::TRACK_LIST_LEN)?;
-        Ok(write::parse_track_list(&data).unwrap_or_default())
+        match self.read_into(&write::toc_track_list_cdb(), write::TRACK_LIST_LEN) {
+            Ok(data) => Ok(write::parse_track_list(&data).unwrap_or_default()),
+            Err(error) if error.is_illegal_request() => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
     }
 
     /// READ(10)（0x28）：从 `lba` 读一段数据，长度必须是整块。写侧命令的读侧对偶，
@@ -1375,6 +1403,79 @@ mod tests {
         // 空白盘：数据长度不足一条描述符，返回 None 而不是错误。
         let (mut blank, _) = device(vec![0u8; write::SESSION_INFO_LEN]);
         assert_eq!(blank.read_toc_session_info().unwrap(), None);
+    }
+
+    /// 一台对所有命令回同一条 sense 的假驱动器。
+    struct FailingTransport {
+        sense: Vec<u8>,
+    }
+
+    impl ScsiTransport for FailingTransport {
+        fn issue(
+            &mut self,
+            cdb: &[u8],
+            _dir: Direction,
+            _data: &mut [u8],
+            _timeout: Duration,
+        ) -> Result<optiburn_transport::Completion, TransportError> {
+            Err(TransportError::CommandFailed {
+                cdb: cdb.to_vec(),
+                scsi_status: 2,
+                sense: self.sense.clone(),
+            })
+        }
+
+        fn device_path(&self) -> &str {
+            "/dev/fake"
+        }
+    }
+
+    /// DVD-R 上 READ TOC 的实测 sense：ILLEGAL REQUEST 加 INVALID FIELD IN CDB。
+    fn dvd_toc_sense() -> Vec<u8> {
+        vec![
+            0x70, 0x00, 0x05, 0x00, 0, 0, 0, 0x0a, 0, 0, 0, 0, 0x24, 0x00,
+        ]
+    }
+
+    #[test]
+    fn read_toc_treats_an_undefined_cdb_as_no_session_information() {
+        // 实测（HL-DT-ST GP75N，DVD-R）：两个格式都被拒，同一台驱动器换 CD-R 正常。
+        // 这类介质没有 Format 1 的区段信息，按“没有”回，让调用方的轨道枚举兜底。
+        let mut dev = MmcDevice::new(Box::new(FailingTransport {
+            sense: dvd_toc_sense(),
+        }));
+        assert_eq!(dev.read_toc_session_info().unwrap(), None);
+        assert!(dev.read_toc_tracks().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_real_transport_failure_is_still_reported() {
+        // 介质错误（sense key 3）不是“这条命令没定义”，不能一起吞掉。
+        let mut dev = MmcDevice::new(Box::new(FailingTransport {
+            sense: vec![
+                0x70, 0x00, 0x03, 0x00, 0, 0, 0, 0x0a, 0, 0, 0, 0, 0x11, 0x00,
+            ],
+        }));
+        assert!(dev.read_toc_session_info().is_err());
+    }
+
+    #[test]
+    fn illegal_request_detection_keys_off_the_sense_key() {
+        let invalid = MmcError::Transport(TransportError::CommandFailed {
+            cdb: vec![0x43],
+            scsi_status: 2,
+            sense: dvd_toc_sense(),
+        });
+        assert!(invalid.is_illegal_request());
+        let medium_error = MmcError::Transport(TransportError::CommandFailed {
+            cdb: vec![0x43],
+            scsi_status: 2,
+            sense: vec![
+                0x70, 0x00, 0x03, 0x00, 0, 0, 0, 0x0a, 0, 0, 0, 0, 0x11, 0x00,
+            ],
+        });
+        assert!(!medium_error.is_illegal_request());
+        assert!(!MmcError::NotReady.is_illegal_request());
     }
 
     #[test]

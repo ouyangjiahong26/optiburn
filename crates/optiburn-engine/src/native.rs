@@ -70,7 +70,7 @@ pub(crate) fn burn_with_device(
         return Err(BurnError::NativeGap(NativeGap::WriteSpeed));
     }
     let (kind, status) = preflight(mmc)?;
-    let blocks = image_blocks(job)?;
+    let blocks = padded_blocks(kind, image_blocks(job)?);
     let start = start_lba(mmc, status)?;
     guard_capacity(mmc, kind, start, blocks)?;
 
@@ -83,7 +83,7 @@ pub(crate) fn burn_with_device(
 
     mmc.synchronize_cache()?;
     if kind.needs_close_session() {
-        mmc.close_session()?;
+        close_session(mmc, kind)?;
         wait_until_ready_for(mmc, CLOSE_SETTLE_DEADLINE)?;
     }
     progress(1.0);
@@ -172,11 +172,12 @@ pub(crate) fn grow_with_device(
     // 会话镜像先落到本地临时文件再按块写盘：生成要按源文件随机读，边生成边下发
     // 会把写命令之间的间隔拉长，慢速介质上更容易写坏。
     let staging = StagingImage::create(&plan, cancel)?;
-    write_image(mmc, staging.path(), staging.blocks, start, progress, cancel)?;
+    let blocks = padded_blocks(kind, staging.blocks);
+    write_image(mmc, staging.path(), blocks, start, progress, cancel)?;
 
     mmc.synchronize_cache()?;
     if kind.needs_close_session() {
-        mmc.close_session()?;
+        close_session(mmc, kind)?;
         wait_until_ready_for(mmc, CLOSE_SETTLE_DEADLINE)?;
     }
     progress(1.0);
@@ -235,16 +236,11 @@ fn growth_source(
     match status {
         DiscStatus::Empty => Ok((0, None)),
         DiscStatus::Appendable => {
-            let Some(session) = mmc.read_toc_session_info()? else {
+            let Some(start) = crate::disc_read::last_session_start(mmc)? else {
                 return Err(BurnError::NoIsoSession);
             };
-            let old = read_graft_source(
-                mmc,
-                session.last_session_start,
-                cancel,
-                allow_damaged_last_session,
-            )?;
-            Ok((session.last_session_start, Some(old)))
+            let old = read_graft_source(mmc, start, cancel, allow_damaged_last_session)?;
+            Ok((start, Some(old)))
         }
         DiscStatus::Finalized => Err(BurnError::NativeGap(NativeGap::FinalizedDisc)),
         DiscStatus::Other(_) => Err(BurnError::NativeGap(NativeGap::GrowthOnRewritable)),
@@ -414,12 +410,31 @@ fn image_blocks(job: &BurnJob) -> Result<u64, BurnError> {
     Ok(blocks)
 }
 
+/// 关区段。DVD-R 族与 BD 要先关轨道再关区段：直接发 CLOSE SESSION 会被要求先把
+/// 轨道关掉的驱动器拒绝（实测 2026-10-22，HL-DT-ST GP75N 加 DVD-R：sense key 5
+/// 加 ASC 0x72/0x03，SESSION FIXATION ERROR - INCOMPLETE TRACK IN SESSION）。
+/// 同一族介质的修复路径（[`MmcDevice::close_damaged`]）按 libburn 的顺序也是先关
+/// 轨道，这里沿用它。CD 的 TAO 只发 CLOSE SESSION，先关轨道会改变区段形状。
+fn close_session(mmc: &mut MmcDevice, kind: MediaKind) -> Result<(), BurnError> {
+    if kind != MediaKind::Cd {
+        let track = mmc.read_disc_information()?.last_session_last_track;
+        mmc.close_track(u16::from(track))?;
+    }
+    mmc.close_session()?;
+    Ok(())
+}
+
 /// 容量检查：驱动器报得出容量就必须放得下（可追加盘按剩余空间算）。
 ///
 /// CD 不做这个检查：READ CAPACITY 在 CD 上报的是“最后一个区段的卷空间”，而写入
 /// 用的是盘级地址（实测 2026-10-10，可追加 CD-R：NWA 264720，READ CAPACITY
 /// 257819），两个地址空间混着比会误判。CD 的容量预检要等 READ TRACK INFORMATION
 /// 的 free blocks 落地，当前由驱动器的写错误兜底。
+///
+/// 未写入的 DVD-R、DVD+R 上 READ CAPACITY 回 0（盘上还没有记录区），0 不是容量
+/// 而是“没量到”，此时改用 READ FORMAT CAPACITIES 给出的可格式化容量（实测
+/// 2026-10-22，HL-DT-ST GP75N 加空白 DVD-R：READ CAPACITY 回末块 0，READ FORMAT
+/// CAPACITIES 回类型 1 描述符 2297888 块）。两条路都量不到就不判。
 fn guard_capacity(
     mmc: &mut MmcDevice,
     kind: MediaKind,
@@ -429,9 +444,17 @@ fn guard_capacity(
     if kind == MediaKind::Cd {
         return Ok(());
     }
-    if let Ok(last_lba) = mmc.read_capacity()
-        && u64::from(start) + blocks > u64::from(last_lba) + 1
-    {
+    let limit = match mmc.read_capacity() {
+        Ok(last_lba) if last_lba > 0 => Some(u64::from(last_lba) + 1),
+        _ => mmc
+            .read_disc_capacity()
+            .total
+            .map(|bytes| bytes / SECTOR_BYTES as u64),
+    };
+    let Some(limit) = limit else {
+        return Ok(());
+    };
+    if u64::from(start) + blocks > limit {
         return Err(BurnError::NativeGap(NativeGap::ImageTooLarge));
     }
     Ok(())
@@ -452,24 +475,40 @@ fn write_image(
     let mut lba = start;
     let mut written = 0u64;
     progress(0.0);
-    loop {
+    // 一直写到补齐后的块数：文件读完之后剩下的部分写零块。
+    while written < blocks {
         if cancel.is_cancelled() {
             return Err(BurnError::Cancelled);
         }
-        let filled = fill_buffer(&mut file, &mut buffer)?;
-        if filled == 0 {
-            break;
-        }
-        let blocks_here = filled.div_ceil(SECTOR_BYTES);
-        let length = blocks_here * SECTOR_BYTES;
-        // 末块不足一整块时补零：WRITE(10) 只认整块。
+        let chunk = (blocks - written).min(CHUNK_BLOCKS as u64) as usize;
+        let length = chunk * SECTOR_BYTES;
+        let filled = fill_buffer(&mut file, &mut buffer[..length])?;
+        // 末块不足一整块或进入补位区时补零：WRITE(10) 只认整块。
         buffer[filled..length].fill(0);
         mmc.write_blocks(lba, &mut buffer[..length])?;
-        lba += blocks_here as u32;
-        written += blocks_here as u64;
+        lba += chunk as u32;
+        written += chunk as u64;
         progress((written as f64 / blocks as f64).min(1.0) as f32);
     }
     Ok(())
+}
+
+/// 写盘记录单位（块）：DVD 的 ECC 块是 16 块（32 KB）。libburn 对增量写的 DVD
+/// 把最后一块缓冲补零到整 32 KB（write.c 的 `obs_pad`，DVD-R 与 DVD+R 都置 1），
+/// 本仓库照它把镜像补齐到整记录单位。CD 没有这个约束，随机可写介质按块覆写也不需要。
+///
+/// BD 的簇是 32 块，这一档没有对应介质可实测，`PlusOrBdR` 暂按 DVD 的 16 块处理。
+fn recording_unit(kind: MediaKind) -> u64 {
+    match kind {
+        MediaKind::DvdMinus | MediaKind::PlusOrBdR => 16,
+        MediaKind::Cd | MediaKind::RandomWritable => 1,
+    }
+}
+
+/// 把块数补齐到整记录单位。
+fn padded_blocks(kind: MediaKind, blocks: u64) -> u64 {
+    let unit = recording_unit(kind);
+    blocks.div_ceil(unit) * unit
 }
 
 /// 从镜像读满一块缓冲，返回实际读到的字节数（读到文件尾时小于缓冲长度）。
