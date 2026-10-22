@@ -165,6 +165,9 @@ pub(crate) fn grow_with_device(
         0
     };
     let plan = crate::grow::plan_session(old, &job.src, job.volume_id.clone(), start)?;
+    // 布局基址与写入位置必须是同一个值：目录记录里写的是盘级绝对地址，两者分叉会
+    // 让整个会话偏移（ADR-0031，起点不做 16 块对齐补齐的原因也在那里）。
+    debug_assert_eq!(plan.base_lba(), start);
     // 引擎内也走一遍口径与调用方写前门禁同源的容量判据（ADR-0019）。
     crate::capacity::guard_fits(mmc, kind, info.status, job.close_disc, plan.total_bytes())?;
 
@@ -251,6 +254,8 @@ fn growth_source(
 /// NWA_V（字节 7 的 bit 0）置位。位清零说明地址不可信（中断刻录留下的损坏轨道），
 /// 此时按 `burn_disc_close_damaged` 的顺序尝试关掉损坏的轨道与区段再重读一次。
 /// 仍拿不到有效地址就拒绝，文案区分“损坏且不可写”与“驱动器没报地址”两种。
+/// 起点取驱动器报的 NWA，原样使用，不按 16 块对齐补齐：布局基址与写入位置必须
+/// 同步，补齐会让两者分叉。growisofs 的顺序介质分支同样不补齐（ADR-0031）。
 fn grow_write_address(
     mmc: &mut MmcDevice,
     kind: MediaKind,

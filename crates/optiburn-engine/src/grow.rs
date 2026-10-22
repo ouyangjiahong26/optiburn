@@ -153,9 +153,17 @@ pub(crate) struct SessionPlan {
     layout: PlanLayout,
     /// 会话块数，写进描述符的卷空间大小（区段相对）。
     blocks: u32,
+    /// 会话在盘上的起点。写入位置必须与它一致，否则目录记录里的绝对地址全部偏移
+    /// （ADR-0031）。
+    base_lba: u32,
 }
 
 impl SessionPlan {
+    /// 会话在盘上的起点。
+    pub(crate) fn base_lba(&self) -> u32 {
+        self.base_lba
+    }
+
     /// 会话字节数，容量门禁用。
     pub(crate) fn total_bytes(&self) -> u64 {
         u64::from(self.blocks) * SECTOR_BYTES as u64
@@ -578,6 +586,7 @@ impl SessionPlan {
         let blocks = cursor + u32::from(zero_length_new_file);
 
         Ok(Self {
+            base_lba,
             volume_id,
             root,
             layout: PlanLayout {

@@ -555,6 +555,34 @@ fn names(node: &crate::grow::DirNode) -> Vec<String> {
 }
 
 #[test]
+fn grow_start_uses_the_next_writable_address_verbatim() {
+    // 起点就是驱动器报的 NWA，不按 16 块对齐补齐（ADR-0031）：布局基址与写入位置
+    // 必须是同一个值，补齐会让目录记录里的绝对地址整体偏移。
+    let tmp = TempDir::new("nwa-verbatim");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).expect("create source dir");
+    std::fs::write(src.join("a.txt"), b"alpha").expect("write file");
+
+    const UNALIGNED_NWA: u32 = 3;
+    let plan = crate::grow::plan_session(None, &src, "NWA".to_string(), UNALIGNED_NWA)
+        .expect("plan a session");
+    assert_eq!(plan.base_lba(), UNALIGNED_NWA, "基址原样取 NWA");
+
+    // 生成出来的会话里，根目录记录（PVD 偏移 156 起）的 extent 是基址加会话内偏移，
+    // 不是对齐后的地址。
+    let mut image = Vec::new();
+    plan.write_image(&mut image, &CancelToken::default())
+        .expect("write the session");
+    let pvd = &image[crate::grow::DESC_START as usize * SECTOR_BYTES..][..SECTOR_BYTES];
+    let root_extent = u32::from_le_bytes([pvd[158], pvd[159], pvd[160], pvd[161]]);
+    assert_eq!(
+        root_extent,
+        UNALIGNED_NWA + 23,
+        "根目录接在四张路径表之后，地址按原样基址算"
+    );
+}
+
+#[test]
 fn grow_refuses_a_damaged_last_session_without_confirmation() {
     // 盘：[起点 0x1000 的完好会话][起点 0x1800 的残片]，TOC 把残片报成末区段。
     let tmp = TempDir::new("grow-damaged");
