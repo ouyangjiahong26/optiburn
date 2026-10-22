@@ -50,10 +50,12 @@ MMC 允许的形态，真机验证走的是阻塞形态。
 - 补位让写入块数比镜像多最多 15 块，容量门禁按补位后的块数比较。
 - `PlusOrBdR` 也按 16 块补位：手头没有 BD 介质，BD 的簇是 32 块，这一档未经实测。
 - GP75N（关区段被拒的那台）上的写入已复核（2026-10-22，第二张空白 DVD-R，同一
-  命令）：写入与关闭成功，盘片已封口，抽取回来两个文件的 sha256 与源一致。同一张
-  刻好的盘换回 GP70N 做读侧复核也通过，系统按 UDF 自动挂载，`probe` 与 `salvage`
-  正常（后者依赖 ADR-0029 的 `is_illegal_request` 容错：封口盘上 READ TRACK
-  INFORMATION 问轨道 1 回 key 5 加 ASC 0x21）。
+  命令）：写入与关闭成功，盘片已封口，`xorriso` 抽取回来两个文件的 sha256 与源
+  一致。
+- GP75N 上的读侧复核另做过一次：把 GP70N 刻好的盘换到 GP75N，系统按 UDF 自动
+  挂载，两个文件的 sha256 与源一致，`probe` 与 `salvage` 正常（后者依赖 ADR-0029
+  的 `is_illegal_request` 容错：封口盘上 READ TRACK INFORMATION 问轨道 1 回 key 5
+  加 ASC 0x21）。
 - 增长模式（追加）在 DVD 上的区段起点口径见 ADR-0031，DVD+R 上的追加仍未实测。
 
 ## 被否决的方案
