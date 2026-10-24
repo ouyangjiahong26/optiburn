@@ -11,13 +11,39 @@
 
 ### 修复
 
+**English**
+
+### FIX
+
+## [0.1.9] - 2026-10-24
+
+**中文**
+
+### 修复
+
 - Linux 上侧栏左下角的版本提示不再消失：版本行此前与“检查更新”入口共用一个开关，安装形态不能就地更新时（deb 安装、开发态运行）整个区域返回 null，版本号被一并隐藏。现在版本提示单列成一个恒定显示的组件，版本号取自应用自身的版本，Windows 与 AppImage 的表现不变。
+- DVD 与 BD 上的读取不再因为 READ TOC 被拒而失败（ADR-0029）：这条命令在非 CD 介质上没有定义，驱动器回 ILLEGAL REQUEST，此前读盘、回读校验、追加门禁与增长模式的末区段定位会一起报错，一次写成功的刻录会被当成失败。现在按“没有区段信息”处理，改用 READ DISC INFORMATION 与 READ TRACK INFORMATION 的轨道起点定位区段，轨道大小为 0 的隐形轨道跳过；抢救路径对轨道 0xFF 被拒同样容错。
+- DVD-R 刻录可以正常收尾（ADR-0030）：空白盘上 READ CAPACITY 回末块 0，容量判据改用 READ FORMAT CAPACITIES，不再把 4.7 GB 的盘误判成放不下；镜像补齐到整记录单位（16 块）；DVD-R 族与 BD 先 CLOSE TRACK 再 CLOSE SESSION，驱动器不再回 SESSION FIXATION ERROR。真机在 GP70N 与 GP75N 上各用一张 DVD-R 验证，读回两个文件的 sha256 与源一致。
+
+### 变更
+
+- 容量显示改用十进制（GB 3100）：4.7 GB 的 DVD 不再显示成 4.4 GB，CLI、图形界面与前端三处口径一致。
+- 已知边界更新：DVD-R 的原生写入已真机验证；DVD+R 与 DVD+RW 上的追加仍未验证，区段起点的口径记在 ADR-0031。
 
 **English**
 
 ### FIX
 
 - The version label in the bottom-left corner no longer disappears on Linux: it shared one switch with the Check for updates entry, so installations that cannot update in place (deb packages, development runs) returned null for the whole area and hid the version together with it. The label is now a separate component that always renders, taking the version from the application itself; Windows and AppImage look unchanged.
+- Reading DVDs and BDs no longer fails when the drive rejects READ TOC (ADR-0029): that command is undefined on non-CD media and comes back as ILLEGAL REQUEST, which used to fail reading, read-back verification, the append gate and the growth-mode session lookup together, so a burn that had succeeded was reported as a failure. It is now treated as "no session information", sessions are located through READ DISC INFORMATION and READ TRACK INFORMATION track starts, zero-length invisible tracks are skipped, and salvage tolerates the same rejection for track 0xFF.
+- Burning DVD-R now finishes properly (ADR-0030): on blank media READ CAPACITY reports last block 0, so the capacity check uses READ FORMAT CAPACITIES instead of calling a 4.7 GB disc too small; images are padded to the whole recording unit (16 blocks); the DVD-R family and BD close the track before the session, so drives stop answering with SESSION FIXATION ERROR. Verified on hardware with one DVD-R in a GP70N and one in a GP75N; both files read back with matching sha256.
+
+### CHANGED
+
+- Capacities are shown in decimal units (GB 3100): a 4.7 GB DVD no longer reads as 4.4 GB, consistently in the CLI, the GUI and the frontend.
+- Known boundaries updated: native writing on DVD-R is verified on hardware; appending on DVD+R and DVD+RW is still unverified, and the session-start conventions are recorded in ADR-0031.
+
+**Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.8...v0.1.9
 
 ## [0.1.8] - 2026-10-16
 
