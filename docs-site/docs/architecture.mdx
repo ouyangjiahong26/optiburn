@@ -8,18 +8,19 @@ slug: /architecture
 # 架构
 
 optiburn 是一个跨平台（Linux 与 Windows，x86_64 与 arm64）的光盘刻录工具链：把目录做成
-Windows 能读的镜像，再把镜像写到盘上。本页说明各 crate 的边界与数据怎么流动。完整版本
-见仓库里的 [`docs/ARCHITECTURE.md`](https://github.com/ouyangjiahong26/optiburn/blob/main/docs/ARCHITECTURE.md)。
+Windows 能读的镜像，把镜像或新区段写到盘上，再把盘上的内容读回来。本页说明 crate 边界、
+数据怎么流动，以及哪些能力已经验证。完整版本见仓库里的
+[`docs/ARCHITECTURE.md`](https://github.com/ouyangjiahong26/optiburn/blob/main/docs/ARCHITECTURE.md)。
 
 ## 分层
 
 依赖方向只有一条，自上而下：
 
 ```text
-optiburn-cli              命令行：build-image / burn / append / probe
-  optiburn-mastering        目录做成镜像文件（ISO 9660 + Joliet + UDF Bridge）
+optiburn-cli              命令行：build-image / burn / append / probe / repair / salvage
+  optiburn-mastering        目录做成镜像文件（ISO 9660 + Joliet，按 profile 带 UDF）
     hadris-cd               上游镜像写入器（MIT，纯 Rust）
-  optiburn-engine           镜像写到盘（xorriso 子进程与原生 MMC 引擎）
+  optiburn-engine           镜像写到盘，盘上内容读回来（xorriso 子进程与原生 MMC）
   optiburn-mmc              MMC 命令编解码（读侧与写侧）
     optiburn-transport      SCSI 传输（Linux SG_IO / Windows SPTI）
 ```
@@ -28,39 +29,95 @@ optiburn-cli              命令行：build-image / burn / append / probe
   `issue(cdb, dir, data, timeout)`。Linux 走 `SG_IO`，Windows 走 SPTI，光驱枚举也按平台
   收在这里。
 - `optiburn-mmc`：MMC 命令编解码。读侧有 `inquiry`、`test_unit_ready`、
-  `read_disc_information`、`read_track_information`、`read_capacity`、`read_blocks`。
-  写侧有 `get_configuration`、`set_write_parameters`、`reserve_track`、`write_blocks`、
-  `synchronize_cache`、`close_session`。
+  `read_disc_information`、`read_track_information`、`read_toc_session_info`、
+  `read_capacity`、`read_blocks` 与容量命令。写侧有 `get_configuration`、
+  `set_write_parameters`、`reserve_track`、`write_blocks`、`synchronize_cache`、
+  `close_session`。
 - `optiburn-mastering`：`build_image(source_dir, output, spec)`。profile 到文件系统的
   映射是 Windows 可读性的唯一落点。
 - `optiburn-engine`：`BurnEngine` trait 加两个引擎：`NativeEngine`（原生 MMC 写引擎，
-  ADR-0017）与 `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。
+  ADR-0017、ADR-0030）与 `XorrisoEngine`（`xorriso -as cdrecord` 子进程）。增长与读盘
+  也收在这一层。
 - `optiburn-cli`：六个子命令的入口。
 
-图形前端在 `src-tauri/`（Tauri 2）与 `frontend/`（React 加 Vite 加 TypeScript），
-不在根 workspace 内，以路径依赖引用核心 crate。核心五个 crate 不引入 GUI 依赖。
+图形前端在 `src-tauri/`（Tauri 2）与 `frontend/`（React、Vite、TypeScript），不在根
+workspace 内，以路径依赖引用核心 crate。核心五个 crate 不引入 GUI 依赖。
 
 ## 数据流
 
 ```text
 源目录
-  build_image 生成 .iso（ISO 9660 + Joliet + UDF Bridge）
+  build_image 生成 .iso（ISO 9660 + Joliet，按 profile 带 UDF）
   .iso 用于归档与校验，镜像本身与盘上字节一一对应
   .iso 交给 BurnJob，由 BurnEngine 写进光驱
-    0.1.8 之前用 xorriso -as cdrecord，原生 MMC 写入已落地（ADR-0017）
+    默认用 xorriso，原生 MMC 写入已落地（ADR-0017）
 
 盘
-  probe 读出设备标识与盘片状态（SG_IO / SPTI 加 READ DISC INFORMATION）
+  ReadBackend 读出卷标、末区段格式、目录树与文件
+  probe 读出设备标识、盘片状态、容量与增长后端
 ```
 
-## 路线图
+镜像先落盘再写盘是有意为之：镜像文件本身就是可归档、可校验的分发单元，没有光驱也能把
+整条链路测完，写盘失败还能重试。代价是镜像内含构建时刻的时间戳，同一目录两次构建的
+字节并不相同。可复现的是目录顺序与内容，不是镜像字节。
 
-原生 MMC 写入（不借助外部工具）已落地为 `NativeEngine`（ADR-0017）：在
-`optiburn-engine` 的同一个 `BurnEngine` trait 上自己发 `MODE SELECT`、`WRITE(10)` 与
-`CLOSE TRACK/SESSION`，已在 Windows 的 USB 光驱与一张 CD-R 上真机验证。原生读盘也已落地
-（ADR-0018）：`ReadBackend` 接缝上的 `NativeRead` 用 MMC 读块加 ISO 9660 解析读出
-末区段（卷标、目录树、抽取），两种区段地址约定自动探测，已在同一台 USB 光驱上
-验证，Windows 上刻录与读盘都不需要外部工具。UDF 盘读侧（ADR-0021）与原生增长模式
-（ADR-0020）也已落地：`append` 在 Windows 上读出末区段目录树，生成只含目录结构与
-新文件数据的新区段，旧文件的数据块原地引用。后续是 DVD/BD 各族的真机验证与
-倍速参数。
+## 接缝
+
+### 写盘引擎
+
+`BurnEngine::{name, burn}` 把一份镜像写到盘上，`BurnJob` 带镜像、设备、倍速、是否多
+区段。原生引擎从 NWA 起写，按 Profile 选择写参数页与收尾顺序，拒绝时给出结构化的
+`NativeGap`。DVD-R 的补位与先关轨道再关区段的顺序记在 ADR-0030。
+
+### 增长模式
+
+`append` 走 `GrowJob`，默认原生增长：读出末区段的 Joliet 目录树，生成一个只含目录结构
+与新文件数据的新区段，旧文件的数据块原地引用（ADR-0020）。Linux 在随机可写介质、未知
+Profile 或指定倍速时回退 xorriso 增长模式，判据只看设备事实（ADR-0027）。显式选择后端
+不回退。
+
+### 读盘接缝
+
+读侧五个能力 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
+`last_session_is_iso` 接在 `ReadBackend` 接缝上。`XorrisoRead` 是子进程，`NativeRead`
+是原生块读加 ISO 9660 与 UDF 解析（ADR-0018、ADR-0021）。Windows 默认原生，Linux 先走
+xorriso，读不到 ISO 9660 时回退原生（ADR-0024）。
+
+### 门禁与校验
+
+`grow_size` 是增长模式的尺寸预演，`append_gate_session_state` 是末区段格式判定，
+`capacity_gate` 把待写入量与区段开销相加再与可用容量比较，`compare_trees` 做回读校验。
+写前检查与容量口径的细节见 ADR-0010、ADR-0019 修订、ADR-0028。
+
+## 平台分派
+
+| 能力 | Linux | Windows |
+|---|---|---|
+| `build-image` | 原生 | 原生 |
+| `burn` | 默认 xorriso，可选原生（DVD-R 已真机验证） | 原生，CD-R 已真机验证 |
+| `append` | 默认原生增长，按设备事实回退 xorriso | 原生增长 |
+| 读盘 | xorriso 优先，读不到 ISO 9660 时回退原生 | 原生 ISO 9660 与 UDF |
+| `repair` | xorriso `-close_damaged` | 原生 |
+| `salvage` | 原生 MMC 读侧 | 原生 MMC 读侧 |
+
+平台分支默认收在 `optiburn-transport`。GUI 侧的平台差异收在 `src-tauri` 的独立模块里，
+不散落在命令层。
+
+## 现状与边界
+
+| 能力 | 已验证 | 未验证 |
+|---|---|---|
+| 镜像布局 | 扇区级断言，xorriso 回读对拍，含中文名 | 上游换版本后的布局漂移由测试拦截 |
+| 原生刻录 | CD-R（2026-10-10，Windows），DVD-R（2026-10-22，Linux） | DVD+R、DVD+RW、BD-R。Windows 上的 DVD-R 与 Linux 上的 CD-R 未单独验证 |
+| 原生增长 | Linux 多区段 CD-R（2026-10-15），写前 51.0 秒降到 1.6 秒 | DVD+R 追加，BD-R 追加 |
+| 原生读盘 | Windows CD-R（2026-10-10），Linux 设备路径回退（2026-10-12） | 纯 UDF 实物盘 |
+| 抢救 | 被中断写入的盘（2026-10-11） | 其它中断形态按候选区段回退处理 |
+
+## 后续工作
+
+- 原生引擎的倍速协商（SET CD SPEED）与写失败重试。
+- DAO/SAO 写入路径。
+- BD-R、DVD±RW 的介质验证，DVD+R 的增长实测。
+- CD 介质的 ATIP 读取，容量目前不依赖它。
+- 原生增长的 Rock Ridge 结转与名字扩展。
+- Windows 上的 IMAPI2 校验（只校验，不接管写入，见 ADR-0005）。

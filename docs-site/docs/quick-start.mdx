@@ -19,7 +19,7 @@ cargo build --release
 ```
 
 - Rust 1.98.1（由 `rust-toolchain.toml` 固定，rustup 会自动装好）。
-- `xorriso` 在 `PATH` 上：CLI 的默认刻录引擎（Linux）与图形前端在 Linux 上的盘上浏览、回读校验、增长模式都用它。Debian/Ubuntu 用 `sudo apt install xorriso`。Windows 上没有可用的构建（MSYS2 的包碰不到光驱，实测见 ADR-0008 补记），刻录与读盘都走原生路径，不需要外部工具（ADR-0017、ADR-0018）。
+- `xorriso` 在 `PATH` 上：Linux 的默认刻录引擎、读盘首路径与增长模式回退都用它。Debian/Ubuntu 用 `sudo apt install xorriso`。Windows 上没有可用的构建（MSYS2 的包碰不到光驱，实测见 ADR-0008 补记），刻录与读盘都走原生路径，不需要外部工具（ADR-0017、ADR-0018）。
 - 对光驱的写权限：通常加入 `cdrom` 组，或用 root。
 
 :::tip[写权限]
@@ -29,7 +29,7 @@ Linux 上用 `sudo usermod -aG cdrom "$USER"` 把自己加进 `cdrom` 组，注�
 
 :::
 
-图形界面不额外需要依赖：Windows 上刻录与读盘都走原生路径（不需要外部工具），Linux 上刻录、盘上浏览与回读校验要求 `xorriso` 在 `PATH` 上。
+图形界面的依赖与命令行相同：Windows 上刻录、增长与读盘都走原生路径，Linux 上默认刻录与读盘首路径用 `xorriso`，增长模式默认原生，只在回退时需要 `xorriso`。
 
 ## 用图形界面安装（可选）
 
@@ -62,11 +62,22 @@ $ optiburn build-image docs -o docs.iso --profile dvd --volume-id OPTIBURN
 optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
-Windows 的设备名是盘符：`--device E:`。默认盘保持可追加（多区段），`--close-disc` 才封盘。
+Windows 的设备名是盘符：`--device E:`。Linux 默认用 `xorriso`，Windows 只走原生引擎。默认盘保持可追加（多区段），`--close-disc` 才封盘。
 
-刻录前置检查会自动处理介质状态：等盘片就绪（20 秒内每 500 ms 重试一次），已封口的盘拒绝写入，
-可追加盘提示改用 `append`，随机可写介质（DVD-RAM、BD-RE）直接放行。盘被系统挂载时写入会被
-拦下并提示先卸载。
+刻录前置检查会自动处理介质状态：等盘片就绪（20 秒内每 500 ms 重试一次），已封口的盘拒绝写入，可追加盘提示改用 `append`，随机可写介质（DVD-RAM、BD-RE）直接放行。盘被系统挂载时写入会被拦下并提示先卸载。
+
+## 追加
+
+盘上已经有内容时，不要把新镜像刻上去。那会遮住旧文件，Windows 只看最后一个区段。改用
+`append`，它读出末区段，把源目录合并成新区段：
+
+```bash
+optiburn append photos --device /dev/sr0 --volume-id PHOTOS
+```
+
+两平台默认走原生增长，旧文件的数据块原地引用，不重读也不重写。Linux 在随机可写介质、
+未知 Profile 或指定倍速时自动回退 xorriso 增长模式。追加后的盘在 Windows 上仍能看到
+全部文件，资源管理器要弹出光盘再放回才会刷新挂载视图。
 
 ## 验证盘的可读性
 
