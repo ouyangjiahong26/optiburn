@@ -42,13 +42,14 @@ optiburn burn docs.iso --device /dev/sr0 --speed 8
 |---|---|
 | `--device` | Linux 是 `/dev/sr*`，Windows 是 `E:` |
 | `--speed` | 倍速，留空交给驱动自选 |
-| `--close-disc` | 写完后对 CD 与 DVD-R 封盘。不传时不对这两族封盘 |
+| `--close-disc` | 写完后由引擎封盘，原生引擎只覆盖 CD 与 DVD-R。不传时不对这两族封盘 |
 | `--engine` | `xorriso`（默认值，需要 `PATH` 上有 `xorriso`）或 `native`（自己发 MMC 命令，Windows 上唯一可用），其它值报“尚未实现” |
 
 默认多区段，介质支持时盘写完后还能继续追加。需要一次性写死的归档场景可以传
-`--close-disc`，当前只对 CD 与 DVD-R 生效。原生引擎暂不支持指定倍速，用
-`--engine native` 时把 `--speed` 留空。Linux 上的原生刻录路径可用，DVD-R 已在 Linux
-真机验证，CD-R 只在 Windows 验证过。
+`--close-disc`。Linux 默认的 xorriso 能封它支持的介质，原生引擎只覆盖 CD 与 DVD-R，
+DVD+R 与 BD-R 需要 xorriso。原生引擎暂不支持指定倍速，用 `--engine native` 时把
+`--speed` 留空。Linux 上的原生刻录路径可用，DVD-R 已在 Linux 真机验证，CD-R 只在
+Windows 验证过。
 
 ## append
 
@@ -59,7 +60,7 @@ optiburn append photos --device /dev/sr0 --volume-id PHOTOS
 ```
 
 - 空盘上这等价于首刻。
-- `--close-disc` 在提交后对 CD 封盘。DVD+R 与 BD-R 的原生封盘尚未实现。对随机可写介质（DVD-RAM、BD-RE），原生增长拒绝写入，Linux 默认档回退 xorriso，在那里 `--close-disc` 不生效，盘保持可覆写。
+- `--close-disc` 在提交后由引擎封盘。原生引擎支持 CD 与 DVD-R，DVD+R 与 BD-R 需要 Linux 上的 xorriso 增长模式。对随机可写介质（DVD-RAM、BD-RE），原生增长拒绝写入，Linux 默认档回退 xorriso，在那里 `--close-disc` 不生效，盘保持可覆写。
 - `--allow-damaged-last-session` 允许在末区段损坏的盘上追加：回退到更早的可读区段，被跳过区段里的文件不再出现在盘上的可见目录里。GUI 在追加页的行内要求同样一次确认。
 - 两平台默认走原生增长（ADR-0020、ADR-0027）：新区段是 ISO 9660 加 Joliet，旧文件的数据块原地引用。资源管理器要弹出光盘再放回才会刷新挂载视图。
 - 旧区段形状不支持嫁接时（没有 Joliet、含启动记录、含多 extent 文件等），追加会被拒绝并说明原因。

@@ -210,7 +210,7 @@ export default function Home(): React.JSX.Element {
                 <h3><Translate id="home.steps.build.title">做镜像</Translate></h3>
                 <p>
                   <Translate id="home.steps.build.description">
-                    一条命令或图形界面。镜像覆盖 ISO 9660、Joliet 与 UDF Bridge，老设备与 Windows 都能读。
+                    一条命令或图形前端。镜像覆盖 ISO 9660、Joliet 与 UDF Bridge，老设备与 Windows 都能读。
                   </Translate>
                 </p>
               </div>
@@ -263,7 +263,7 @@ export default function Home(): React.JSX.Element {
               </h2>
               <p className={styles.ctaSubtitle}>
                 <Translate id="home.cta.finalSubtitle">
-                  Rust 一条命令，或图形界面点两下
+                  Rust 一条命令，或图形前端点两下
                 </Translate>
               </p>
               <div className={styles.buttons}>

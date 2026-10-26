@@ -16,13 +16,13 @@ The project exists because software covering all four platform combinations is r
 | Command | What it does | Platforms |
 |---|---|---|
 | `optiburn build-image` | Builds ISO 9660, Joliet and profile-appropriate UDF images. The byte layout is asserted in tests and compared with xorriso. | All four targets. |
-| `optiburn burn` | Writes an image. Multi-session by default where the media allows; `--close-disc` finalizes CD and DVD-R. DVD+R and BD-R have no native finalize path yet. | Linux: `xorriso` by default, `--engine native` optional. Windows: native only. |
+| `optiburn burn` | Writes an image. Multi-session by default where the media allows. `--close-disc` finalizes. Native finalization covers CD and DVD-R only. | Linux: `xorriso` by default, `--engine native` optional. Windows: native only. |
 | `optiburn append` | Reads the last session, grafts a directory onto it and writes a new session that references the old file blocks in place. | Native growth on both platforms. Linux falls back to xorriso growth on rewritable media, an unknown profile, or a requested speed. |
 | `optiburn probe` | Lists drives, media state, capacity and the growth backend. Exits 0 when no drive is present. | Linux `/dev/sr*`, Windows drive letters. |
 | `optiburn repair` | Closes the damaged track and session left by an interrupted burn so the disc can be written again. | Linux: xorriso `-close_damaged`. Windows: native. |
 | `optiburn salvage` | Reads the unclosed track that standard readers cannot see, classifies every file against the written boundary and extracts the readable part. | Both platforms, through the native MMC reader. Run it before `repair`. |
 | Disc reading | Volume id, last-session check, tree listing and extraction on one `ReadBackend` seam. | Linux: xorriso first, native retry when xorriso cannot read ISO 9660. Windows: native ISO 9660 and UDF. |
-| GUI | Four pages cover `probe`, `build-image`, `burn`, `append` and `salvage`; `repair` stays on the CLI. Burn jobs can be cancelled. | Tauri 2 + React. Windows uses the native burn, grow and read paths. Linux uses xorriso for burn and the first read path, and native growth for append. |
+| GUI | Four pages cover `probe`, `build-image`, `burn`, `append` and `salvage`. `repair` stays on the CLI. Burn jobs can be cancelled. | Tauri 2 + React. Windows uses the native burn, grow and read paths. Linux uses xorriso for burn and the first read path, and native growth for append. |
 
 Hardware evidence, kept separate from the feature list:
 
@@ -76,7 +76,7 @@ The image embeds a build timestamp, so sizes track the directory contents. `--pr
 optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
-Windows device names are drive letters: `--device E:`. By default the disc is not finalized; whether another session fits depends on the media. `--close-disc` finalizes CD and DVD-R; the native engine has no finalize path for DVD+R or BD-R yet, so the flag leaves the write sequence unchanged there (ADR-0017). Before writing, the command waits for the media to become ready, refuses a finalized disc, refuses an appendable disc with an image because that would hide the old files and asks for `append` instead, allows rewritable media, and on Linux blocks a disc the system has mounted with an unmount hint.
+Windows device names are drive letters: `--device E:`. By default the disc is not finalized. Whether another session fits depends on the media. `--close-disc` asks the engine to finalize. The Linux xorriso default finalizes the media it supports, including DVD+R and BD-R. The native engine implements finalization for CD and DVD-R only, so DVD+R and BD-R need xorriso on Linux (ADR-0017). Before writing, the command waits for the media to become ready, refuses a finalized disc, refuses an appendable disc with an image because that would hide the old files and asks for `append` instead, allows rewritable media, and on Linux blocks a disc the system has mounted with an unmount hint.
 
 `--engine` takes `xorriso` (the default, needs `xorriso` on `PATH`) or `native` (our own MMC commands, the only option on Windows). Other values are rejected. The native engine writes a new session on an appendable disc and refuses finalized media, bad profiles, empty images and images that do not fit. It cannot set the write speed yet, so leave `--speed` empty with `--engine native`.
 
@@ -86,7 +86,7 @@ Windows device names are drive letters: `--device E:`. By default the disc is no
 optiburn append photos --device /dev/sr0 --volume-id PHOTOS
 ```
 
-`append` maps the directory contents to the disc root as a merged new session. Files from earlier sessions stay visible, and Windows, which mounts the last session, sees all of them. On a blank disc this is the first burn. `--close-disc` finalizes after committing on CD. On DVD+R and BD-R the native engine cannot finalize yet.
+`append` maps the directory contents to the disc root as a merged new session. Files from earlier sessions stay visible, and Windows, which mounts the last session, sees all of them. On a blank disc this is the first burn. `--close-disc` finalizes after committing. The native engine supports CD and DVD-R, while DVD+R and BD-R need the xorriso backend on Linux.
 
 On rewritable media (DVD-RAM, BD-RE) the native writer refuses to grow. Linux falls back to xorriso, where `--close-disc` has no effect, so the disc stays rewritable.
 

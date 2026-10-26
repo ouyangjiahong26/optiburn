@@ -85,7 +85,7 @@ const config: Config = {
             {label: '简介', to: '/docs/intro'},
             {label: '快速开始', to: '/docs/quick-start'},
             {label: '命令行用法', to: '/docs/usage'},
-            {label: '图形界面', to: '/docs/gui'},
+            {label: '图形前端', to: '/docs/gui'},
           ],
         },
         {

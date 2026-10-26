@@ -64,7 +64,7 @@ optiburn-cli        命令行：build-image / burn / append / probe / repair / s
 接口：`ScsiTransport::issue(cdb, dir, data, timeout)` 一条同步命令，加上
 `Direction`、`Completion`、`TransportError`，按平台分发的 `open(device)`，
 `list_optical_devices()`（枚举本机光驱设备路径，非 Linux 返回空列表），以及
-`mounted_at(device)`（设备被系统挂载时返回挂载点，写前门禁据此拦截，见 ADR-0010）。
+`mounted_at(device)`（Linux 实现，设备被系统挂载时返回挂载点，写前门禁据此拦截，见 ADR-0010）。
 
 隐藏：`SG_IO` 的 `sg_io_hdr` 组装，SPTI 的 `SCSI_PASS_THROUGH_DIRECT` 组装，两套方向
 枚举语义相反这件事（Linux `SG_DXFER_TO_DEV = -2`，Windows `SCSI_IOCTL_DATA_OUT = 0`），
@@ -165,8 +165,8 @@ Linux 先走 xorriso，读不到 ISO 9660 时回退原生。
 
 ### optiburn-cli
 
-接口：六个子命令。`burn` 与 `append` 先跑前置检查（`ensure_burnable`：挂载占用与末区段
-格式直接拒绝，等介质就绪，按盘片状态路由放行或拒绝，见 ADR-0006 与 ADR-0010），再过
+接口：六个子命令。`burn` 与 `append` 先跑前置检查（`ensure_burnable`：Linux 上的挂载占用
+与末区段格式直接拒绝，等介质就绪，按盘片状态路由放行或拒绝，见 ADR-0006 与 ADR-0010），再过
 写前容量门禁（`ensure_fits` 转调引擎的 `capacity_gate`，超过可用容量时把待写入、区段
 开销、可用容量三个数字摊开，读不到容量口径则跳过，见 ADR-0019 修订），然后进引擎。
 `repair` 与 `salvage` 是两条救人路径，前者写盘，后者只读，顺序见 ADR-0022。`probe` 在

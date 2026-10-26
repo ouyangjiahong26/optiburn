@@ -16,7 +16,7 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Wind
 | 命令 | 做什么 | 平台 |
 |---|---|---|
 | `optiburn build-image` | 按 profile 生成 ISO 9660、Joliet、UDF 镜像。字节布局在测试里逐扇区断言，并与 xorriso 对拍。 | 四个目标都可用。 |
-| `optiburn burn` | 把镜像写到盘。介质支持时默认多区段，`--close-disc` 对 CD 与 DVD-R 封盘，DVD+R 与 BD-R 的原生封盘尚未实现。 | Linux 默认 `xorriso`，可选 `--engine native`。Windows 只走原生。 |
+| `optiburn burn` | 把镜像写到盘。介质支持时默认多区段。`--close-disc` 由引擎封盘，原生封盘只覆盖 CD 与 DVD-R。 | Linux 默认 `xorriso`，可选 `--engine native`。Windows 只走原生。 |
 | `optiburn append` | 读出末区段，把源目录嫁接上去，新区段只写目录结构与新文件数据，旧文件的数据块原地引用。 | 两平台默认原生增长。Linux 在随机可写介质、未知 Profile 或指定倍速时回退 xorriso 增长模式。 |
 | `optiburn probe` | 列出光驱、盘片状态、容量、增长模式后端。没有光驱时退出 0。 | Linux 的 `/dev/sr*`，Windows 的设备路径（`E:`）。 |
 | `optiburn repair` | 关掉中断刻录留下的损坏轨道与区段，盘可以继续写。 | Linux 走 xorriso 的 `-close_damaged`，Windows 走原生。 |
@@ -76,7 +76,7 @@ $ optiburn build-image docs -o docs.iso --profile dvd --volume-id OPTIBURN
 optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
-Windows 的设备路径是 `E:`。默认不主动封盘，能否继续追加取决于介质。`--close-disc` 对 CD 与 DVD-R 封盘。原生引擎还没有 DVD+R 与 BD-R 的封盘路径，`--close-disc` 在那两族不改变写序列（ADR-0017）。写前检查会等盘片就绪，拒绝已封口的盘，拒绝在可追加盘上写整份镜像并提示改用 `append`，放行随机可写介质，Linux 上盘被系统挂载时拦下并提示卸载。
+Windows 的设备路径是 `E:`。默认不主动封盘，能否继续追加取决于介质。`--close-disc` 由引擎封盘。Linux 默认的 xorriso 能封它支持的介质，DVD+R 与 BD-R 也在其中。原生引擎只实现 CD 与 DVD-R 的封盘，所以这两族在 Windows 上不封盘，Linux 上需要 xorriso（ADR-0017）。写前检查会等盘片就绪，拒绝已封口的盘，拒绝在可追加盘上写整份镜像并提示改用 `append`，放行随机可写介质，Linux 上盘被系统挂载时拦下并提示卸载。
 
 `--engine` 取 `xorriso`（默认值，需要 `PATH` 上有 `xorriso`）或 `native`（自己发 MMC 命令，Windows 上唯一可用），其它值直接拒绝。原生引擎在可追加盘上写新区段，拒绝已封口介质、不支持的 Profile、空镜像、放不下的镜像。它暂不支持指定倍速，用 `--engine native` 时把 `--speed` 留空。
 
@@ -86,7 +86,7 @@ Windows 的设备路径是 `E:`。默认不主动封盘，能否继续追加取�
 optiburn append photos --device /dev/sr0 --volume-id PHOTOS
 ```
 
-`append` 把目录内容映射到盘根，作为与已有区段合并的新区段追加。旧文件保持可见，Windows 挂载最后一个区段就能看到全部文件。空盘上这等价于首刻。`--close-disc` 在提交后对 CD 封盘。DVD+R 与 BD-R 的原生封盘尚未实现。
+`append` 把目录内容映射到盘根，作为与已有区段合并的新区段追加。旧文件保持可见，Windows 挂载最后一个区段就能看到全部文件。空盘上这等价于首刻。`--close-disc` 在提交后由引擎封盘。原生引擎支持 CD 与 DVD-R，DVD+R 与 BD-R 需要 Linux 上的 xorriso 后端。
 
 对随机可写介质（DVD-RAM、BD-RE），原生增长拒绝写入。Linux 默认档回退 xorriso，在那里 `--close-disc` 不生效，盘保持可覆写。
 
