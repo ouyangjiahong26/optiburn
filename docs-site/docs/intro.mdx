@@ -9,7 +9,7 @@ slug: /intro
 
 optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Windows 与 Linux 的 x86_64 与 arm64。它把目录做成镜像，把镜像或新区段写到光驱，再把盘上的内容读回来。
 
-同时支持 Windows 与 Linux、x86_64 与 arm64 四个组合的刻录软件很少，而 Linux 桌面（Ubuntu、银河麒麟等发行版）上的刻录体验尤其粗糙：命令行工具参数难记，没有进度，失败只有英文报错，盘片状态不对时要自己慢慢排查。optiburn 把这条流水线做成可靠的工具：写前检查把不稳定挡在写入之前，刻录有实时进度且可中止，失败成因归类成中文说明，写后可以回读校验。生成的镜像覆盖 ISO 9660、Joliet 与 UDF Bridge，老设备与 Windows 都能直接读。
+同时支持 Windows 与 Linux、x86_64 与 arm64 四个组合的刻录软件很少，而 Linux 桌面（Ubuntu、银河麒麟等发行版）上的刻录体验尤其粗糙：命令行工具参数难记，没有进度，失败只有英文报错，盘片状态不对时要自己慢慢排查。optiburn 把这条流水线做成可靠的工具：写前检查把不稳定挡在写入之前，刻录有实时进度且可中止，失败成因归类成中文说明，写后可以回读校验。生成的镜像覆盖 ISO 9660、Joliet、UDF Bridge，老设备与 Windows 都能直接读。
 
 <div className="doc-nav-grid">
   <a className="doc-nav-card" href="./quick-start">
@@ -34,19 +34,19 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Wind
 
 | 命令 | 现状 | 平台 |
 |---|---|---|
-| `optiburn build-image` | 按 profile 生成 ISO 9660、Joliet 与 UDF 镜像，字节布局在测试里断言，并与 xorriso 对拍。 | 四个目标都可用。 |
-| `optiburn burn` | 把镜像写到盘。默认多区段，`--close-disc` 才封盘。 | Linux 默认 `xorriso`，可选 `--engine native`。Windows 只走原生。 |
+| `optiburn build-image` | 按 profile 生成 ISO 9660、Joliet、UDF 镜像，字节布局在测试里断言，并与 xorriso 对拍。 | 四个目标都可用。 |
+| `optiburn burn` | 把镜像写到盘。介质支持时默认多区段，`--close-disc` 对 CD 与 DVD-R 封盘，DVD+R 与 BD-R 的原生封盘尚未实现。 | Linux 默认 `xorriso`，可选 `--engine native`。Windows 只走原生。 |
 | `optiburn append` | 读出末区段，把源目录嫁接上去，新区段只写目录结构与新文件数据，旧文件的数据块原地引用。 | 两平台默认原生增长。Linux 在随机可写介质、未知 Profile 或指定倍速时回退 xorriso 增长模式。 |
-| `optiburn probe` | 列出光驱、盘片状态、容量与增长模式后端。找不到设备时报“未发现光驱”，退出码 0。 | Linux 的 `/dev/sr*`，Windows 的盘符。 |
+| `optiburn probe` | 列出光驱、盘片状态、容量、增长模式后端。找不到设备时报“未发现光驱”，退出码 0。 | Linux 的 `/dev/sr*`，Windows 的设备路径（`E:`）。 |
 | `optiburn repair` | 关掉中断刻录留下的损坏轨道与区段，盘可以继续写。 | Linux 走 xorriso 的 `-close_damaged`，Windows 走原生。 |
 | `optiburn salvage` | 读标准读取器看不见的未关闭轨道，按写入边界给每条文件定性，把能读的部分抽出来。 | 两平台都走原生 MMC 读侧。先抢救，再修复。 |
-| 读盘 | 卷标、末区段门禁、目录树列举与抽取收在同一个 `ReadBackend` 接缝上。 | Linux 先走 xorriso，读不到 ISO 9660 时回退原生。Windows 走原生 ISO 9660 与 UDF。 |
+| 读盘 | 卷标、末区段门禁、目录树列举、抽取收在同一个 `ReadBackend` 接缝上。 | Linux 先走 xorriso，读不到 ISO 9660 时回退原生。Windows 走原生 ISO 9660 与 UDF。 |
 | 图形前端 | 四个页面覆盖 `probe`、`build-image`、`burn`、`append`、`salvage`，`repair` 只在命令行。刻录类任务可中止。 | Tauri 2 + React。Windows 的刻录、增长、读盘走原生，Linux 的刻录与读盘首路径走 xorriso，追加默认原生增长。 |
 
 硬件证据与功能清单分开列，避免把验证范围读成功能范围：
 
 - 原生刻录在 2026-10-10 的 Windows CD-R 与 2026-10-22 的 Linux DVD-R 上真机验证。DVD+R、DVD+RW、BD-R 还没有真机写入验证。
-- 原生增长在 2026-10-15 的 Linux 多区段 CD-R 上实测，写前从 51.0 秒降到 1.6 秒。DVD+R 的追加仍未验证，DVD-R 与 DVD-RW 做不出第二区段。
+- 原生增长在 2026-10-15 的 Linux 多区段 CD-R 上实测，写前从 51.0 秒降到 1.6 秒。DVD+R 与 DVD+RW 的追加仍未验证，DVD-R 与 DVD-RW 做不出第二区段。
 - 读盘在 2026-10-10 的 Windows CD-R 上验证，两种区段地址约定都读通。Linux 的后端回退在 2026-10-12 的设备路径上验证，纯 UDF 实物盘仍待补。
 - `salvage` 在 2026-10-11 的一张被中断写入的盘上验证。
 

@@ -126,21 +126,21 @@ CD-R 已在 Windows 真机验证，DVD-R 已在 Linux 真机验证。DVD-R 的�
 
 `grow` 默认走原生增长（`native::grow` 读旧区段、生成新区段，生成器在 `grow.rs` 与
 `grow/old_session.rs`，见 ADR-0020），Windows 与 Linux 都一样。Linux 上每次写入前按
-设备事实解析实际后端：随机可写介质、Profile 不在支持名单、指定倍速三条命中时回退
-xorriso 增长模式（ADR-0027）。界面与 `OPTIBURN_GROW_BACKEND` 可以显式选择后端，显式
-选择不回退。
+驱动器的静态事实与调用方的请求解析实际后端：随机可写介质、Profile 不在支持名单、
+指定倍速三条命中时回退 xorriso 增长模式（ADR-0027）。图形前端与
+`OPTIBURN_GROW_BACKEND` 可以显式选择后端，显式选择不回退。
 
 #### 读盘
 
-读侧五个能力 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
-`last_session_is_iso` 接在 `ReadBackend` 接缝上。`XorrisoRead` 是子进程，`NativeRead`
+读侧五个能力 `read_volume_id`、`iso_session_state`、`list_tree`、`extract_tree`、
+`extract_paths` 接在 `ReadBackend` 接缝上。`XorrisoRead` 是子进程，`NativeRead`
 是原生块读加 ISO 9660 与 UDF 解析（ADR-0018、ADR-0021、ADR-0024）。Windows 默认原生，
 Linux 先走 xorriso，读不到 ISO 9660 时回退原生。
 
 #### 门禁与校验
 
 `grow_size` 是增长模式的尺寸预演，返回即将写入的新区段字节数，供写前容量门禁比较。
-默认取原生会话计划的尺寸，回退到 xorriso 时是 `xorriso -print_size`（ADR-0027）。
+默认取原生增长会话计划的尺寸，回退到 xorriso 时是 `xorriso -print_size`（ADR-0027）。
 `append_gate_session_state` 是写前门禁的末区段判定，读法跟随写盘引擎（ADR-0028）。
 `capacity_gate` 把待写入量与区段开销相加，再与可用容量比较，区段开销按动作与介质取值，
 优先用盘上实测几何（ADR-0019 修订）。`compare_trees` 按文件名与内容单向对比，回读校验
@@ -155,12 +155,13 @@ Linux 先走 xorriso，读不到 ISO 9660 时回退原生。
 指引由 CLI 与 GUI 按系统给出，见 ADR-0004 补记）与其它 I/O 错误（`Io`），原生写序列
 与块与块之间的取消检查，原生读侧的区段候选枚举（READ TOC Format 0 与 1）、两种区段
 地址约定的探测、损坏末区段的回退与 UDF 的三种定位约定（ADR-0018、ADR-0021、ADR-0022），
-原生增长的会话布局（绝对地址、两套目录树、四张路径表，ADR-0020）。
+原生增长会话的布局（绝对地址、两套目录树、四张路径表，ADR-0020）。
 
 已知缺口：xorriso 引擎的进度只是粗粒度提示，cdrecord 风格输出里缓冲区与 fifo 的百分比
 与写入百分比同格式，成功时统一补发 1.0。原生引擎的进度按已写块数算，是精确的。原生
-引擎还缺倍速协商与写失败重试（ADR-0017、ADR-0027）。原生增长不结转 Rock Ridge 元数据，
-也没有 Joliet 之外的名字扩展（ADR-0020）。UDF 读侧的能力边界见 ADR-0021。
+引擎还缺倍速协商、写失败重试、DVD+R 族与 BD-R 的封盘路径（ADR-0017、ADR-0027）。
+原生增长不结转 Rock Ridge 元数据，也没有 Joliet 之外的名字扩展（ADR-0020）。UDF 读侧
+的能力边界见 ADR-0021。
 
 ### optiburn-cli
 
@@ -185,14 +186,14 @@ workspace 内，以路径依赖引用核心 crate。四个页面覆盖五个子�
 |---|---|---|
 | `build-image` | 原生 | 原生 |
 | `burn` | 默认 xorriso，可选原生（DVD-R 已真机验证） | 原生，CD-R 已真机验证 |
-| `append` | 默认原生增长，按设备事实回退 xorriso | 原生增长 |
-| `probe` | `/dev/sr*` | 盘符 |
+| `append` | 默认原生增长，按设备事实与请求回退 xorriso | 原生增长 |
+| `probe` | `/dev/sr*` | `E:` |
 | 读盘 | xorriso 优先，读不到 ISO 9660 时回退原生 | 原生 ISO 9660 与 UDF |
 | `repair` | xorriso `-close_damaged` | 原生 |
 | `salvage` | 原生 MMC 读侧 | 原生 MMC 读侧 |
 
-平台分支默认收在 `optiburn-transport`。GUI 侧的平台差异收在 `src-tauri` 的独立模块里，
-不散落在命令层。
+平台分支默认收在 `optiburn-transport`。GUI 侧的平台差异主要收在 `src-tauri` 的独立模块
+里，命令层的引擎分派仍有一处 `cfg!(windows)`（ADR-0017）。
 
 ## 现状与边界
 
@@ -200,7 +201,7 @@ workspace 内，以路径依赖引用核心 crate。四个页面覆盖五个子�
 |---|---|---|
 | 镜像布局 | 扇区级断言，xorriso 回读对拍，含中文名 | 上游版本升级后布局是否漂移，由测试拦截 |
 | 原生刻录 | CD-R（2026-10-10，Windows），DVD-R（2026-10-22，Linux，两台驱动器） | DVD+R、DVD+RW、BD-R。Windows 上的 DVD-R 与 Linux 上的 CD-R 未单独验证 |
-| 原生增长 | Linux 多区段 CD-R（2026-10-15），写前 51.0 秒降到 1.6 秒 | DVD+R 追加，BD-R 追加 |
+| 原生增长 | Linux 多区段 CD-R（2026-10-15），写前 51.0 秒降到 1.6 秒 | DVD+R 与 DVD+RW 追加，BD-R 追加 |
 | 原生读盘 | Windows CD-R（2026-10-10），两种区段地址约定，Linux 设备路径回退（2026-10-12） | 纯 UDF 实物盘 |
 | 抢救 | 被中断写入的盘（2026-10-11） | 其它中断形态未逐一真机验证，按候选区段回退处理，见 ADR-0022 |
 | 四个目标构建 | `cargo check` 覆盖四个目标 | 现有硬件验证记录都在 x86_64 机器上，arm64 只做构建检查 |
@@ -209,7 +210,7 @@ workspace 内，以路径依赖引用核心 crate。四个页面覆盖五个子�
 
 - 原生引擎的倍速协商（SET CD SPEED）与写失败重试。
 - DAO/SAO 写入路径，目前只有 TAO 与增量写。
-- BD-R 与 DVD±RW 的介质验证，DVD+R 的增长实测。
+- BD-R 与 DVD±RW 的介质验证，DVD+R 与 DVD+RW 的增长实测。
 - CD 介质的 ATIP 读取，容量目前不依赖它。
 - 原生增长的 Rock Ridge 结转与名字扩展，现在只有 Joliet。
 - Windows 上的 IMAPI2 校验（只校验，不接管写入，见 ADR-0005）。

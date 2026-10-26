@@ -16,7 +16,7 @@ The project exists because software covering all four platform combinations is r
 | Command | What it does | Platforms |
 |---|---|---|
 | `optiburn build-image` | Builds ISO 9660, Joliet and profile-appropriate UDF images. The byte layout is asserted in tests and compared with xorriso. | All four targets. |
-| `optiburn burn` | Writes an image. Multi-session by default, `--close-disc` finalizes. | Linux: `xorriso` by default, `--engine native` optional. Windows: native only. |
+| `optiburn burn` | Writes an image. Multi-session by default where the media allows; `--close-disc` finalizes CD and DVD-R. DVD+R and BD-R have no native finalize path yet. | Linux: `xorriso` by default, `--engine native` optional. Windows: native only. |
 | `optiburn append` | Reads the last session, grafts a directory onto it and writes a new session that references the old file blocks in place. | Native growth on both platforms. Linux falls back to xorriso growth on rewritable media, an unknown profile, or a requested speed. |
 | `optiburn probe` | Lists drives, media state, capacity and the growth backend. Exits 0 when no drive is present. | Linux `/dev/sr*`, Windows drive letters. |
 | `optiburn repair` | Closes the damaged track and session left by an interrupted burn so the disc can be written again. | Linux: xorriso `-close_damaged`. Windows: native. |
@@ -27,7 +27,7 @@ The project exists because software covering all four platform combinations is r
 Hardware evidence, kept separate from the feature list:
 
 - Native burning was verified on a CD-R on Windows on 2026-10-10 and on DVD-R on Linux on 2026-10-22 in two drives. DVD+R, DVD+RW and BD-R have no hardware write verification yet.
-- Native growth was measured on Linux with a multi-session CD-R on 2026-10-15: preparation fell from 51.0 s to 1.6 s. DVD+R append is still unverified. DVD-R and DVD-RW cannot take a second session.
+- Native growth was measured on Linux with a multi-session CD-R on 2026-10-15: preparation fell from 51.0 s to 1.6 s. DVD+R and DVD+RW append are still unverified. DVD-R and DVD-RW cannot take a second session.
 - Disc reading was verified on a Windows CD-R on 2026-10-10 with both session-addressing conventions. On Linux the fallback to the native reader was verified on a device path on 2026-10-12, and a physical UDF-only disc is still pending.
 - `salvage` was verified on an interrupted disc on 2026-10-11.
 
@@ -76,7 +76,7 @@ The image embeds a build timestamp, so sizes track the directory contents. `--pr
 optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
-Windows device names are drive letters: `--device E:`. By default the disc is left appendable, and `--close-disc` finalizes it. Before writing, the command waits for the media to become ready, refuses a finalized disc, refuses an appendable disc with an image because that would hide the old files and asks for `append` instead, allows rewritable media, and blocks a disc the system has mounted with an unmount hint.
+Windows device names are drive letters: `--device E:`. By default the disc is not finalized; whether another session fits depends on the media. `--close-disc` finalizes CD and DVD-R; the native engine has no finalize path for DVD+R or BD-R yet, so the flag leaves the write sequence unchanged there (ADR-0017). Before writing, the command waits for the media to become ready, refuses a finalized disc, refuses an appendable disc with an image because that would hide the old files and asks for `append` instead, allows rewritable media, and on Linux blocks a disc the system has mounted with an unmount hint.
 
 `--engine` takes `xorriso` (the default, needs `xorriso` on `PATH`) or `native` (our own MMC commands, the only option on Windows). Other values are rejected. The native engine writes a new session on an appendable disc and refuses finalized media, bad profiles, empty images and images that do not fit. It cannot set the write speed yet, so leave `--speed` empty with `--engine native`.
 
@@ -86,11 +86,11 @@ Windows device names are drive letters: `--device E:`. By default the disc is le
 optiburn append photos --device /dev/sr0 --volume-id PHOTOS
 ```
 
-`append` maps the directory contents to the disc root as a merged new session. Files from earlier sessions stay visible, and Windows, which mounts the last session, sees all of them. On a blank disc this is the first burn. `--close-disc` finalizes after committing.
+`append` maps the directory contents to the disc root as a merged new session. Files from earlier sessions stay visible, and Windows, which mounts the last session, sees all of them. On a blank disc this is the first burn. `--close-disc` finalizes after committing on CD. On DVD+R and BD-R the native engine cannot finalize yet.
 
 On rewritable media (DVD-RAM, BD-RE) the native writer refuses to grow. Linux falls back to xorriso, where `--close-disc` has no effect, so the disc stays rewritable.
 
-Native growth writes an ISO 9660 + Joliet session that references the old file blocks in place (ADR-0020). The drive keeps the disc appendable unless you pass `--close-disc`, and Explorer only refreshes its mount view after the disc is ejected and reinserted. If the old session has a shape the native writer cannot graft (no Joliet, a boot record, multi-extent files), the append is refused with the reason.
+Native growth writes an ISO 9660 + Joliet session that references the old file blocks in place (ADR-0020). Explorer only refreshes its mount view after the disc is ejected and reinserted. If the old session has a shape the native writer cannot graft (no Joliet, a boot record, multi-extent files), the append is refused with the reason.
 
 Linux falls back to xorriso growth on device facts only: rewritable media, an unknown profile, or a requested speed. The append page offers a backend choice, and the CLI uses `OPTIBURN_GROW_BACKEND` (`auto`, `native`, `xorriso`). An explicit choice never falls back.
 

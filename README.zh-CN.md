@@ -9,25 +9,25 @@
 
 optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Windows 与 Linux 的 x86_64 与 arm64。它做三件事：把目录做成镜像，把镜像或新区段写到光驱，把盘上的内容读回来。镜像带 ISO 9660 与 Joliet，`dvd` 与 `bd` 档另带 UDF（`dvd` 是 UDF 1.02 Bridge），Windows 与老设备都能直接读。
 
-同时支持 Windows 与 Linux、x86_64 与 arm64 四个组合的刻录软件很少，Linux 桌面（Ubuntu、银河麒麟等发行版）上的体验尤其粗糙：命令行参数难记，没有进度，失败只有英文报错，盘片状态不对时要自己排查。optiburn 把写前检查、可中止的实时进度、归类的失败说明与回读校验放在同一条流水线上。
+同时支持 Windows 与 Linux、x86_64 与 arm64 四个组合的刻录软件很少，Linux 桌面（Ubuntu、银河麒麟等发行版）上的体验尤其粗糙：命令行参数难记，没有进度，失败只有英文报错，盘片状态不对时要自己排查。optiburn 把写前检查、可中止的实时进度、归类的失败说明、回读校验放在同一条流水线上。
 
 ## 当前能力（0.1.9）
 
 | 命令 | 做什么 | 平台 |
 |---|---|---|
-| `optiburn build-image` | 按 profile 生成 ISO 9660、Joliet 与 UDF 镜像。字节布局在测试里逐扇区断言，并与 xorriso 对拍。 | 四个目标都可用。 |
-| `optiburn burn` | 把镜像写到盘。默认多区段，`--close-disc` 才封盘。 | Linux 默认 `xorriso`，可选 `--engine native`。Windows 只走原生。 |
+| `optiburn build-image` | 按 profile 生成 ISO 9660、Joliet、UDF 镜像。字节布局在测试里逐扇区断言，并与 xorriso 对拍。 | 四个目标都可用。 |
+| `optiburn burn` | 把镜像写到盘。介质支持时默认多区段，`--close-disc` 对 CD 与 DVD-R 封盘，DVD+R 与 BD-R 的原生封盘尚未实现。 | Linux 默认 `xorriso`，可选 `--engine native`。Windows 只走原生。 |
 | `optiburn append` | 读出末区段，把源目录嫁接上去，新区段只写目录结构与新文件数据，旧文件的数据块原地引用。 | 两平台默认原生增长。Linux 在随机可写介质、未知 Profile 或指定倍速时回退 xorriso 增长模式。 |
-| `optiburn probe` | 列出光驱、盘片状态、容量与增长模式后端。没有光驱时退出 0。 | Linux 的 `/dev/sr*`，Windows 的盘符。 |
+| `optiburn probe` | 列出光驱、盘片状态、容量、增长模式后端。没有光驱时退出 0。 | Linux 的 `/dev/sr*`，Windows 的设备路径（`E:`）。 |
 | `optiburn repair` | 关掉中断刻录留下的损坏轨道与区段，盘可以继续写。 | Linux 走 xorriso 的 `-close_damaged`，Windows 走原生。 |
 | `optiburn salvage` | 读标准读取器看不见的未关闭轨道，按写入边界给每条文件定性，把能读的部分抽出来。 | 两平台都走原生 MMC 读侧。先抢救，再修复。 |
-| 读盘 | 卷标、末区段门禁、目录树列举与抽取收在同一个 `ReadBackend` 接缝上。 | Linux 先走 xorriso，读不到 ISO 9660 时回退原生。Windows 走原生 ISO 9660 与 UDF。 |
+| 读盘 | 卷标、末区段门禁、目录树列举、抽取收在同一个 `ReadBackend` 接缝上。 | Linux 先走 xorriso，读不到 ISO 9660 时回退原生。Windows 走原生 ISO 9660 与 UDF。 |
 | 图形前端 | 四个页面覆盖 `probe`、`build-image`、`burn`、`append`、`salvage`，`repair` 只在命令行。刻录类任务可中止。 | Tauri 2 + React。Windows 的刻录、增长、读盘走原生，Linux 的刻录与读盘首路径走 xorriso，追加默认原生增长。 |
 
 硬件证据与功能清单分开列，避免把验证范围读成功能范围：
 
 - 原生刻录在 2026-10-10 的 Windows CD-R 与 2026-10-22 的 Linux DVD-R 上真机验证，后者用了两台驱动器。DVD+R、DVD+RW、BD-R 还没有真机写入验证。
-- 原生增长在 2026-10-15 的 Linux 多区段 CD-R 上实测，写前从 51.0 秒降到 1.6 秒。DVD+R 的追加仍未验证，DVD-R 与 DVD-RW 做不出第二区段。
+- 原生增长在 2026-10-15 的 Linux 多区段 CD-R 上实测，写前从 51.0 秒降到 1.6 秒。DVD+R 与 DVD+RW 的追加仍未验证，DVD-R 与 DVD-RW 做不出第二区段。
 - 读盘在 2026-10-10 的 Windows CD-R 上验证，两种区段地址约定都读通。Linux 的后端回退在 2026-10-12 的设备路径上验证，纯 UDF 实物盘仍待补。
 - `salvage` 在 2026-10-11 的一张被中断写入的盘上验证。
 
@@ -40,7 +40,7 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Wind
 依赖：
 
 - Rust 1.98.1，由 `rust-toolchain.toml` 固定。
-- `PATH` 上有 `xorriso`，Linux 的默认刻录引擎、读盘首路径、增长模式回退与测试参考实现都用它。Debian 与 Ubuntu 用 `sudo apt install xorriso`。
+- `PATH` 上有 `xorriso`，Linux 的默认刻录引擎、读盘首路径、增长模式回退、测试参考实现都用它。Debian 与 Ubuntu 用 `sudo apt install xorriso`。
 - 对光驱的写权限，通常加入 `cdrom` 组，或用 root。
 
 ```bash
@@ -76,9 +76,9 @@ $ optiburn build-image docs -o docs.iso --profile dvd --volume-id OPTIBURN
 optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
-Windows 的设备名是盘符：`--device E:`。默认盘保持可追加，`--close-disc` 才封盘。写前检查会等盘片就绪，拒绝已封口的盘，拒绝在可追加盘上写整份镜像并提示改用 `append`，放行随机可写介质，盘被系统挂载时拦下并提示卸载。
+Windows 的设备路径是 `E:`。默认不主动封盘，能否继续追加取决于介质。`--close-disc` 对 CD 与 DVD-R 封盘。原生引擎还没有 DVD+R 与 BD-R 的封盘路径，`--close-disc` 在那两族不改变写序列（ADR-0017）。写前检查会等盘片就绪，拒绝已封口的盘，拒绝在可追加盘上写整份镜像并提示改用 `append`，放行随机可写介质，Linux 上盘被系统挂载时拦下并提示卸载。
 
-`--engine` 取 `xorriso`（默认值，需要 `PATH` 上有 `xorriso`）或 `native`（自己发 MMC 命令，Windows 上唯一可用），其它值直接拒绝。原生引擎在可追加盘上写新区段，拒绝已封口介质、不支持的 Profile、空镜像与放不下的镜像。它暂不支持指定倍速，用 `--engine native` 时把 `--speed` 留空。
+`--engine` 取 `xorriso`（默认值，需要 `PATH` 上有 `xorriso`）或 `native`（自己发 MMC 命令，Windows 上唯一可用），其它值直接拒绝。原生引擎在可追加盘上写新区段，拒绝已封口介质、不支持的 Profile、空镜像、放不下的镜像。它暂不支持指定倍速，用 `--engine native` 时把 `--speed` 留空。
 
 ### 追加
 
@@ -86,13 +86,13 @@ Windows 的设备名是盘符：`--device E:`。默认盘保持可追加，`--cl
 optiburn append photos --device /dev/sr0 --volume-id PHOTOS
 ```
 
-`append` 把目录内容映射到盘根，作为与已有区段合并的新区段追加。旧文件保持可见，Windows 挂载最后一个区段就能看到全部文件。空盘上这等价于首刻。`--close-disc` 在提交后封盘。
+`append` 把目录内容映射到盘根，作为与已有区段合并的新区段追加。旧文件保持可见，Windows 挂载最后一个区段就能看到全部文件。空盘上这等价于首刻。`--close-disc` 在提交后对 CD 封盘。DVD+R 与 BD-R 的原生封盘尚未实现。
 
 对随机可写介质（DVD-RAM、BD-RE），原生增长拒绝写入。Linux 默认档回退 xorriso，在那里 `--close-disc` 不生效，盘保持可覆写。
 
-原生增长生成 ISO 9660 加 Joliet 的区段，旧文件的数据块原地引用（ADR-0020）。不传 `--close-disc` 时盘保持可追加，资源管理器要弹出光盘再放回才会刷新挂载视图。旧区段形状不支持嫁接时（没有 Joliet、含启动记录、含多 extent 文件），追加会被拒绝并说明原因。
+原生增长生成 ISO 9660 加 Joliet 的区段，旧文件的数据块原地引用（ADR-0020）。资源管理器要弹出光盘再放回才会刷新挂载视图。旧区段形状不支持嫁接时（没有 Joliet、含启动记录、含多 extent 文件），追加会被拒绝并说明原因。
 
-Linux 只在设备事实上回退 xorriso：随机可写介质、未知 Profile、指定了倍速。界面可选增长模式后端，命令行用 `OPTIBURN_GROW_BACKEND`（`auto`、`native`、`xorriso`），显式选择不回退。
+Linux 只按驱动器的静态事实与调用方的请求回退 xorriso：随机可写介质、未知 Profile、指定了倍速。图形前端可选增长模式后端，命令行用 `OPTIBURN_GROW_BACKEND`（`auto`、`native`、`xorriso`），显式选择不回退。
 
 ### 查看光驱
 
@@ -138,7 +138,7 @@ done
 
 ## 致谢
 
-- [hadris](https://github.com/hxyulin/hadris)：MIT 许可的 Rust 镜像生成库（`hadris-cd`），ISO 9660、Joliet 与 UDF 布局由它产出。
+- [hadris](https://github.com/hxyulin/hadris)：MIT 许可的 Rust 镜像生成库（`hadris-cd`），ISO 9660、Joliet、UDF 布局由它产出。
 - [xorriso / libburnia](https://www.gnu.org/software/xorriso/)：本项目测试对拍的参考实现，也是 Linux 的默认刻录后端（子进程调用，不链接 GPL 代码）。
 - [alight](https://github.com/vicr123/alight)：Linux `SG_IO` 传输层结构的参考，未复制代码（该仓库没有许可证）。
 

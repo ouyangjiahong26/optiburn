@@ -50,7 +50,7 @@ workspace 内，以路径依赖引用核心 crate。核心五个 crate 不引入
   build_image 生成 .iso（ISO 9660 + Joliet，按 profile 带 UDF）
   .iso 用于归档与校验，镜像本身与盘上字节一一对应
   .iso 交给 BurnJob，由 BurnEngine 写进光驱
-    默认用 xorriso，原生 MMC 写入已落地（ADR-0017）
+    Linux 默认用 xorriso，Windows 用原生，原生 MMC 写入已落地（ADR-0017）
 
 盘
   ReadBackend 读出卷标、末区段格式、目录树与文件
@@ -73,13 +73,13 @@ workspace 内，以路径依赖引用核心 crate。核心五个 crate 不引入
 
 `append` 走 `GrowJob`，默认原生增长：读出末区段的 Joliet 目录树，生成一个只含目录结构
 与新文件数据的新区段，旧文件的数据块原地引用（ADR-0020）。Linux 在随机可写介质、未知
-Profile 或指定倍速时回退 xorriso 增长模式，判据只看设备事实（ADR-0027）。显式选择后端
-不回退。
+Profile 或指定倍速时回退 xorriso 增长模式，判据是驱动器的静态事实与调用方的请求
+（ADR-0027）。显式选择后端不回退。
 
 ### 读盘接缝
 
-读侧五个能力 `read_volume_id`、`list_tree`、`extract_tree`、`extract_paths`、
-`last_session_is_iso` 接在 `ReadBackend` 接缝上。`XorrisoRead` 是子进程，`NativeRead`
+读侧五个能力 `read_volume_id`、`iso_session_state`、`list_tree`、`extract_tree`、
+`extract_paths` 接在 `ReadBackend` 接缝上。`XorrisoRead` 是子进程，`NativeRead`
 是原生块读加 ISO 9660 与 UDF 解析（ADR-0018、ADR-0021）。Windows 默认原生，Linux 先走
 xorriso，读不到 ISO 9660 时回退原生（ADR-0024）。
 
@@ -95,13 +95,13 @@ xorriso，读不到 ISO 9660 时回退原生（ADR-0024）。
 |---|---|---|
 | `build-image` | 原生 | 原生 |
 | `burn` | 默认 xorriso，可选原生（DVD-R 已真机验证） | 原生，CD-R 已真机验证 |
-| `append` | 默认原生增长，按设备事实回退 xorriso | 原生增长 |
+| `append` | 默认原生增长，按设备事实与请求回退 xorriso | 原生增长 |
 | 读盘 | xorriso 优先，读不到 ISO 9660 时回退原生 | 原生 ISO 9660 与 UDF |
 | `repair` | xorriso `-close_damaged` | 原生 |
 | `salvage` | 原生 MMC 读侧 | 原生 MMC 读侧 |
 
-平台分支默认收在 `optiburn-transport`。GUI 侧的平台差异收在 `src-tauri` 的独立模块里，
-不散落在命令层。
+平台分支默认收在 `optiburn-transport`。GUI 侧的平台差异主要收在 `src-tauri` 的独立模块
+里，命令层的引擎分派仍有一处 `cfg!(windows)`（ADR-0017）。
 
 ## 现状与边界
 
@@ -109,7 +109,7 @@ xorriso，读不到 ISO 9660 时回退原生（ADR-0024）。
 |---|---|---|
 | 镜像布局 | 扇区级断言，xorriso 回读对拍，含中文名 | 上游换版本后的布局漂移由测试拦截 |
 | 原生刻录 | CD-R（2026-10-10，Windows），DVD-R（2026-10-22，Linux） | DVD+R、DVD+RW、BD-R。Windows 上的 DVD-R 与 Linux 上的 CD-R 未单独验证 |
-| 原生增长 | Linux 多区段 CD-R（2026-10-15），写前 51.0 秒降到 1.6 秒 | DVD+R 追加，BD-R 追加 |
+| 原生增长 | Linux 多区段 CD-R（2026-10-15），写前 51.0 秒降到 1.6 秒 | DVD+R 与 DVD+RW 追加，BD-R 追加 |
 | 原生读盘 | Windows CD-R（2026-10-10），Linux 设备路径回退（2026-10-12） | 纯 UDF 实物盘 |
 | 抢救 | 被中断写入的盘（2026-10-11） | 其它中断形态按候选区段回退处理 |
 
@@ -117,7 +117,7 @@ xorriso，读不到 ISO 9660 时回退原生（ADR-0024）。
 
 - 原生引擎的倍速协商（SET CD SPEED）与写失败重试。
 - DAO/SAO 写入路径。
-- BD-R、DVD±RW 的介质验证，DVD+R 的增长实测。
+- BD-R、DVD±RW 的介质验证，DVD+R 与 DVD+RW 的增长实测。
 - CD 介质的 ATIP 读取，容量目前不依赖它。
 - 原生增长的 Rock Ridge 结转与名字扩展。
 - Windows 上的 IMAPI2 校验（只校验，不接管写入，见 ADR-0005）。
