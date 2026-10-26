@@ -165,7 +165,7 @@ Linux 先走 xorriso，读不到 ISO 9660 时回退原生。
 
 ### optiburn-cli
 
-接口：六个子命令。`burn` 与 `append` 先跑前置检查（`ensure_burnable`：Linux 上的挂载占用
+接口：六个子命令。`burn` 与 `append` 先跑前置检查（`ensure_burnable`：挂载占用（仅 Linux）
 与末区段格式直接拒绝，等介质就绪，按盘片状态路由放行或拒绝，见 ADR-0006 与 ADR-0010），再过
 写前容量门禁（`ensure_fits` 转调引擎的 `capacity_gate`，超过可用容量时把待写入、区段
 开销、可用容量三个数字摊开，读不到容量口径则跳过，见 ADR-0019 修订），然后进引擎。

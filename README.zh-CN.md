@@ -76,7 +76,7 @@ $ optiburn build-image docs -o docs.iso --profile dvd --volume-id OPTIBURN
 optiburn burn docs.iso --device /dev/sr0 --speed 8
 ```
 
-Windows 的设备路径是 `E:`。默认不主动封盘，能否继续追加取决于介质。`--close-disc` 由引擎封盘。Linux 默认的 xorriso 能封它支持的介质，DVD+R 与 BD-R 也在其中。原生引擎只实现 CD 与 DVD-R 的封盘，所以这两族在 Windows 上不封盘，Linux 上需要 xorriso（ADR-0017）。写前检查会等盘片就绪，拒绝已封口的盘，拒绝在可追加盘上写整份镜像并提示改用 `append`，放行随机可写介质，Linux 上盘被系统挂载时拦下并提示卸载。
+Windows 的设备路径是 `E:`。默认不主动封盘，能否继续追加取决于介质。`--close-disc` 由引擎封盘。Linux 默认的 xorriso 能封它支持的介质，DVD+R 与 BD-R 也在其中。原生引擎只实现 CD 与 DVD-R 的封盘，所以 DVD+R 与 BD-R 在 Windows 上不封盘，Linux 上需要 xorriso（ADR-0017）。写前检查会等盘片就绪，拒绝已封口的盘，拒绝在可追加盘上写整份镜像并提示改用 `append`，放行随机可写介质，Linux 上盘被系统挂载时拦下并提示卸载。
 
 `--engine` 取 `xorriso`（默认值，需要 `PATH` 上有 `xorriso`）或 `native`（自己发 MMC 命令，Windows 上唯一可用），其它值直接拒绝。原生引擎在可追加盘上写新区段，拒绝已封口介质、不支持的 Profile、空镜像、放不下的镜像。它暂不支持指定倍速，用 `--engine native` 时把 `--speed` 留空。
 
