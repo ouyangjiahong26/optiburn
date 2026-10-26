@@ -30,7 +30,7 @@
 | TAO（Track At Once） | 逐轨写入，轨间留链接块。适合多区段追加。 | 轨道写入 |
 | DAO（Disc At Once） | 一次性写完整个盘的写入模式，无轨间间隙，CD 音频母盘常用。 | 整盘写入 |
 | Joliet | ISO 9660 的补充卷描述符扩展，提供 Unicode（含中文）长文件名，Windows 原生读取。对应 `JolietLevel`。 | 长文件名扩展 |
-| Rock Ridge | ISO 9660 的 POSIX 属性扩展（权限、符号链接、大小写），Linux/Unix 更愿意读它。镜像构建不启用，增长模式的写入会带上（实测，ADR-0010）。 | RR、RRIP |
+| Rock Ridge | ISO 9660 的 POSIX 属性扩展（权限、符号链接、大小写），Linux/Unix 更愿意读它。镜像构建不启用，原生增长不结转旧区段的 RRIP，xorriso 增长模式会带上（ADR-0020、ADR-0027）。 | RR、RRIP |
 | UDF Bridge | 同一份镜像里同时存在 ISO 9660 与 UDF 两个文件系统、且共享同一份文件数据区的布局。 | 混合镜像、hybrid ISO、双文件系统 |
 | 纯 UDF 盘（UDF-only Disc） | 末区段只有 UDF 文件系统、没有 ISO 9660 描述符的盘。与 UDF Bridge 盘相对。 | UDF 盘、纯 UDF |
 | ISO 9660 Level | 主命名空间的名字长度规则：Level 1 是 8.3，Level 2 是 30 字符，Level 3（ISO 9660:1999）允许多区段与更长名字。 | ISO 级别、版本 |
