@@ -1,5 +1,6 @@
-// 刻录：设备与镜像配对成行，多行提交即多设备并发（issue #50）。命令立即返回，
-// 进度与结果全部来自事件，门禁失败用对话框逐条引导。
+// 刻录：默认单设备表单；开启多设备写入（设置页，ADR-0025 补记）后设备与镜像
+// 配对成行，多行提交即多设备并发（issue #50）。命令立即返回，进度与结果全部
+// 来自事件，门禁失败用对话框逐条引导。
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
@@ -24,7 +25,15 @@ type BurnRow = {
 // 行 id 用模块级递增计数器：行会增删，key 必须跨重渲染稳定。
 let nextRowId = 1;
 
-export function BurnPage({ jobs, results, pushResult, startJob, abortJob, active }: PageProps) {
+export function BurnPage({
+  jobs,
+  results,
+  pushResult,
+  startJob,
+  abortJob,
+  active,
+  multiDevice,
+}: PageProps & { multiDevice: boolean }) {
   const [rows, setRows] = useState<BurnRow[]>([]);
   const [speed, setSpeed] = useState("");
   const [closeDisc, setCloseDisc] = useState(false);
@@ -37,6 +46,26 @@ export function BurnPage({ jobs, results, pushResult, startJob, abortJob, active
       void refresh();
     }
   }, [active, refresh]);
+
+  // 单设备形态恒有一行：为空补一行，关掉开关时收敛到首行。开关在设置页切换，
+  // 页面保持挂载，这里随属性变化即时生效。
+  useEffect(() => {
+    if (!multiDevice) {
+      setRows((current) =>
+        current.length === 1
+          ? current
+          : [
+              current[0] ?? {
+                id: nextRowId++,
+                device: "",
+                image: "",
+                error: null,
+                verify: null,
+              },
+            ],
+      );
+    }
+  }, [multiDevice]);
 
   const busyDevices = new Set(jobs.map((job) => job.device));
 
@@ -105,17 +134,19 @@ export function BurnPage({ jobs, results, pushResult, startJob, abortJob, active
         <div>
           <h1>{t("Burn", "刻录")}</h1>
           <p>{t("Write an image file to a blank disc.", "把镜像文件写入一张空盘。")}</p>
-          <p className="page-note">
-            {t("Burning to several drives at once: see ", "一次向多台光驱写入：见")}
-            <a
-              href="https://github.com/ouyangjiahong26/optiburn/blob/main/docs/MULTI-DRIVE.md"
-              target="_blank"
-              rel="noreferrer"
-            >
-              {t("Multi-drive writing", "多设备写入说明")}
-            </a>
-            {t(".", "。")}
-          </p>
+          {multiDevice && (
+            <p className="page-note">
+              {t("Burning to several drives at once: see ", "一次向多台光驱写入：见")}
+              <a
+                href="https://github.com/ouyangjiahong26/optiburn/blob/main/docs/MULTI-DRIVE.md"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {t("Multi-drive writing", "多设备写入说明")}
+              </a>
+              {t(".", "。")}
+            </p>
+          )}
         </div>
       </header>
       <form className="form" onSubmit={(event) => void handleSubmit(event)}>
@@ -167,16 +198,18 @@ export function BurnPage({ jobs, results, pushResult, startJob, abortJob, active
                     <RefreshCw size={13} className={probing ? "spin" : undefined} />
                     {t("Refresh", "刷新")}
                   </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() =>
-                      setRows((current) => current.filter((item) => item.id !== row.id))
-                    }
-                  >
-                    <X size={13} />
-                    {t("Remove", "移除")}
-                  </button>
+                  {multiDevice && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() =>
+                        setRows((current) => current.filter((item) => item.id !== row.id))
+                      }
+                    >
+                      <X size={13} />
+                      {t("Remove", "移除")}
+                    </button>
+                  )}
                 </div>
               </FormRow>
               <FormRow label={t("Image file", "镜像文件")}>
@@ -212,22 +245,24 @@ export function BurnPage({ jobs, results, pushResult, startJob, abortJob, active
             </fieldset>
           );
         })}
-        <div className="inline-controls">
-          <button
-            type="button"
-            className="btn"
-            disabled={!canAddRow}
-            onClick={() =>
-              setRows((current) => [
-                ...current,
-                { id: nextRowId++, device: "", image: "", error: null, verify: null },
-              ])
-            }
-          >
-            <Plus size={13} />
-            {t("Add device", "添加设备")}
-          </button>
-        </div>
+        {multiDevice && (
+          <div className="inline-controls">
+            <button
+              type="button"
+              className="btn"
+              disabled={!canAddRow}
+              onClick={() =>
+                setRows((current) => [
+                  ...current,
+                  { id: nextRowId++, device: "", image: "", error: null, verify: null },
+                ])
+              }
+            >
+              <Plus size={13} />
+              {t("Add device", "添加设备")}
+            </button>
+          </div>
+        )}
         <FormRow label={t("Speed", "倍速")} htmlFor="burn-speed">
           <input
             id="burn-speed"
