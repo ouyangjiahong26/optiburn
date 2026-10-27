@@ -9,11 +9,17 @@
 
 **中文**
 
-### 修复
+### 变更
+
+- 追加页不再提供“增长模式后端”选择。后端按设备事实自动分派，显式选择退到环境变量 `OPTIBURN_GROW_BACKEND`（诊断用），回退原因仍写进结果消息。
 
 - 可追加 DVD-R 上的追加刻录不再一开始就失败（ADR-0031 补记）：READ TRACK INFORMATION 问轨道 0xFF 只对 CD 与 DVD+R 族有定义，DVD-R 顺序记录介质上驱动器按非法请求拒绝，此前原样上抛“设备命令失败”。现在与容量探测同口径，被拒时改问 READ DISC INFORMATION 的末条轨道号，追加写入位置、镜像刻录起点、修复与容量读数都走这一条。
 
 **English**
+
+### CHANGED
+
+- The append page no longer offers a growth backend choice. The backend is picked from device facts; the explicit override moves to the `OPTIBURN_GROW_BACKEND` environment variable (for diagnostics), and fallback reasons are still reported in the result message.
 
 ### FIX
 

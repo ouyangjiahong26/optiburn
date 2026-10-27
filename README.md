@@ -92,7 +92,7 @@ On rewritable media (DVD-RAM, BD-RE) the native writer refuses to grow. Linux fa
 
 Native growth writes an ISO 9660 + Joliet session that references the old file blocks in place (ADR-0020). Explorer only refreshes its mount view after the disc is ejected and reinserted. If the old session has a shape the native writer cannot graft (no Joliet, a boot record, multi-extent files), the append is refused with the reason.
 
-Linux falls back to xorriso growth on device facts only: rewritable media, an unknown profile, or a requested speed. The append page offers a backend choice, and the CLI uses `OPTIBURN_GROW_BACKEND` (`auto`, `native`, `xorriso`). An explicit choice never falls back.
+Linux falls back to xorriso growth on device facts only: rewritable media, an unknown profile, or a requested speed. The backend choice is not exposed in the interface; the `OPTIBURN_GROW_BACKEND` environment variable (`auto`, `native`, `xorriso`) is the diagnostic override for both the GUI and the CLI, and an explicit choice never falls back.
 
 ### Inspect a drive
 

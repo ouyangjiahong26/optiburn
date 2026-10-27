@@ -48,8 +48,6 @@ export function startAppend(args: {
     speed: number | null;
     closeDisc: boolean;
     allowDamagedLastSession: boolean;
-    // 增长模式后端：auto 跟随默认（环境开关与平台默认），native 或 xorriso 为显式选择。
-    backend: string;
   };
 }): Promise<void> {
   return invoke("start_append", args);
