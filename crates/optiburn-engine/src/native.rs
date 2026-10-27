@@ -201,7 +201,7 @@ pub(crate) fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnErr
             profile.0,
         )));
     };
-    let track = mmc.read_track_information(LAST_TRACK)?;
+    let track = mmc.read_writable_track_information()?;
     let attempted = force || track.damaged;
     let mut error = None;
     if attempted {
@@ -211,7 +211,7 @@ pub(crate) fn repair(device: &str, force: bool) -> Result<RepairOutcome, BurnErr
             .err()
             .map(|e| e.to_string());
     }
-    let after = mmc.read_track_information(LAST_TRACK)?;
+    let after = mmc.read_writable_track_information()?;
     Ok(RepairOutcome {
         damaged: track.damaged,
         attempted,
@@ -262,7 +262,7 @@ fn grow_write_address(
     last_session_start: u32,
     last_track: u16,
 ) -> Result<u32, BurnError> {
-    let track = mmc.read_track_information(LAST_TRACK)?;
+    let track = mmc.read_writable_track_information()?;
     if track.nwa_valid && track.next_writable_address > last_session_start {
         return Ok(track.next_writable_address);
     }
@@ -270,7 +270,7 @@ fn grow_write_address(
     let damaged = track.damaged;
     if damaged {
         let _ = mmc.close_damaged(kind, last_track, true);
-        let repaired = mmc.read_track_information(LAST_TRACK)?;
+        let repaired = mmc.read_writable_track_information()?;
         if repaired.nwa_valid && repaired.next_writable_address > last_session_start {
             return Ok(repaired.next_writable_address);
         }
@@ -387,20 +387,17 @@ fn preflight(mmc: &mut MmcDevice) -> Result<(MediaKind, DiscStatus), BurnError> 
 /// 随机可写介质（DVD-RAM、BD-RE）从 0 开始顺序覆写。
 ///
 /// NWA 必须问驱动器（READ TRACK INFORMATION），不能自己按镜像大小推算：区段之间
-/// 还有 lead-in/lead-out 与链接块占用的地址。
+/// 还有 lead-in/lead-out 与链接块占用的地址。轨道号取“当前可写轨道”的统一口径
+/// （[`MmcDevice::read_writable_track_information`]）。
 fn start_lba(mmc: &mut MmcDevice, status: DiscStatus) -> Result<u32, BurnError> {
     match status {
         DiscStatus::Appendable => {
-            let track = mmc.read_track_information(LAST_TRACK)?;
+            let track = mmc.read_writable_track_information()?;
             Ok(track.next_writable_address)
         }
         _ => Ok(0),
     }
 }
-
-/// READ TRACK INFORMATION 的轨道号约定：CD 上用 0xFF 表示“当前可写的那条”
-/// （libburn 对 CD 同样传 0xFF，见其 mmc_read_track_info）。
-pub(crate) const LAST_TRACK: u32 = 0xFF;
 
 /// 镜像的块数：向上取整到 2048 字节块，末块不足时写零补齐。
 fn image_blocks(job: &BurnJob) -> Result<u64, BurnError> {

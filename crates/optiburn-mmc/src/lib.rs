@@ -258,26 +258,13 @@ impl MmcDevice {
     /// 可用容量优先取 READ TRACK INFORMATION（op 0x52）的剩余块数：顺序介质
     /// （CD-R/RW、DVD±R、BD-R）上下一可写地址加剩余块数就是盘的可写上限，即
     /// 总容量（libburn 的 `media_lba_limit` 同口径，实测与 xorriso 读出的整体
-    /// 容量一致）。轨道号先按 0xFF 问（MMC 只为 CD 与 DVD+R 族定义它，实测的
-    /// CD-R 驱动器认），驱动器不认时改用 `READ DISC INFORMATION` 字节 6 的末条
-    /// 轨道号（按 MMC 含 NWA 处的隐形轨道，也就是开放的那条）再问一次（libburn
-    /// 的 `mmc_read_track_info` 对 DVD-R 族就是这么传的），仍读不到就
-    /// 退回 READ FORMAT CAPACITIES：类型 1 的最大可格式化容量同时是总容量与
+    /// 容量一致）。轨道号的取法见 [`read_writable_track_information`]。仍读不到
+    /// 就退回 READ FORMAT CAPACITIES：类型 1 的最大可格式化容量同时是总容量与
     /// 可用容量（未格式化介质整盘待写），类型 2 的当前格式化容量只作总容量，
-    /// 不参与门禁（一次写介质上它是已写范围，不是剩余空间）。备用轨道号读不到
-    /// （0x51 失败或字段为 0，空白盘就是这样）时按轨道 1 再问一次，与 libburn
-    /// 对可覆写介质的取值一致，问不到就交给格式化容量那条路。两条路都读不到时
+    /// 不参与门禁（一次写介质上它是已写范围，不是剩余空间）。两条路都读不到时
     /// 两个口径都是 None，由调用方决定跳过显示与门禁。
     pub fn read_disc_capacity(&mut self) -> DiscCapacity {
-        let track = self.read_track_information(0xFF).ok().or_else(|| {
-            let fallback = self
-                .read_disc_information()
-                .ok()
-                .map(|info| info.last_session_last_track)
-                .filter(|track| *track > 0)
-                .unwrap_or(1);
-            self.read_track_information(u32::from(fallback)).ok()
-        });
+        let track = self.read_writable_track_information().ok();
         let formats = self.read_format_capacities().ok();
         disc_capacity_of(track.as_ref(), formats.as_ref())
     }
@@ -303,6 +290,32 @@ impl MmcDevice {
     pub fn read_track_information(&mut self, track: u32) -> Result<TrackInfo, MmcError> {
         let data = self.read_into(&write::track_info_cdb(track), write::TRACK_INFO_LEN)?;
         write::parse_track_information(&data).ok_or(MmcError::MalformedResponse)
+    }
+
+    /// 读“当前可写轨道”的轨道信息，取 NWA 的写路径（原生增长、追加起点、修复）
+    /// 与容量探测都走这里，不直接问 0xFF。
+    ///
+    /// 轨道号先按 0xFF 问（MMC 只为 CD 与 DVD+R 族定义它，实测的 CD-R 驱动器认），
+    /// 驱动器以 ILLEGAL REQUEST 拒绝时（顺序介质里 0xFF 无定义的型号：DVD-R 族、
+    /// BD-R；实测 DVDRAM GP70N 在 DVD-R 上回 ASC 0x21）改用 `READ DISC INFORMATION`
+    /// 字节 6 的末条轨道号再问一次（libburn 的 `mmc_read_track_info` 对 DVD-R 族
+    /// 就是这么传的），读不到末条轨道号（字段为 0，空白盘就是这样）时按轨道 1
+    /// 再问一次，与 libburn 对可覆写介质的取值一致。0xFF 之外的失败（真实传输
+    /// 故障、盘不在位）不回退，原样上抛：那里换轨道号重问也拿不到答案。
+    pub fn read_writable_track_information(&mut self) -> Result<TrackInfo, MmcError> {
+        match self.read_track_information(0xFF) {
+            Ok(track) => Ok(track),
+            Err(error) if !error.is_illegal_request() => Err(error),
+            Err(_) => {
+                let fallback = self
+                    .read_disc_information()
+                    .ok()
+                    .map(|info| info.last_session_last_track)
+                    .filter(|track| *track > 0)
+                    .unwrap_or(1);
+                self.read_track_information(u32::from(fallback))
+            }
+        }
     }
 
     /// READ TOC/PMA/ATIP（0x43）Format 1：区段信息，末区段起始地址在唯一一条
@@ -613,6 +626,9 @@ mod tests {
         /// 反例开关：0x52 的轨道号等于它时返回命令失败，模拟顺序介质里 0xFF 无定义
         /// 的驱动器（DVD-R 族、BD-R）。
         reject_track: Rc<RefCell<Option<u32>>>,
+        /// 反例失败的 sense（默认是 ILLEGAL REQUEST；换成非 5 号键可以模拟真实
+        /// 传输故障，那种失败不该触发轨道号回退）。
+        reject_sense: Vec<u8>,
         /// 0x51 的专用响应（容量探测的备用轨道号要从它取）。
         disc_information_reply: Option<Vec<u8>>,
     }
@@ -633,10 +649,15 @@ mod tests {
                 && let Some(reject) = *self.reject_track.borrow()
                 && u32::from(u16::from_be_bytes([cdb[2], cdb[3]])) == reject
             {
+                let sense = if self.reject_sense.is_empty() {
+                    vec![0x70, 0x00, 0x05, 0x20, 0x00, 0x00, 0x00, 0x0a]
+                } else {
+                    self.reject_sense.clone()
+                };
                 return Err(TransportError::CommandFailed {
                     cdb: cdb.to_vec(),
                     scsi_status: 2,
-                    sense: vec![0x70, 0x00, 0x05, 0x20, 0x00, 0x00, 0x00, 0x0a],
+                    sense,
                 });
             }
             let reply = match (cdb[0], &self.disc_information_reply) {
@@ -675,6 +696,7 @@ mod tests {
             reply,
             residual: 0,
             reject_track: Rc::new(RefCell::new(None)),
+            reject_sense: Vec::new(),
             disc_information_reply: None,
         };
         (MmcDevice::new(Box::new(fake)), issued, writes)
@@ -688,6 +710,7 @@ mod tests {
             reply,
             residual,
             reject_track: Rc::new(RefCell::new(None)),
+            reject_sense: Vec::new(),
             disc_information_reply: None,
         };
         (MmcDevice::new(Box::new(fake)), issued)
@@ -707,6 +730,7 @@ mod tests {
             reply,
             residual: 0,
             reject_track: Rc::new(RefCell::new(Some(reject_track))),
+            reject_sense: Vec::new(),
             disc_information_reply: Some(disc_information_reply),
         };
         (MmcDevice::new(Box::new(fake)), issued)
@@ -1009,6 +1033,65 @@ mod tests {
         );
         let ops: Vec<u8> = log.borrow().iter().map(|cdb| cdb[0]).collect();
         assert_eq!(ops, vec![0x52, 0x23], "不多发命令");
+    }
+
+    #[test]
+    fn writable_track_information_falls_back_when_ff_is_rejected() {
+        // 顺序介质（DVD-R 族、BD-R）上 0xFF 无定义：写路径的 NWA 解析要能拿到
+        // 末条轨道的读数，而不是把 ILLEGAL REQUEST 当设备故障上抛。实机形态见
+        // ADR-0031 补记（DVDRAM GP70N 在 DVD-R 上回 key 5 加 ASC 0x21）。
+        let mut track_reply = vec![0u8; write::TRACK_INFO_LEN];
+        track_reply[7] = 0x01; // NWA_V
+        track_reply[8..12].copy_from_slice(&118_512u32.to_be_bytes());
+        track_reply[12..16].copy_from_slice(&118_512u32.to_be_bytes());
+        track_reply[16..20].copy_from_slice(&2_179_376u32.to_be_bytes());
+
+        let mut disc_reply = vec![0u8; DISC_INFORMATION_LEN];
+        disc_reply[3] = 1;
+        disc_reply[4] = 4;
+        disc_reply[5] = 4;
+        disc_reply[6] = 4;
+
+        let (mut dev, log) = device_rejecting_track(track_reply, 0xFF, disc_reply);
+        let track = dev
+            .read_writable_track_information()
+            .expect("fallback works");
+        assert!(track.nwa_valid);
+        assert_eq!(track.next_writable_address, 118_512);
+        assert_eq!(track.free_blocks, 2_179_376);
+
+        let tracks: Vec<u32> = log
+            .borrow()
+            .iter()
+            .filter(|cdb| cdb[0] == 0x52)
+            .map(|cdb| u32::from(u16::from_be_bytes([cdb[2], cdb[3]])))
+            .collect();
+        assert_eq!(tracks, vec![0xFF, 4], "先问 0xFF，被拒后改问末条轨道");
+    }
+
+    #[test]
+    fn writable_track_information_propagates_non_illegal_failures() {
+        // 真实故障（这里用 NOT READY 模拟）不触发回退：换轨道号重问也拿不到答案，
+        // 只会掩盖故障。失败后不该再发 0x51 与 0x52。
+        let issued = Rc::new(RefCell::new(Vec::new()));
+        let fake = FakeTransport {
+            issued: Rc::clone(&issued),
+            writes: Rc::new(RefCell::new(Vec::new())),
+            reply: Vec::new(),
+            residual: 0,
+            reject_track: Rc::new(RefCell::new(Some(0xFF))),
+            reject_sense: vec![0x70, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x0a],
+            disc_information_reply: None,
+        };
+        let mut dev = MmcDevice::new(Box::new(fake));
+
+        let error = dev
+            .read_writable_track_information()
+            .expect_err("propagated as-is");
+        assert!(error.to_string().contains("status=2"), "{error}");
+
+        let ops: Vec<u8> = issued.borrow().iter().map(|cdb| cdb[0]).collect();
+        assert_eq!(ops, vec![0x52], "失败后不再补发 0x51 与 0x52");
     }
 
     #[test]

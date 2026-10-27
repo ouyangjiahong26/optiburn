@@ -27,6 +27,11 @@ struct ScriptedDrive {
     last_session_start: u32,
     /// READ TOC Format 0 报的轨道（编号与起点），候选枚举用它。
     tracks: Vec<(u8, u32)>,
+    /// 反例开关：0x52 问轨道 0xFF 时回 ILLEGAL REQUEST（顺序介质里 0xFF 无定义的
+    /// 实机形态，DVDRAM GP70N 在 DVD-R 上回 key 5 加 ASC 0x21）。
+    reject_track_ff: bool,
+    /// READ DISC INFORMATION 字节 6 报的末条轨道号。
+    last_track: u8,
     /// 合成盘：READ(10) 从这里按块取数据，越界报命令失败。
     disc: Vec<u8>,
     log: Rc<RefCell<Vec<Vec<u8>>>>,
@@ -48,6 +53,8 @@ impl ScriptedDrive {
             format_capacity: None,
             last_session_start: 0x1000,
             tracks: vec![(1, 0), (2, 0x1000)],
+            reject_track_ff: false,
+            last_track: 1,
             disc: Vec::new(),
             log: Rc::new(RefCell::new(Vec::new())),
             written: Rc::new(RefCell::new(Vec::new())),
@@ -67,13 +74,13 @@ impl ScsiTransport for ScriptedDrive {
         self.log.borrow_mut().push(cdb.to_vec());
         match cdb[0] {
             0x51 => {
-                // READ DISC INFORMATION：状态位在字节 2 的低两位。
+                // READ DISC INFORMATION：状态位在字节 2 的低两位，末条轨道在字节 6。
                 if data.len() >= 34 {
                     data[2] = self.disc_status & 0b11;
                     data[3] = 1;
                     data[4] = 1;
                     data[5] = 1;
-                    data[6] = 1;
+                    data[6] = self.last_track;
                 }
             }
             0x46 => {
@@ -111,6 +118,16 @@ impl ScsiTransport for ScriptedDrive {
                 // READ TRACK INFORMATION：起始地址 8-11，NWA 12-15，剩余块数 16-19，
                 // Damage 位在字节 5 的 bit 5、NWA_V 在字节 7 的 bit 0（libburn 的
                 // `mmc_get_nwa` 按这两位移流）。默认报健康：地址有效、没有损坏。
+                if self.reject_track_ff && u16::from_be_bytes([cdb[2], cdb[3]]) == 0xFF {
+                    return Err(TransportError::CommandFailed {
+                        cdb: cdb.to_vec(),
+                        scsi_status: 2,
+                        sense: vec![
+                            0x70, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00,
+                            0x21, 0x00, 0x00, 0x00, 0x00, 0x00,
+                        ],
+                    });
+                }
                 if data.len() >= 20 {
                     let start = self.open_track_start.unwrap_or(self.nwa);
                     data[5] = if self.damaged { 0x20 } else { 0x00 };
@@ -289,6 +306,24 @@ fn appendable_disc_is_written_as_a_new_session_at_nwa() {
     assert_eq!(lba, 0x2000, "从 NWA 开始写新区段");
     assert_eq!(written.borrow().len(), 2 * SECTOR_BYTES);
     assert_eq!(last, 1.0);
+}
+
+#[test]
+fn appendable_disc_rejecting_track_ff_still_burns_at_nwa() {
+    // 同一回退在镜像刻录的起始块解析上：可追加 DVD-R 上 0xFF 被拒时改问末条轨道。
+    let image = TempImage::new("appendable-ff", &vec![0x22u8; 2 * SECTOR_BYTES]);
+    let mut drive = ScriptedDrive::new(CurrentProfile::DVD_R, 0b01);
+    drive.reject_track_ff = true;
+    drive.last_track = 2;
+
+    let (cdbs, _) = run(drive, &image).expect("burn succeeds via the fallback");
+
+    let write = cdbs
+        .iter()
+        .find(|cdb| cdb[0] == 0x2A)
+        .expect("a WRITE(10) was issued");
+    let lba = u32::from_be_bytes([write[2], write[3], write[4], write[5]]);
+    assert_eq!(lba, 0x2000, "起点取末条轨道报的 NWA");
 }
 
 #[test]
@@ -859,6 +894,63 @@ fn grow_on_an_appendable_disc_grafts_the_old_session() {
         names(&session.root),
         vec!["new.txt".to_string(), "old.txt".to_string()]
     );
+}
+
+#[test]
+fn grow_on_a_dvd_r_which_rejects_track_ff_uses_the_last_track() {
+    // 回归（ADR-0031 补记）：可追加 DVD-R 上 READ TRACK INFORMATION 问轨道 0xFF
+    // 被驱动器拒（key 5 加 ASC 0x21），增长模式改问 READ DISC INFORMATION 的末条
+    // 轨道号后照常拿到 NWA。修复前这一步把“轨道号无定义”当设备故障上抛，
+    // 追加一开始就失败。盘形照 `grow_on_an_appendable_disc_grafts_the_old_session`。
+    const OLD_BASE: u32 = 0x1000;
+    let tmp = TempDir::new("graft-dvdr-ff");
+    let old_src = tmp.path().join("old");
+    std::fs::create_dir_all(&old_src).expect("create old src");
+    std::fs::write(old_src.join("old.txt"), b"old content").expect("write old file");
+    let old_plan = crate::grow::plan_session(None, &old_src, "OLD".into(), OLD_BASE)
+        .expect("plan the old session");
+    let mut old_image = Vec::new();
+    old_plan
+        .write_image(&mut old_image, &CancelToken::default())
+        .expect("write the old session");
+    let mut disc = vec![0u8; 0x3000 * SECTOR_BYTES];
+    disc[OLD_BASE as usize * SECTOR_BYTES..OLD_BASE as usize * SECTOR_BYTES + old_image.len()]
+        .copy_from_slice(&old_image);
+
+    let new_src = tmp.path().join("new");
+    std::fs::create_dir_all(&new_src).expect("create new src");
+    std::fs::write(new_src.join("new.txt"), b"new content").expect("write new file");
+
+    let mut drive = ScriptedDrive::new(CurrentProfile::DVD_R, 0b01);
+    drive.disc = disc;
+    drive.reject_track_ff = true;
+    drive.last_track = 2;
+    let (cdbs, written) = run_grow(drive, &new_src).expect("grow succeeds via the fallback");
+
+    let asked: Vec<u16> = cdbs
+        .iter()
+        .filter(|cdb| cdb[0] == 0x52)
+        .map(|cdb| u16::from_be_bytes([cdb[2], cdb[3]]))
+        .collect();
+    assert!(asked.contains(&0xFF), "0xFF 确实被问过: {asked:?}");
+    assert!(
+        asked
+            .iter()
+            .enumerate()
+            .all(|(index, track)| *track != 0xFF || asked.get(index + 1) == Some(&2)),
+        "每次问 0xFF 被拒后都改问末条轨道 2: {asked:?}"
+    );
+
+    let write = cdbs
+        .iter()
+        .find(|cdb| cdb[0] == 0x2A)
+        .expect("a WRITE(10) was issued");
+    assert_eq!(
+        u32::from_be_bytes([write[2], write[3], write[4], write[5]]),
+        0x2000,
+        "起点仍取末条轨道报的 NWA"
+    );
+    assert!(!written.is_empty());
 }
 
 #[test]

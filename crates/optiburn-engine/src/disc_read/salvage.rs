@@ -145,10 +145,11 @@ fn open_unclosed_track(source: &str) -> Result<Option<(MmcDevice, u32, u32)>, Bu
     let Some(last_session) = super::last_session_start(&mut mmc)? else {
         return Ok(None);
     };
-    // 0xFF 这个轨道号只有 CD 有定义：DVD 上驱动器回 ILLEGAL REQUEST（实测 GP75N
-    // 在封口 DVD 上回 key 5 加 ASC 0x21），那里没有“当前可写轨道”可言，按没有
+    // 可写轨道的轨道号取写路径的同一口径（0xFF 被拒时改问末条轨道）：DVD 上 0xFF
+    // 无定义，末条轨道同样报得出开放轨道的起点。驱动器连末条轨道也拒（实测 GP75N
+    // 在封口 DVD 上回 key 5 加 ASC 0x21）时那里没有“当前可写轨道”可言，按没有
     // 未关闭轨道处理。真实的传输故障照常上抛。
-    let track = match mmc.read_track_information(crate::native::LAST_TRACK) {
+    let track = match mmc.read_writable_track_information() {
         Ok(track) => track,
         Err(error) if error.is_illegal_request() => return Ok(None),
         Err(error) => return Err(BurnError::Mmc(error)),

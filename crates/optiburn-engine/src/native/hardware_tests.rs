@@ -28,9 +28,9 @@ fn inspect_real_media() {
     );
     println!("capacity: {capacity:?}");
     // 轨道与区段：追加能否继续看这几个字段（损坏位置位时 NWA_V 会被清零）。
-    if let Ok(track) = mmc.read_track_information(crate::native::LAST_TRACK) {
+    if let Ok(track) = mmc.read_writable_track_information() {
         println!(
-            "track 0xFF: start={} nwa={} nwa_valid={} damaged={} free={} track_blocks={}",
+            "writable track: start={} nwa={} nwa_valid={} damaged={} free={} track_blocks={}",
             track.start_lba,
             track.next_writable_address,
             track.nwa_valid,
@@ -71,9 +71,9 @@ fn inspect_session_gaps() {
     let info = mmc.read_disc_information().expect("disc information");
     let profile = mmc.get_configuration().expect("current profile");
     println!("disc: status={:?} sessions={}", info.status, info.sessions);
-    if let Ok(track) = mmc.read_track_information(crate::native::LAST_TRACK) {
+    if let Ok(track) = mmc.read_writable_track_information() {
         println!(
-            "track 0xFF: nwa={} nwa_valid={} damaged={} free={} track_blocks={}",
+            "writable track: nwa={} nwa_valid={} damaged={} free={} track_blocks={}",
             track.next_writable_address,
             track.nwa_valid,
             track.damaged,
@@ -153,7 +153,7 @@ fn native_grow_and_read_back_real() {
         wait_until_ready(&mut mmc).expect("device ready");
         let profile = mmc.get_configuration().expect("current profile");
         println!("profile={:#06x} kind={:?}", profile.0, profile.media_kind());
-        match mmc.read_track_information(crate::native::LAST_TRACK) {
+        match mmc.read_writable_track_information() {
             Ok(track) => println!(
                 "起点：nwa={} nwa_valid={} track_start={} nwa%16={}",
                 track.next_writable_address,
@@ -277,14 +277,15 @@ fn native_burn_and_read_back_real() {
     let expected = std::fs::read(&image).expect("read the image");
     let blocks = expected.len().div_ceil(SECTOR_BYTES);
 
-    // 与引擎同一套起点判断：空盘 0，可追加盘 NWA。
+    // 与引擎同一套起点判断：空盘 0，可追加盘取可写轨道报的 NWA（0xFF 被拒时
+    // 回退末条轨道，否则 0xFF 无定义的介质上这里先 panic 而不是引擎报错）。
     let start = {
         let mut mmc = MmcDevice::new(optiburn_transport::open(&device).expect("open device"));
         wait_until_ready(&mut mmc).expect("device ready");
         let info = mmc.read_disc_information().expect("disc information");
         match info.status {
             DiscStatus::Appendable => {
-                mmc.read_track_information(0xFF)
+                mmc.read_writable_track_information()
                     .expect("track information")
                     .next_writable_address
             }
