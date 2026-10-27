@@ -22,7 +22,7 @@ The project exists because software covering all four platform combinations is r
 | `optiburn repair` | Closes the damaged track and session left by an interrupted burn so the disc can be written again. | Linux: xorriso `-close_damaged`. Windows: native. |
 | `optiburn salvage` | Reads the unclosed track that standard readers cannot see, classifies every file against the written boundary and extracts the readable part. | Both platforms, through the native MMC reader. Run it before `repair`. |
 | Disc reading | Volume id, last-session check, tree listing and extraction on one `ReadBackend` seam. | Linux: xorriso first, native retry when xorriso cannot read ISO 9660. Windows: native ISO 9660 and UDF. |
-| GUI | Four pages cover `probe`, `build-image`, `burn`, `append` and `salvage`. `repair` stays on the CLI. Burn jobs can be cancelled. | Tauri 2 + React. Windows uses the native burn, grow and read paths. Linux uses xorriso for burn and the first read path, and native growth for append. |
+| GUI | Four function pages cover `probe`, `build-image`, `burn`, `append` and `salvage`; `repair` stays on the CLI, and a settings page holds the multi-device toggle (off by default). Burn jobs can be cancelled. | Tauri 2 + React. Windows uses the native burn, grow and read paths. Linux uses xorriso for burn and the first read path, and native growth for append. |
 
 Hardware evidence, kept separate from the feature list:
 

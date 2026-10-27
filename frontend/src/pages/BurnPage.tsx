@@ -25,6 +25,11 @@ type BurnRow = {
 // 行 id 用模块级递增计数器：行会增删，key 必须跨重渲染稳定。
 let nextRowId = 1;
 
+// 默认行工厂：单设备形态补首行与“添加设备”共用，字段只在这一份里定义。
+function newBurnRow(): BurnRow {
+  return { id: nextRowId++, device: "", image: "", error: null, verify: null };
+}
+
 export function BurnPage({
   jobs,
   results,
@@ -52,17 +57,7 @@ export function BurnPage({
   useEffect(() => {
     if (!multiDevice) {
       setRows((current) =>
-        current.length === 1
-          ? current
-          : [
-              current[0] ?? {
-                id: nextRowId++,
-                device: "",
-                image: "",
-                error: null,
-                verify: null,
-              },
-            ],
+        current.length === 1 ? current : [current[0] ?? newBurnRow()],
       );
     }
   }, [multiDevice]);
@@ -252,10 +247,7 @@ export function BurnPage({
               className="btn"
               disabled={!canAddRow}
               onClick={() =>
-                setRows((current) => [
-                  ...current,
-                  { id: nextRowId++, device: "", image: "", error: null, verify: null },
-                ])
+                setRows((current) => [...current, newBurnRow()])
               }
             >
               <Plus size={13} />

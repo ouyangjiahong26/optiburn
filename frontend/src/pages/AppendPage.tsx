@@ -30,6 +30,20 @@ let nextRowId = 1;
 
 const DEFAULT_VOLUME_ID = "OPTIBURN";
 
+// 默认行工厂：单设备形态补首行与“添加设备”共用，字段只在这一份里定义。
+function newAppendRow(): AppendRow {
+  return {
+    id: nextRowId++,
+    device: "",
+    files: [],
+    volumeId: DEFAULT_VOLUME_ID,
+    volumeDirty: false,
+    allowDamaged: false,
+    error: null,
+    verify: null,
+  };
+}
+
 export function AppendPage({
   jobs,
   results,
@@ -57,20 +71,7 @@ export function AppendPage({
   useEffect(() => {
     if (!multiDevice) {
       setRows((current) =>
-        current.length === 1
-          ? current
-          : [
-              current[0] ?? {
-                id: nextRowId++,
-                device: "",
-                files: [],
-                volumeId: DEFAULT_VOLUME_ID,
-                volumeDirty: false,
-                allowDamaged: false,
-                error: null,
-                verify: null,
-              },
-            ],
+        current.length === 1 ? current : [current[0] ?? newAppendRow()],
       );
     }
   }, [multiDevice]);
@@ -512,19 +513,7 @@ export function AppendPage({
               className="btn"
               disabled={!canAddRow}
               onClick={() =>
-                setRows((current) => [
-                  ...current,
-                  {
-                    id: nextRowId++,
-                    device: "",
-                    files: [],
-                    volumeId: DEFAULT_VOLUME_ID,
-                    volumeDirty: false,
-                    allowDamaged: false,
-                    error: null,
-                    verify: null,
-                  },
-                ])
+                setRows((current) => [...current, newAppendRow()])
               }
             >
               <Plus size={13} />
