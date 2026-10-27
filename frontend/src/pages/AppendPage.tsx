@@ -1,5 +1,6 @@
-// 追加：把待刻录文件写入空盘或已有区段的盘，文件在盘根平铺。设备与内容配对成
-// 行，多行提交即多设备并发（issue #50），门禁失败用对话框逐条引导。
+// 追加：把待刻录文件写入空盘或已有区段的盘，文件在盘根平铺。默认单设备表单；
+// 开启多设备写入（设置页，ADR-0025 补记）后设备与内容配对成行，多行提交即多设备
+// 并发（issue #50），门禁失败用对话框逐条引导。
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Plus, RefreshCw, X } from "lucide-react";
@@ -29,7 +30,29 @@ let nextRowId = 1;
 
 const DEFAULT_VOLUME_ID = "OPTIBURN";
 
-export function AppendPage({ jobs, results, pushResult, startJob, abortJob, active }: PageProps) {
+// 默认行工厂：单设备形态补首行与“添加设备”共用，字段只在这一份里定义。
+function newAppendRow(): AppendRow {
+  return {
+    id: nextRowId++,
+    device: "",
+    files: [],
+    volumeId: DEFAULT_VOLUME_ID,
+    volumeDirty: false,
+    allowDamaged: false,
+    error: null,
+    verify: null,
+  };
+}
+
+export function AppendPage({
+  jobs,
+  results,
+  pushResult,
+  startJob,
+  abortJob,
+  active,
+  multiDevice,
+}: PageProps & { multiDevice: boolean }) {
   const [rows, setRows] = useState<AppendRow[]>([]);
   const [speed, setSpeed] = useState("");
   const [closeDisc, setCloseDisc] = useState(false);
@@ -42,6 +65,16 @@ export function AppendPage({ jobs, results, pushResult, startJob, abortJob, acti
   useEffect(() => {
     rowsRef.current = rows;
   }, [rows]);
+
+  // 单设备形态恒有一行：为空补一行，关掉开关时收敛到首行。开关在设置页切换，
+  // 页面保持挂载，这里随属性变化即时生效。
+  useEffect(() => {
+    if (!multiDevice) {
+      setRows((current) =>
+        current.length === 1 ? current : [current[0] ?? newAppendRow()],
+      );
+    }
+  }, [multiDevice]);
   // 粘贴目标行：最近聚焦（或按住）的行，没有记录时落到第一行。
   const activeRowIdRef = useRef<number | null>(null);
 
@@ -247,17 +280,19 @@ export function AppendPage({ jobs, results, pushResult, startJob, abortJob, acti
         <div>
           <h1>{t("Append", "追加")}</h1>
           <p>{t("Write files to a blank disc or one with existing sessions; on a blank disc this is the first write.", "把待刻录文件写入空盘或已有区段的盘，空盘上就是首刻。")}</p>
-          <p className="page-note">
-            {t("Burning to several drives at once: see ", "一次向多台光驱写入：见")}
-            <a
-              href="https://github.com/ouyangjiahong26/optiburn/blob/main/docs/MULTI-DRIVE.md"
-              target="_blank"
-              rel="noreferrer"
-            >
-              {t("Multi-drive writing", "多设备写入说明")}
-            </a>
-            {t(".", "。")}
-          </p>
+          {multiDevice && (
+            <p className="page-note">
+              {t("Burning to several drives at once: see ", "一次向多台光驱写入：见")}
+              <a
+                href="https://github.com/ouyangjiahong26/optiburn/blob/main/docs/MULTI-DRIVE.md"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {t("Multi-drive writing", "多设备写入说明")}
+              </a>
+              {t(".", "。")}
+            </p>
+          )}
         </div>
       </header>
       <form className="form" onSubmit={(event) => void handleSubmit(event)}>
@@ -337,14 +372,16 @@ export function AppendPage({ jobs, results, pushResult, startJob, abortJob, acti
                     <RefreshCw size={13} className={probing ? "spin" : undefined} />
                     {t("Refresh", "刷新")}
                   </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => removeRow(row.id)}
-                  >
-                    <X size={13} />
-                    {t("Remove", "移除")}
-                  </button>
+                  {multiDevice && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => removeRow(row.id)}
+                    >
+                      <X size={13} />
+                      {t("Remove", "移除")}
+                    </button>
+                  )}
                 </div>
                 {capacity !== null && (
                   <p className="page-note">
@@ -469,31 +506,21 @@ export function AppendPage({ jobs, results, pushResult, startJob, abortJob, acti
             </fieldset>
           );
         })}
-        <div className="inline-controls">
-          <button
-            type="button"
-            className="btn"
-            disabled={!canAddRow}
-            onClick={() =>
-              setRows((current) => [
-                ...current,
-                {
-                  id: nextRowId++,
-                  device: "",
-                  files: [],
-                  volumeId: DEFAULT_VOLUME_ID,
-                  volumeDirty: false,
-                  allowDamaged: false,
-                  error: null,
-                  verify: null,
-                },
-              ])
-            }
-          >
-            <Plus size={13} />
-            {t("Add device", "添加设备")}
-          </button>
-        </div>
+        {multiDevice && (
+          <div className="inline-controls">
+            <button
+              type="button"
+              className="btn"
+              disabled={!canAddRow}
+              onClick={() =>
+                setRows((current) => [...current, newAppendRow()])
+              }
+            >
+              <Plus size={13} />
+              {t("Add device", "添加设备")}
+            </button>
+          </div>
+        )}
         {pasteNote !== null && <p className="file-empty">{pasteNote}</p>}
         <FormRow label={t("Speed", "倍速")} htmlFor="append-speed">
           <input

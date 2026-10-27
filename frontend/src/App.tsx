@@ -2,10 +2,11 @@
 // 取消与退出确认都在这里（issue #50）。
 import { useCallback, useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { Disc3, FileArchive, Flame, FolderPlus } from "lucide-react";
+import { Disc3, FileArchive, Flame, FolderPlus, Settings } from "lucide-react";
 import { cancelJob, confirmClose, onCloseBlocked, onJobDone, onJobProgress } from "./api";
 import type { ActiveJob, JobKind, JobResult } from "./types";
 import { nextLocalSeq } from "./hooks";
+import { loadMultiDevice, saveMultiDevice } from "./settings";
 import { t } from "./i18n";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ProgressBar } from "./components/ProgressBar";
@@ -15,14 +16,16 @@ import { AppendPage } from "./pages/AppendPage";
 import { BuildPage } from "./pages/BuildPage";
 import { BurnPage } from "./pages/BurnPage";
 import { DevicesPage } from "./pages/DevicesPage";
+import { SettingsPage } from "./pages/SettingsPage";
 
-type PageId = "devices" | "build" | "burn" | "append";
+type PageId = "devices" | "build" | "burn" | "append" | "settings";
 
 const NAV_ITEMS: { id: PageId; label: string; icon: typeof Disc3 }[] = [
   { id: "devices", label: t("Devices", "设备"), icon: Disc3 },
   { id: "append", label: t("Append", "追加"), icon: FolderPlus },
   { id: "burn", label: t("Burn", "刻录"), icon: Flame },
   { id: "build", label: t("Create Image", "制作镜像"), icon: FileArchive },
+  { id: "settings", label: t("Settings", "设置"), icon: Settings },
 ];
 
 // 制作镜像没有进度回调，只显示动作本身。其余两种有百分比就带上。
@@ -61,6 +64,12 @@ export function App() {
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
+  // 多设备写入开关（ADR-0025 补记）：只改刻录页与追加页的表单形态，默认单设备。
+  const [multiDevice, setMultiDevice] = useState(loadMultiDevice);
+  const changeMultiDevice = useCallback((enabled: boolean) => {
+    setMultiDevice(enabled);
+    saveMultiDevice(enabled);
+  }, []);
 
   const pushResult = useCallback((result: JobResult) => {
     setResults((current) => [...current, result]);
@@ -202,7 +211,7 @@ export function App() {
             {latestResult.message}
           </div>
         )}
-        {/* 四个页面全部保持挂载，切换只切可见性：读盘得到的清单、选择状态与正在
+        {/* 五个页面全部保持挂载，切换只切可见性：读盘得到的清单、选择状态与正在
             进行的复制都不会因为切页而丢失。 */}
         <div className={page === "devices" ? undefined : "page-hidden"}>
           <DevicesPage
@@ -234,6 +243,7 @@ export function App() {
             startJob={startJob}
             abortJob={abortJob}
             active={page === "burn"}
+            multiDevice={multiDevice}
           />
         </div>
         <div className={page === "append" ? undefined : "page-hidden"}>
@@ -244,7 +254,11 @@ export function App() {
             startJob={startJob}
             abortJob={abortJob}
             active={page === "append"}
+            multiDevice={multiDevice}
           />
+        </div>
+        <div className={page === "settings" ? undefined : "page-hidden"}>
+          <SettingsPage multiDevice={multiDevice} onMultiDeviceChange={changeMultiDevice} />
         </div>
       </main>
       <ConfirmDialog

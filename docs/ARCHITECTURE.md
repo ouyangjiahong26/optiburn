@@ -176,7 +176,8 @@ Linux 先走 xorriso，读不到 ISO 9660 时回退原生。
 ### 图形前端
 
 图形前端在 `src-tauri/`（Tauri 2）与 `frontend/`（React、Vite、TypeScript），不在根
-workspace 内，以路径依赖引用核心 crate。四个页面覆盖五个子命令，`repair` 只在命令行。
+workspace 内，以路径依赖引用核心 crate。四个功能页面覆盖五个子命令，`repair` 只在
+命令行；另有设置页（多设备写入开关等界面形态选择，ADR-0025 补记）。
 核心五个 crate 不引入 GUI 依赖。剪贴板这类平台能力差异收在 `src-tauri` 的独立平台模块
 里（ADR-0012）。
 
