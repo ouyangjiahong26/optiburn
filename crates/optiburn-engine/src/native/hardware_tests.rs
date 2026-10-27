@@ -277,14 +277,15 @@ fn native_burn_and_read_back_real() {
     let expected = std::fs::read(&image).expect("read the image");
     let blocks = expected.len().div_ceil(SECTOR_BYTES);
 
-    // 与引擎同一套起点判断：空盘 0，可追加盘 NWA。
+    // 与引擎同一套起点判断：空盘 0，可追加盘取可写轨道报的 NWA（0xFF 被拒时
+    // 回退末条轨道，否则 0xFF 无定义的介质上这里先 panic 而不是引擎报错）。
     let start = {
         let mut mmc = MmcDevice::new(optiburn_transport::open(&device).expect("open device"));
         wait_until_ready(&mut mmc).expect("device ready");
         let info = mmc.read_disc_information().expect("disc information");
         match info.status {
             DiscStatus::Appendable => {
-                mmc.read_track_information(0xFF)
+                mmc.read_writable_track_information()
                     .expect("track information")
                     .next_writable_address
             }
