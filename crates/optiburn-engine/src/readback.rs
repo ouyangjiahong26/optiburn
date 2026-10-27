@@ -423,7 +423,7 @@ pub fn native_iso_session_state(source: &str) -> Result<IsoSessionState, BurnErr
 /// 本地按名字与内容对比，不比较属性。
 ///
 /// 返回逐项报告：单个文件的数据读失败记 `Unreadable` 后继续，不把整棵树压成失败
-/// （ADR-0029）。打不开设备、没有可用的 ISO 9660 区段、取消、不安全路径与本地写
+/// （ADR-0032）。打不开设备、没有可用的 ISO 9660 区段、取消、不安全路径与本地写
 /// 失败仍是 `Err`。xorriso 后端成功时按落盘文件报告，显式选择它时拿不到逐项状态。
 pub fn extract_tree(
     source: &Path,
@@ -606,7 +606,9 @@ fn parse_quoted_name(text: &str, start: usize) -> Option<(String, usize)> {
 /// （xorriso 路径带 `-drive_access shared`），供 GUI 把盘上文件复制到本地。
 ///
 /// 返回逐项报告：找不到的路径与单个文件的数据读失败记 `Unreadable` 后继续处理
-/// 其余路径（ADR-0029）。不安全路径、取消、盘片级错误与本地写失败仍是 `Err`。
+/// 其余路径（ADR-0032）。不安全路径、取消、盘片级错误与本地写失败仍是 `Err`。
+/// xorriso 后端成功时按落盘文件报告；显式选择它时，找不到的路径会让整条命令
+/// 失败，拿不到逐项状态。
 pub fn extract_paths(
     device: &str,
     paths: &[String],
@@ -724,7 +726,7 @@ mod tests {
     // unix 上跑。
     #[cfg(unix)]
     use crate::disc_read::udf::tests::{
-        TempDir, bin_content, expected_tree, write_udf_only_image, zh_content,
+        TempDir, bin_content, expected_tree, fixture_tree, write_udf_image, zh_content,
     };
     #[cfg(unix)]
     use optiburn_mastering::{DiscProfile, ImageSpec, build_image};
@@ -1169,7 +1171,7 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
         );
 
         // 纯 UDF 盘：两侧都判不可用，续写照旧被拒（ADR-0010）。
-        let udf = write_udf_only_image(&tmp);
+        let udf = write_udf_image(&tmp, "udf-only", "UDFONLY", fixture_tree());
         let udf_source = udf.to_str().expect("utf-8 temp path");
         assert_eq!(
             crate::gate_session_state_with("native", udf_source).unwrap(),
@@ -1185,7 +1187,7 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
     #[test]
     fn xorriso_side_reports_no_session_on_udf_only() {
         let tmp = TempDir::new("readback-xorriso-udf");
-        let image = write_udf_only_image(&tmp);
+        let image = write_udf_image(&tmp, "udf-only", "UDFONLY", fixture_tree());
         let source = image.to_str().expect("utf-8 temp path");
         let cancel = CancelToken::default();
 
@@ -1221,7 +1223,7 @@ drwxrwxr-x    1 1000     1000            0 Oct  9 10:25 '/子目录'
     #[test]
     fn fallback_reads_udf_only_image() {
         let tmp = TempDir::new("readback-fallback-udf");
-        let image = write_udf_only_image(&tmp);
+        let image = write_udf_image(&tmp, "udf-only", "UDFONLY", fixture_tree());
         let source = image.to_str().expect("utf-8 temp path");
         let cancel = CancelToken::default();
 

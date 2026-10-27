@@ -92,11 +92,16 @@ fn content_lba(image: &[u8], content: &[u8]) -> u32 {
     (offset / SECTOR_BYTES) as u32
 }
 
-/// 用给定的目录树造一张 UDF-only 镜像，按标准位置搬好 VRS。
-fn write_udf_image(tmp: &TempDir, tag: &str, tree: FileTree) -> PathBuf {
+/// 用给定的卷标与目录树造一张 UDF-only 镜像，按标准位置搬好 VRS。
+pub(crate) fn write_udf_image(
+    tmp: &TempDir,
+    tag: &str,
+    volume_id: &str,
+    tree: FileTree,
+) -> PathBuf {
     let path = tmp.path().join(format!("{tag}.iso"));
     let options = OpticalImageOptions::default()
-        .volume_id("FAULTY")
+        .volume_id(volume_id)
         .udf_only();
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -123,7 +128,7 @@ pub(crate) fn bin_content() -> Vec<u8> {
 }
 
 /// 夹具目录树：中文名、空文件、两级目录、跨扇区文件。
-fn fixture_tree() -> FileTree {
+pub(crate) fn fixture_tree() -> FileTree {
     let mut tree = FileTree::new();
     tree.add_file(FileEntry::from_buffer("自述.txt", zh_content()));
     tree.add_file(FileEntry::from_buffer("空.txt", Vec::new()));
@@ -153,26 +158,6 @@ pub(crate) fn expected_tree() -> BTreeMap<String, Option<Vec<u8>>> {
         ("/资料/照片".to_string(), None),
         ("/资料/照片/清单.bin".to_string(), Some(bin_content())),
     ])
-}
-
-/// 用 hadris-cd 造一张 UDF-only（UDF 1.02）镜像，写到临时文件。
-pub(crate) fn write_udf_only_image(tmp: &TempDir) -> PathBuf {
-    let path = tmp.path().join("udf-only.iso");
-    let options = OpticalImageOptions::default()
-        .volume_id(FIXTURE_VOLUME_ID)
-        .udf_only();
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)
-        .expect("create the image file");
-    OpticalImageWriter::new(file, options)
-        .finish(fixture_tree())
-        .expect("write the UDF-only image");
-    relocate_vrs(&path);
-    path
 }
 
 /// 把卷识别序列从逻辑块 19 搬到块 16。
@@ -445,7 +430,7 @@ fn displace_to_disc_absolute(image: &mut [u8], shift: u32) {
 #[test]
 fn udf_only_image_volume_id_list_and_extract() {
     let tmp = TempDir::new("udf-only");
-    let image = write_udf_only_image(&tmp);
+    let image = write_udf_image(&tmp, "udf-only", FIXTURE_VOLUME_ID, fixture_tree());
     let cancel = CancelToken::default();
 
     // 夹具必须是标准形态：卷识别序列从逻辑块 16 起（独立工具 udfinfo 与内核 udf
@@ -601,7 +586,13 @@ fn bridge_image_takes_the_iso_branch() {
 fn session_relative_multi_session_fixture_reads() {
     const BASE: u32 = 1000;
     let tmp = TempDir::new("udf-relative");
-    let image = std::fs::read(write_udf_only_image(&tmp)).expect("read the fixture image");
+    let image = std::fs::read(write_udf_image(
+        &tmp,
+        "udf-only",
+        FIXTURE_VOLUME_ID,
+        fixture_tree(),
+    ))
+    .expect("read the fixture image");
     let disc = disc_with_image_at(&image, BASE);
 
     let cancel = CancelToken::default();
@@ -620,7 +611,13 @@ fn session_relative_multi_session_fixture_reads() {
 fn disc_absolute_multi_session_fixture_reads() {
     const BASE: u32 = 4000;
     let tmp = TempDir::new("udf-absolute");
-    let image = std::fs::read(write_udf_only_image(&tmp)).expect("read the fixture image");
+    let image = std::fs::read(write_udf_image(
+        &tmp,
+        "udf-only",
+        FIXTURE_VOLUME_ID,
+        fixture_tree(),
+    ))
+    .expect("read the fixture image");
     let cancel = CancelToken::default();
 
     // 基准：未位移的镜像 base 0 读一遍。
@@ -766,7 +763,7 @@ fn a_bad_udf_file_is_recorded_and_later_files_are_still_extracted() {
         "c-after.txt",
         b"after payload".to_vec(),
     ));
-    let image = write_udf_image(&tmp, "udf-faulty", tree);
+    let image = write_udf_image(&tmp, "udf-faulty", "FAULTY", tree);
     let bytes = std::fs::read(&image).expect("read the image");
     let fail_lba = content_lba(&bytes, target);
     let len = bytes.len() as u64;
@@ -811,7 +808,13 @@ fn a_bad_udf_file_is_recorded_and_later_files_are_still_extracted() {
 #[test]
 fn vrs_without_anchor_reports_unsupported_udf() {
     let tmp = TempDir::new("udf-no-anchor");
-    let mut image = std::fs::read(write_udf_only_image(&tmp)).expect("read the fixture image");
+    let mut image = std::fs::read(write_udf_image(
+        &tmp,
+        "udf-only",
+        FIXTURE_VOLUME_ID,
+        fixture_tree(),
+    ))
+    .expect("read the fixture image");
     // VRS 保留，把固定位置 256 的 AVDP 清零（512 处本来就没有锚点）。
     image[256 * SECTOR_BYTES..257 * SECTOR_BYTES].fill(0);
 

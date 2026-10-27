@@ -441,7 +441,7 @@ impl SalvageReport {
     }
 }
 
-/// 读盘抽取的结果：每个文件一条结论，单个文件读失败不中断整次抽取（ADR-0029）。
+/// 读盘抽取的结果：每个文件一条结论，单个文件读失败不中断整次抽取（ADR-0032）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExtractReport {
     /// 处理过的文件及其状态。
@@ -482,6 +482,17 @@ impl ExtractReport {
             .iter()
             .filter(|file| matches!(file.state, ExtractState::Unreadable { .. }))
             .count()
+    }
+
+    /// 读不出文件的盘上路径，按报告条目顺序，供调用方生成结果文案。
+    pub fn unreadable_paths(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .filter_map(|file| match &file.state {
+                ExtractState::Unreadable { .. } => Some(file.path.clone()),
+                ExtractState::Complete => None,
+            })
+            .collect()
     }
 }
 

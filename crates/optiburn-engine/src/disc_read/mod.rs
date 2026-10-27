@@ -809,7 +809,7 @@ pub(crate) fn walk_list(
 /// 把一个目录树抽到本地。名字按盘上记录落盘，写盘前逐段过安全过滤（盘内容不是
 /// 可信输入，与 xorriso 路径共用 [`safe_relative_path`] 的规则）。
 ///
-/// 单个文件的读失败记进报告后继续，目录读失败与本地写失败仍整体上抛（ADR-0029）。
+/// 单个文件的读失败记进报告后继续，目录读失败与本地写失败仍整体上抛（ADR-0032）。
 fn extract_dir(
     iso: &IsoImage<SessionSource>,
     dir: DirectoryRef,

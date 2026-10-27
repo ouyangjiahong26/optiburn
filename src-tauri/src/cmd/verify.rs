@@ -1,6 +1,6 @@
 //! 回读校验命令：把盘上末区段的内容与源逐项对比（ADR-0010）。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use optiburn_engine::{BurnError, CancelToken, compare_trees, extract_tree};
 use serde::Serialize;
@@ -136,7 +136,7 @@ fn extract_and_compare(
     })?;
     let disc_report = extract_tree(Path::new(device), &disc_tree, cancel)
         .map_err(|e| read_error(lang(), "读取盘上内容", "Reading the disc", e))?;
-    let unreadable = unreadable_paths(&disc_report);
+    let unreadable = disc_report.unreadable_paths();
     let reference = match mode {
         VerifyMode::Append => {
             if files.is_empty() {
@@ -153,25 +153,7 @@ fn extract_and_compare(
             stage_files(lang(), files, &staged).map_err(JobError::Input)?;
             staged
         }
-        VerifyMode::Burn => {
-            let image_tree = temp.join("image");
-            std::fs::create_dir_all(&image_tree).map_err(|e| match lang() {
-                Lang::Zh => JobError::Input(format!("创建校验暂存目录失败：{e}")),
-                Lang::En => JobError::Input(format!(
-                    "Failed to create the verification staging directory: {e}"
-                )),
-            })?;
-            let image_report = extract_tree(source, &image_tree, cancel)
-                .map_err(|e| read_error(lang(), "读取镜像", "Reading the image", e))?;
-            let image_unreadable = unreadable_paths(&image_report);
-            if !image_unreadable.is_empty() {
-                return Err(JobError::Input(image_unreadable_message(
-                    lang(),
-                    &image_unreadable,
-                )));
-            }
-            image_tree
-        }
+        VerifyMode::Burn => extract_image_reference(source, temp, cancel)?,
     };
     // 只有参照树里也存在的文件才在本次校验范围内。盘上多出的旧文件读不出不算
     // 本次校验失败，多区段盘上这种情况很常见。
@@ -184,23 +166,38 @@ fn extract_and_compare(
     })
 }
 
+/// 刻录校验的参照：把镜像树抽到临时目录，返回目录路径。
+///
+/// 镜像里有读不出的文件时参照树不完整，继续对比只会给出假差异，直接报错。
+fn extract_image_reference(
+    source: &Path,
+    temp: &Path,
+    cancel: &CancelToken,
+) -> Result<PathBuf, JobError> {
+    let image_tree = temp.join("image");
+    std::fs::create_dir_all(&image_tree).map_err(|e| match lang() {
+        Lang::Zh => JobError::Input(format!("创建校验暂存目录失败：{e}")),
+        Lang::En => JobError::Input(format!(
+            "Failed to create the verification staging directory: {e}"
+        )),
+    })?;
+    let report = extract_tree(source, &image_tree, cancel)
+        .map_err(|e| read_error(lang(), "读取镜像", "Reading the image", e))?;
+    let unreadable = report.unreadable_paths();
+    if !unreadable.is_empty() {
+        return Err(JobError::Input(image_unreadable_message(
+            lang(),
+            &unreadable,
+        )));
+    }
+    Ok(image_tree)
+}
+
 /// 只保留参照树里存在的读不出路径。
 fn scoped_unreadable(reference: &Path, unreadable: Vec<String>) -> Vec<String> {
     unreadable
         .into_iter()
         .filter(|path| reference.join(path.trim_start_matches('/')).exists())
-        .collect()
-}
-
-/// 报告里的读不出文件路径。
-fn unreadable_paths(report: &optiburn_engine::ExtractReport) -> Vec<String> {
-    report
-        .files
-        .iter()
-        .filter_map(|file| match &file.state {
-            optiburn_engine::ExtractState::Unreadable { .. } => Some(file.path.clone()),
-            optiburn_engine::ExtractState::Complete => None,
-        })
         .collect()
 }
 
@@ -225,12 +222,9 @@ fn drop_unreadable(reference: &Path, unreadable: &[String]) -> Result<(), JobErr
     Ok(())
 }
 
-/// 镜像里有文件读不出时校验无法进行：参照树不完整，继续对比只会给出假差异。
+/// 镜像里有文件读不出时的报错文案（为什么直接报错见 [`extract_image_reference`]）。
 fn image_unreadable_message(lang: Lang, paths: &[String]) -> String {
-    let list = match lang {
-        Lang::Zh => paths.join("、"),
-        Lang::En => paths.join(", "),
-    };
+    let list = super::join_paths(lang, paths);
     match lang {
         Lang::Zh => format!(
             "镜像里有 {} 个文件读不出，校验无法进行：{list}。",

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use optiburn_engine::{BurnError, CancelToken, extract_paths, list_tree};
+use optiburn_engine::{BurnError, CancelToken, ExtractReport, extract_paths, list_tree};
 use optiburn_mmc::{DiscStatus, MmcDevice};
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -163,33 +163,9 @@ fn copy_disc_files_blocking(
     paths: &[String],
     cancel: &CancelToken,
 ) -> Result<CopyReport, JobError> {
-    let root = copy_root().map_err(JobError::Input)?;
-    let staging = root.join(COPY_SEQUENCE.fetch_add(1, Ordering::Relaxed).to_string());
-    std::fs::create_dir_all(&staging).map_err(|e| match lang() {
-        Lang::Zh => JobError::Input(format!("创建暂存目录失败：{e}")),
-        Lang::En => JobError::Input(format!("Failed to create the staging directory: {e}")),
-    })?;
-    let report = match extract_paths(device, paths, &staging, cancel) {
-        Ok(report) => report,
-        Err(error) => {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(match error {
-                BurnError::Cancelled => JobError::Cancelled {
-                    zh: "复制",
-                    en: "copy",
-                },
-                other => JobError::Input(disc_read_error(lang(), device, other)),
-            });
-        }
-    };
-    let unreadable: Vec<String> = report
-        .files
-        .iter()
-        .filter_map(|file| match &file.state {
-            optiburn_engine::ExtractState::Unreadable { .. } => Some(file.path.clone()),
-            optiburn_engine::ExtractState::Complete => None,
-        })
-        .collect();
+    let (root, staging) = new_staging()?;
+    let report = extract_to_staging(device, paths, &staging, cancel)?;
+    let unreadable = report.unreadable_paths();
     let mut files = Vec::new();
     if let Err(e) = collect_files(&staging, &mut files) {
         let _ = std::fs::remove_dir_all(&staging);
@@ -214,14 +190,7 @@ fn copy_disc_files_blocking(
         let _ = std::fs::remove_dir_all(&staging);
         return Err(JobError::Input(e));
     }
-    // 剪贴板已指向新目录，旧暂存不再被使用。
-    if let Ok(entries) = std::fs::read_dir(&root) {
-        for entry in entries.flatten() {
-            if entry.path() != staging {
-                let _ = std::fs::remove_dir_all(entry.path());
-            }
-        }
-    }
+    clean_old_staging(&root, &staging);
     let bytes = files
         .iter()
         .filter_map(|file| std::fs::metadata(file).ok())
@@ -234,12 +203,53 @@ fn copy_disc_files_blocking(
     })
 }
 
-/// 复制结果的文案：全部成功时沿用原文案，有读不出的文件时列出路径并说明部分完成。
+/// 建本次复制的序号暂存目录。返回复制根目录与暂存目录：清旧暂存要用根目录。
+fn new_staging() -> Result<(PathBuf, PathBuf), JobError> {
+    let root = copy_root().map_err(JobError::Input)?;
+    let staging = root.join(COPY_SEQUENCE.fetch_add(1, Ordering::Relaxed).to_string());
+    std::fs::create_dir_all(&staging).map_err(|e| match lang() {
+        Lang::Zh => JobError::Input(format!("创建暂存目录失败：{e}")),
+        Lang::En => JobError::Input(format!("Failed to create the staging directory: {e}")),
+    })?;
+    Ok((root, staging))
+}
+
+/// 抽取到暂存目录。失败时清掉本次暂存，引擎错误折成任务错误（取消照实归因）。
+fn extract_to_staging(
+    device: &str,
+    paths: &[String],
+    staging: &Path,
+    cancel: &CancelToken,
+) -> Result<ExtractReport, JobError> {
+    match extract_paths(device, paths, staging, cancel) {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(staging);
+            Err(match error {
+                BurnError::Cancelled => JobError::Cancelled {
+                    zh: "复制",
+                    en: "copy",
+                },
+                other => JobError::Input(disc_read_error(lang(), device, other)),
+            })
+        }
+    }
+}
+
+/// 清掉旧暂存：剪贴板已指向新目录，旧暂存不再被使用。
+fn clean_old_staging(root: &Path, keep: &Path) {
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if entry.path() != keep {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+}
+
+/// 复制结果的文案：全部成功时报数量与字节数，有读不出的文件时列出路径并说明部分完成。
 fn copy_message(lang: Lang, report: &CopyReport) -> String {
-    let list = match lang {
-        Lang::Zh => report.unreadable.join("、"),
-        Lang::En => report.unreadable.join(", "),
-    };
+    let list = super::join_paths(lang, &report.unreadable);
     match lang {
         Lang::Zh if report.unreadable.is_empty() => format!(
             "已复制 {} 个文件（{}）到系统剪贴板，去文件管理器里粘贴即可。",
