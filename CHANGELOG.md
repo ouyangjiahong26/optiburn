@@ -5,7 +5,7 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本管理遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.1.10] - 2026-10-27
 
 **中文**
 
@@ -28,6 +28,8 @@
 ### FIX
 
 - Appending to an appendable DVD-R no longer fails before writing (ADR-0031 addendum): READ TRACK INFORMATION with track number 0xFF is only defined for CD and DVD+R family media, and drives reject it as an illegal request on DVD-R sequential media. The writable-track query now falls back to the last track number from READ DISC INFORMATION, shared by the append write address, the burn start address, repair and capacity readings.
+
+**Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.9...v0.1.10
 
 ## [0.1.9] - 2026-10-24
 
