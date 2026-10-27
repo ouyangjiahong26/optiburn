@@ -9,9 +9,15 @@
 
 **中文**
 
-### 修复
+### 变更
+
+- 追加页不再提供“增长模式后端”选择。后端按设备事实自动分派，显式选择退到环境变量 `OPTIBURN_GROW_BACKEND`（诊断用），回退原因仍写进结果消息。
 
 **English**
+
+### CHANGED
+
+- The append page no longer offers a growth backend choice. The backend is picked from device facts; the explicit override moves to the `OPTIBURN_GROW_BACKEND` environment variable (for diagnostics), and fallback reasons are still reported in the result message.
 
 ### FIX
 

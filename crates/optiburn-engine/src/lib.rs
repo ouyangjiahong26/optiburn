@@ -68,9 +68,10 @@ pub fn grow_backend_mode() -> Result<GrowBackendMode, BurnError> {
     grow_backend_mode_value(std::env::var("OPTIBURN_GROW_BACKEND").ok().as_deref())
 }
 
-/// 取值判定：空值与 `auto` 都算默认。公开是因为界面把选择按字符串传给命令层，
-/// 抽成纯函数则不碰进程环境就能测（形状照 `readback` 的 `read_backend_mode_value`）。
-pub fn grow_backend_mode_value(value: Option<&str>) -> Result<GrowBackendMode, BurnError> {
+/// 取值判定：空值与 `auto` 都算默认。抽成纯函数是为了不碰进程环境就能测
+/// （形状照 `readback` 的 `read_backend_mode_value`）。界面不再传后端选择
+/// （ADR-0027 补记），调用方只剩环境开关这一条。
+fn grow_backend_mode_value(value: Option<&str>) -> Result<GrowBackendMode, BurnError> {
     match value {
         None | Some("") | Some("auto") => Ok(GrowBackendMode::Auto),
         Some("xorriso") => Ok(GrowBackendMode::Xorriso),
