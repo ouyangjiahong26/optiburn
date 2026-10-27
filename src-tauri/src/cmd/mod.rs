@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use optiburn_engine::{
     BurnEngine, BurnError, BurnFailure, BurnJob, CancelToken, CapacityGate, GrowBackendMode,
     GrowJob, GrowSuitability, IsoSessionState, NativeEngine, NativeGap, SessionFallback,
-    XorrisoEngine, append_gate_session_state, capacity_gate, grow, grow_backend_choice,
-    grow_backend_mode_value, grow_size, read_volume_id, resolve_grow_backend,
+    XorrisoEngine, append_gate_session_state, capacity_gate, grow, grow_backend_choice, grow_size,
+    read_volume_id, resolve_grow_backend,
 };
 use optiburn_mastering::{DiscProfile, ImageSpec, MasteringError, build_image};
 use optiburn_mmc::{
@@ -758,29 +758,15 @@ pub async fn start_burn(
 
 /// 追加的写入选项：前端一次传齐，字段名就是调用协议。合成一个结构是为了让命令层
 /// 与任务层都留在 clippy 的参数上限以内（选项变多时不必再往下拆参数）。
+///
+/// 增长模式后端不在这里传：选择只有环境开关 `OPTIBURN_GROW_BACKEND` 与平台默认
+/// 两级（ADR-0027 补记），界面不再暴露。
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppendOptions {
     speed: Option<u32>,
     close_disc: bool,
     allow_damaged_last_session: bool,
-    /// 增长模式后端选择：`auto`（缺省，跟随环境开关与平台默认）、`native`、`xorriso`
-    /// （ADR-0027）。界面上的“跟随默认 / 原生增长 / xorriso 增长”。
-    backend: Option<String>,
-}
-
-/// 界面选择到后端选择的映射：`auto` 与缺省都表示“跟随默认”，此时让环境开关生效。
-fn append_backend_choice(value: Option<&str>) -> Result<Option<GrowBackendMode>, JobError> {
-    match grow_backend_mode_value(value) {
-        Ok(GrowBackendMode::Auto) => Ok(None),
-        Ok(explicit) => Ok(Some(explicit)),
-        Err(error) => Err(JobError::Input(engine_error_text(
-            lang(),
-            "选择增长后端",
-            "Selecting the growth backend",
-            &error,
-        ))),
-    }
 }
 
 /// 增长后端从原生态回落时的说明：中文取自引擎的 [`GrowSuitability::user_text`]，
@@ -848,7 +834,7 @@ struct AppendPreflight {
     damaged: Option<SessionFallback>,
 }
 
-/// 解析后端选择（界面选择优先，其次环境开关，最后平台默认，ADR-0027）并过写前门禁。
+/// 解析后端选择（环境开关优先，最后平台默认，ADR-0027）并过写前门禁。
 ///
 /// 门禁先跑：挂载、封口、末区段格式这些拒绝都发生在把文件拷进暂存之前。实际生效的
 /// 后端由设备事实决定，回落原因带回去说给用户，免得以为坏了。
@@ -865,8 +851,7 @@ fn append_preflight(
             &error,
         ))
     };
-    let mode = resolve_grow_backend(append_backend_choice(options.backend.as_deref())?)
-        .map_err(backend_error)?;
+    let mode = resolve_grow_backend(None).map_err(backend_error)?;
     let fallback = grow_backend_choice(mode, device, options.speed.is_some())
         .map_err(backend_error)?
         .fallback;
@@ -1297,25 +1282,6 @@ fn sessions_message(device: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 增长后端的选择映射：缺省与 `auto` 都表示“跟随默认”（让环境开关生效），
-    /// 显式值原样透传，非法值报错（ADR-0027）。断言用 `ok().flatten()`：
-    /// `JobError` 不带 Debug，测试里只关心成功形态。
-    #[test]
-    fn append_backend_choice_maps_auto_to_the_environment() {
-        assert_eq!(append_backend_choice(None).ok().flatten(), None);
-        assert_eq!(append_backend_choice(Some("")).ok().flatten(), None);
-        assert_eq!(append_backend_choice(Some("auto")).ok().flatten(), None);
-        assert_eq!(
-            append_backend_choice(Some("native")).ok().flatten(),
-            Some(GrowBackendMode::Native)
-        );
-        assert_eq!(
-            append_backend_choice(Some("xorriso")).ok().flatten(),
-            Some(GrowBackendMode::Xorriso)
-        );
-        assert!(append_backend_choice(Some("cdrecord")).is_err());
-    }
 
     #[test]
     fn profile_mapping_covers_three_media() {

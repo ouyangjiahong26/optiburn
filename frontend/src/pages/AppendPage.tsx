@@ -32,7 +32,6 @@ const DEFAULT_VOLUME_ID = "OPTIBURN";
 export function AppendPage({ jobs, results, pushResult, startJob, abortJob, active }: PageProps) {
   const [rows, setRows] = useState<AppendRow[]>([]);
   const [speed, setSpeed] = useState("");
-  const [backend, setBackend] = useState("auto");
   const [closeDisc, setCloseDisc] = useState(false);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
   const { devices, probing, refresh } = useDeviceProbe();
@@ -209,7 +208,6 @@ export function AppendPage({ jobs, results, pushResult, startJob, abortJob, acti
             speed: speedOption(speed),
             closeDisc,
             allowDamagedLastSession: row.allowDamaged,
-            backend,
           },
         });
         updateRow(row.id, { error: null });
@@ -497,23 +495,6 @@ export function AppendPage({ jobs, results, pushResult, startJob, abortJob, acti
           </button>
         </div>
         {pasteNote !== null && <p className="file-empty">{pasteNote}</p>}
-        <FormRow
-          label={t("Growth backend", "增长模式后端")}
-          hint={t(
-            "Follow default uses native growth and falls back to xorriso for random-writable media, unknown media types or a requested speed.",
-            "跟随默认用原生增长，随机可写介质、未知介质类型或指定倍速时自动回退 xorriso。",
-          )}
-        >
-          <select
-            value={backend}
-            disabled={readyRows.length === 0}
-            onChange={(event) => setBackend(event.target.value)}
-          >
-            <option value="auto">{t("Follow default", "跟随默认")}</option>
-            <option value="native">{t("Native growth", "原生增长")}</option>
-            <option value="xorriso">{t("xorriso grow mode", "xorriso 增长模式")}</option>
-          </select>
-        </FormRow>
         <FormRow label={t("Speed", "倍速")} htmlFor="append-speed">
           <input
             id="append-speed"
