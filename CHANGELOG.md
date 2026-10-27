@@ -5,6 +5,20 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本管理遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+**中文**
+
+### 特性
+
+- 读盘抽取改为逐项报告：整树抽取与按路径抽取遇到个别文件读不出时，返回完整文件与读不出文件的清单，不再把部分失败压成整棵失败。GUI 的离盘复制保留完整文件并列出读不出的路径（有读不出的文件时任务按失败收尾），回读校验把读不出的文件与内容差异分开报。xorriso 后端只按落盘结果报告完整文件，显式选择它时拿不到逐项状态（ADR-0032）。
+
+**English**
+
+### FEAT
+
+- Disc extraction now returns a per-file report: when one or more files cannot be read, whole-tree and by-path extraction return the complete files plus the unreadable paths instead of failing as a whole. The GUI copy keeps the complete files and lists the unreadable paths (the job still finishes as failed when any file is unreadable), and read-back verification reports unreadable files separately from content differences. The xorriso backend only reports files it landed, so an explicit xorriso selection still lacks per-file status (ADR-0032).
+
 ## [0.1.10] - 2026-10-27
 
 **中文**

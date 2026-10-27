@@ -441,6 +441,61 @@ impl SalvageReport {
     }
 }
 
+/// 读盘抽取的结果：每个文件一条结论，单个文件读失败不中断整次抽取（ADR-0032）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtractReport {
+    /// 处理过的文件及其状态。
+    pub files: Vec<ExtractedFile>,
+}
+
+/// 抽取报告里的一条文件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedFile {
+    /// 盘上路径，以 `/` 开头。
+    pub path: String,
+    /// 盘上目录记录里的字节数，读不出的文件也保留。
+    pub size: u64,
+    pub state: ExtractState,
+}
+
+/// 单个文件的抽取状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtractState {
+    /// 完整抽出，字节数与目录一致。
+    Complete,
+    /// 一个字节都没抽出，`reason` 是下层错误的文案。
+    Unreadable { reason: String },
+}
+
+impl ExtractReport {
+    /// 状态为完整的文件数。
+    pub fn complete(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| file.state == ExtractState::Complete)
+            .count()
+    }
+
+    /// 读不出的文件数。
+    pub fn unreadable(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| matches!(file.state, ExtractState::Unreadable { .. }))
+            .count()
+    }
+
+    /// 读不出文件的盘上路径，按报告条目顺序，供调用方生成结果文案。
+    pub fn unreadable_paths(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .filter_map(|file| match &file.state {
+                ExtractState::Unreadable { .. } => Some(file.path.clone()),
+                ExtractState::Complete => None,
+            })
+            .collect()
+    }
+}
+
 /// 修复尝试的结果（`optiburn repair`，对齐 xorriso 的 `-close_damaged`，ADR-0022）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairOutcome {

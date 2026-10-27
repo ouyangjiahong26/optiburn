@@ -219,6 +219,15 @@ pub(crate) fn missing_tool_text(lang: Lang, tool: &str) -> String {
     }
 }
 
+/// 把路径清单拼成一句展示：中文用顿号，英文用逗号加空格。复制与校验的结果文案
+/// 共用同一份口径。
+fn join_paths(lang: Lang, paths: &[String]) -> String {
+    match lang {
+        Lang::Zh => paths.join("、"),
+        Lang::En => paths.join(", "),
+    }
+}
+
 /// 原生引擎能力缺口的两语文案，与 CLI 的同名函数同口径（见原生引擎的 ADR-0017）。
 /// 建议里点明平台差异：xorriso 引擎只在 Linux 可用，Windows 上只能换盘或等引擎补齐。
 fn native_gap_text(lang: Lang, gap: NativeGap) -> String {
