@@ -156,7 +156,7 @@ pub(crate) fn session_headroom(
 /// NWA_V 置位且下一个可写地址落在末区段起点之后，任何一步读不到返回 `None`。
 fn measured_gap_blocks(mmc: &mut MmcDevice) -> Option<u64> {
     let session = mmc.read_toc_session_info().ok().flatten()?;
-    let track = mmc.read_track_information(crate::native::LAST_TRACK).ok()?;
+    let track = mmc.read_writable_track_information().ok()?;
     if !track.nwa_valid || track.next_writable_address <= session.last_session_start {
         return None;
     }

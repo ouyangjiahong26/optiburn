@@ -83,3 +83,25 @@ K3b 的补齐因此是防御性写法，不是 growisofs 顺序写路径的必�
 - 改为调用 mkisofs 生成增长区段：这与 ADR-0020 的原生增长决策相反，Linux 上等于回到
   xorriso 子进程路线。
 - 等拿到 DVD+R 再调研：调研本身不依赖介质，结论可以先落地，行为改动留到实测之后。
+
+## 补记（2026-10-27）：可写轨道的轨道号回退
+
+真机报告（HL-DT-ST DVDRAM GP70N，可追加 DVD-R，profile 0x0011，盘上已有 4 个区段）：
+增长模式在解析写入位置时把 `READ TRACK INFORMATION` 轨道号 0xFF 原样上抛，
+`SCSI command [52, 00, 00, ff, …] failed: status=2, sense=[70, 00, 05, …, 21, 00, …]`。
+MMC 只为 CD 与 DVD+R 族定义 0xFF（含 NWA 处的隐形轨道），DVD-R 顺序记录介质上它
+无定义，这台驱动器按 ILLEGAL REQUEST 加 ASC 0x21 拒绝；同一张盘改问 READ DISC
+INFORMATION 字节 6 的末条轨道号（4）就返回有效 NWA（118512）与剩余块数
+（2179376）。ADR-0019 的容量探测路径早有这个回退（对齐 libburn 的
+`mmc_read_track_info`），写路径漏了。
+
+修复：回退收进 `MmcDevice::read_writable_track_information`，增长写入位置
+（`grow_write_address`）、镜像刻录起始块（`start_lba`）、修复（`repair`）与容量
+探测全部改走它。只有 ILLEGAL REQUEST 触发回退，真实传输故障原样上抛；末条轨道号
+读不到（空白盘字段为 0）按轨道 1 问，与容量路径同口径。`salvage` 换用同一口径后
+保留原容错：驱动器连末条轨道也拒（ADR-0030 记录的 GP75N 封口盘形态）时仍按
+“没有未关闭轨道”处理。
+
+后果修正：上面“未覆盖”一条里“DVD-R 顺序记录做不出第二区段”是当时 xorriso 子进程
+路线的观察，与本次报告的盘况（DVD-R 上 4 个区段、可追加）不符；DVD-R 增长的真机
+写入仍待验证，起点解析这步不再阻塞。
