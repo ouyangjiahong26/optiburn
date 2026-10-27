@@ -11,9 +11,13 @@
 
 ### 修复
 
+- 可追加 DVD-R 上的追加刻录不再一开始就失败（ADR-0031 补记）：READ TRACK INFORMATION 问轨道 0xFF 只对 CD 与 DVD+R 族有定义，DVD-R 顺序记录介质上驱动器按非法请求拒绝，此前原样上抛“设备命令失败”。现在与容量探测同口径，被拒时改问 READ DISC INFORMATION 的末条轨道号，追加写入位置、镜像刻录起点、修复与容量读数都走这一条。
+
 **English**
 
 ### FIX
+
+- Appending to an appendable DVD-R no longer fails before writing (ADR-0031 addendum): READ TRACK INFORMATION with track number 0xFF is only defined for CD and DVD+R family media, and drives reject it as an illegal request on DVD-R sequential media. The writable-track query now falls back to the last track number from READ DISC INFORMATION, shared by the append write address, the burn start address, repair and capacity readings.
 
 ## [0.1.9] - 2026-10-24
 
