@@ -5,7 +5,7 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本管理遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.1.11] - 2026-10-28
 
 **中文**
 
@@ -13,11 +13,21 @@
 
 - 读盘抽取改为逐项报告：整树抽取与按路径抽取遇到个别文件读不出时，返回完整文件与读不出文件的清单，不再把部分失败压成整棵失败。GUI 的离盘复制保留完整文件并列出读不出的路径（有读不出的文件时任务按失败收尾），回读校验把读不出的文件与内容差异分开报。xorriso 后端只按落盘结果报告完整文件，显式选择它时拿不到逐项状态（ADR-0032）。
 
+### 修复
+
+- 可追加 DVD-R 不再被误判成“盘上地址不可信”（ADR-0033）：部分驱动器对 READ TRACK INFORMATION 的非标准 CDB 形态会把隐形轨道的查询静默回成已关闭轨道（命令不报错、地址全错），追加门禁据此拒绝健康的盘。现在先发 libburn 同款的标准形态，用响应里的轨道号校验答的就是问的那条，答非所问或被拒时退回旧形态再问。容量读数同步修正，probe 的总容量从已写范围回到盘容量。
+
 **English**
 
 ### FEAT
 
 - Disc extraction now returns a per-file report: when one or more files cannot be read, whole-tree and by-path extraction return the complete files plus the unreadable paths instead of failing as a whole. The GUI copy keeps the complete files and lists the unreadable paths (the job still finishes as failed when any file is unreadable), and read-back verification reports unreadable files separately from content differences. The xorriso backend only reports files it landed, so an explicit xorriso selection still lacks per-file status (ADR-0032).
+
+### FIX
+
+- Appending to an appendable DVD-R is no longer misreported as "addresses on this disc cannot be trusted" (ADR-0033): some drives silently answer the non-standard READ TRACK INFORMATION CDB layout with a closed track's descriptor instead of the invisible track (the command succeeds, the addresses are all wrong), which made the append gate reject healthy discs. The standard (libburn-style) layout is sent first, the track number in the response is checked against the asked track, and a mismatch or rejection falls back to the previous layout. Capacity readings are corrected as well, so probe reports the disc capacity instead of the written range.
+
+**Full Changelog**: https://github.com/ouyangjiahong26/optiburn/compare/v0.1.10...v0.1.11
 
 ## [0.1.10] - 2026-10-27
 

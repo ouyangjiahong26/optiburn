@@ -11,7 +11,7 @@ optiburn is a cross-platform optical disc toolkit in Rust for Windows and Linux 
 
 The project exists because software covering all four platform combinations is rare, and burning on Linux desktops (Ubuntu, Kylin and other distributions) is especially rough: command-line tools with cryptic flags, no progress, English-only errors, and disc states you have to diagnose by hand. optiburn puts pre-flight checks, live cancellable progress, classified failure messages and read-back verification around one core.
 
-## What works today (0.1.10)
+## What works today (0.1.11)
 
 | Command | What it does | Platforms |
 |---|---|---|
@@ -54,7 +54,7 @@ Windows needs no external tool: burning, growth and reading all use the native p
 
 ### GUI packages
 
-Windows installers are `OptiBurn_0.1.10_x64-setup.exe` and the arm64 build. On Linux use the AppImage (make it executable and run) or the `.deb`. The `-offline` x64 installer embeds the WebView2 runtime, is about 210 MB and installs with zero downloads. On an unpatched Windows 7 the WebView2 installer fails with 0x8007007F, so install KB2533623 and KB3063858 first from the [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) (see the addendum in ADR-0016).
+Windows installers are `OptiBurn_0.1.11_x64-setup.exe` and the arm64 build. On Linux use the AppImage (make it executable and run) or the `.deb`. The `-offline` x64 installer embeds the WebView2 runtime, is about 210 MB and installs with zero downloads. On an unpatched Windows 7 the WebView2 installer fails with 0x8007007F, so install KB2533623 and KB3063858 first from the [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) (see the addendum in ADR-0016).
 
 ## Usage
 
