@@ -58,6 +58,11 @@ pub enum MmcError {
     TooManyBlocks { blocks: usize, max: usize },
     #[error("device not ready within timeout")]
     NotReady,
+    /// 驱动器答非所问：响应描述的轨道号（`answered`）不是询问的轨道（`asked`）。
+    /// 两种 CDB 形态都这样时由 [`MmcDevice::read_track_information`] 上抛（issue #75：
+    /// GP70N 在可追加 DVD-R 上对兼容形态这样错答，字段看着合法、地址全是错的）。
+    #[error("drive answered track {answered} while track {asked} was asked")]
+    TrackMismatch { asked: u32, answered: u8 },
     /// 该介质没有“中断写入留下的未关闭轨道”这个形态（DVD-RAM、BD-RE 等随机可写
     /// 介质），修复路径对它无从谈起（对照 libburn write.c:3487-3493 对这类 profile
     /// 直接报 “Cannot close damaged track on given media type”）。
@@ -132,9 +137,9 @@ pub struct DiscInformation {
     /// 响应字节 6：末区段里最后一条轨道的编号。按 MMC-5 6.24 与 T10 97-117r0
     /// 10.1.7 的定义，这个字段把 NWA 处尚未写入的隐形轨道算在内，因此可追加盘的
     /// “末区段”就是那条开放区段，字节 5 与字节 6 都指向它（实测 2026-10-10：
-    /// 盘上 8 条已写轨道时字节 5 给 9）。容量探测用它的理由与 0xFF 相同，都是问
-    /// 最后一条轨道（也就是开放的那条）的剩余块数。本机盘上只核对过字节 5，
-    /// 字节 6 的取值按标准，驱动器的实现差异未验证。
+    /// CD-R 盘上 8 条已写轨道时字节 5 给 9；实测 2026-10-28：GP70N 的可追加
+    /// DVD-R 上 4 条已写轨道时字节 5 与字节 6 都给 5）。容量探测用它的理由与
+    /// 0xFF 相同，都是问最后一条轨道（也就是开放的那条）的剩余块数。
     pub last_session_last_track: u8,
 }
 
@@ -287,9 +292,51 @@ impl MmcDevice {
 
     /// READ TRACK INFORMATION（0x52）：轨道起始地址与下一个可写地址（NWA）。
     /// `track` 用 0xFF 取 CD 上“当前可写的那条”（libburn 对 CD 的取值）。
+    ///
+    /// 两种 CDB 形态依次尝试（ADR-0033）：先发标准形态（libburn 同款，字节 1 置 1、
+    /// 轨道号 32 位放字节 2-5），仅在“这个形态在这里没定义”（ILLEGAL REQUEST）或
+    /// “答非所问”（[`MmcError::TrackMismatch`]）时退回兼容形态（2026-10-11 的 CD-R
+    /// 实测形态，字节 1 置 0、轨道号 16 位放字节 2-3）。真实传输故障换形态重问也
+    /// 拿不到答案，原样上抛；两种形态都失败时回标准形态的错误，CD 只认兼容形态的
+    /// 驱动器因此保底。
+    ///
+    /// 答非所问的判定必须有：GP70N 在可追加 DVD-R 上对兼容形态不报错，但把隐形
+    /// 轨道 5 的查询静默回成已关闭轨道 4 的描述符（2026-10-28 实测，issue #75），
+    /// 字段全部合法、地址全是错的。判定依据是响应字节 2 的轨道号：问具体轨道号时
+    /// 必须与询问值相等；0xFF 按定义回真实轨道号，无法比对，跳过校验。
     pub fn read_track_information(&mut self, track: u32) -> Result<TrackInfo, MmcError> {
-        let data = self.read_into(&write::track_info_cdb(track), write::TRACK_INFO_LEN)?;
-        write::parse_track_information(&data).ok_or(MmcError::MalformedResponse)
+        let standard = write::track_info_cdb(track);
+        match self.read_track_information_via(&standard, track) {
+            Ok(info) => Ok(info),
+            Err(standard_error)
+                if standard_error.is_illegal_request()
+                    || matches!(standard_error, MmcError::TrackMismatch { .. }) =>
+            {
+                let compat = write::track_info_cdb_compat(track);
+                match self.read_track_information_via(&compat, track) {
+                    Ok(info) => Ok(info),
+                    Err(_) => Err(standard_error),
+                }
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// 用一种 CDB 形态问一次轨道信息，解析后校验响应轨道号（0xFF 除外）。
+    fn read_track_information_via(
+        &mut self,
+        cdb: &[u8; 10],
+        track: u32,
+    ) -> Result<TrackInfo, MmcError> {
+        let data = self.read_into(cdb, write::TRACK_INFO_LEN)?;
+        let info = write::parse_track_information(&data).ok_or(MmcError::MalformedResponse)?;
+        if track != 0xFF && u32::from(info.number) != track {
+            return Err(MmcError::TrackMismatch {
+                asked: track,
+                answered: info.number,
+            });
+        }
+        Ok(info)
     }
 
     /// 读“当前可写轨道”的轨道信息，取 NWA 的写路径（原生增长、追加起点、修复）
@@ -297,11 +344,14 @@ impl MmcDevice {
     ///
     /// 轨道号先按 0xFF 问（MMC 只为 CD 与 DVD+R 族定义它，实测的 CD-R 驱动器认），
     /// 驱动器以 ILLEGAL REQUEST 拒绝时（顺序介质里 0xFF 无定义的型号：DVD-R 族、
-    /// BD-R；实测 DVDRAM GP70N 在 DVD-R 上回 ASC 0x21）改用 `READ DISC INFORMATION`
-    /// 字节 6 的末条轨道号再问一次（libburn 的 `mmc_read_track_info` 对 DVD-R 族
-    /// 就是这么传的），读不到末条轨道号（字段为 0，空白盘就是这样）时按轨道 1
-    /// 再问一次，与 libburn 对可覆写介质的取值一致。0xFF 之外的失败（真实传输
-    /// 故障、盘不在位）不回退，原样上抛：那里换轨道号重问也拿不到答案。
+    /// BD-R；实测 DVDRAM GP70N 在 DVD-R 上对两种 CDB 形态分别回 ASC 0x24 与 0x21）
+    /// 改用 `READ DISC INFORMATION` 字节 6 的末条轨道号再问一次（libburn 的
+    /// `mmc_read_track_info` 对 DVD-R 族就是这么传的），读不到末条轨道号（字段为 0，
+    /// 空白盘就是这样）时按轨道 1 再问一次，与 libburn 对可覆写介质的取值一致。
+    /// 0xFF 之外的失败（真实传输故障、盘不在位）不回退，原样上抛：那里换轨道号
+    /// 重问也拿不到答案。末条轨道号把 NWA 处的隐形轨道算在内（2026-10-28 在
+    /// GP70N 的可追加 DVD-R 上实证：4 条已写轨道时字节 5 与字节 6 都给 5），因此
+    /// 这条回退落在隐形轨道上，正是取 NWA 想要的那条。
     pub fn read_writable_track_information(&mut self) -> Result<TrackInfo, MmcError> {
         match self.read_track_information(0xFF) {
             Ok(track) => Ok(track),
@@ -647,7 +697,7 @@ mod tests {
             }
             if cdb[0] == 0x52
                 && let Some(reject) = *self.reject_track.borrow()
-                && u32::from(u16::from_be_bytes([cdb[2], cdb[3]])) == reject
+                && asked_track(cdb) == reject
             {
                 let sense = if self.reject_sense.is_empty() {
                     vec![0x70, 0x00, 0x05, 0x20, 0x00, 0x00, 0x00, 0x0a]
@@ -680,6 +730,16 @@ mod tests {
 
     /// 假驱动器收到的命令日志（CDB 与写往设备的数据载荷）。
     type Log = Rc<RefCell<Vec<Vec<u8>>>>;
+
+    /// 从 READ TRACK INFORMATION 的 CDB 取询问的轨道号：标准形态是字节 2-5 的
+    /// 32 位大端，兼容形态是字节 2-3 的 16 位大端（见 [`write::track_info_cdb`]）。
+    fn asked_track(cdb: &[u8]) -> u32 {
+        if cdb[1] & 0x01 != 0 {
+            u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]])
+        } else {
+            u32::from(u16::from_be_bytes([cdb[2], cdb[3]]))
+        }
+    }
 
     /// 建一台只回放 `reply` 的假驱动器，返回设备与它收到的 CDB 日志。
     fn device(reply: Vec<u8>) -> (MmcDevice, Log) {
@@ -919,6 +979,7 @@ mod tests {
     /// 块与 xorriso 读出的整体容量一致。
     fn measured_track_info() -> TrackInfo {
         TrackInfo {
+            number: 9,
             start_lba: 286_770,
             next_writable_address: 286_770,
             free_blocks: 73_077,
@@ -961,6 +1022,7 @@ mod tests {
         // 形状：8 条已写轨道，末区段是那条开放区段，字节 5 与字节 6 都指向 NWA
         // 处的隐形轨道 9。
         let mut track_reply = vec![0u8; write::TRACK_INFO_LEN];
+        track_reply[2] = 9; // 响应轨道号：校验要用
         track_reply[8..12].copy_from_slice(&286_770u32.to_be_bytes());
         track_reply[12..16].copy_from_slice(&286_770u32.to_be_bytes());
         track_reply[16..20].copy_from_slice(&73_077u32.to_be_bytes());
@@ -987,9 +1049,13 @@ mod tests {
             .borrow()
             .iter()
             .filter(|cdb| cdb[0] == 0x52)
-            .map(|cdb| u32::from(u16::from_be_bytes([cdb[2], cdb[3]])))
+            .map(|cdb| asked_track(cdb))
             .collect();
-        assert_eq!(tracks, vec![0xFF, 9], "先问 0xFF，被拒后改问末条轨道");
+        assert_eq!(
+            tracks,
+            vec![0xFF, 0xFF, 9],
+            "0xFF 两种形态都被拒后改问末条轨道"
+        );
     }
 
     #[test]
@@ -997,6 +1063,7 @@ mod tests {
         // 空白盘与可覆写介质：0x51 读不到（这里是空响应，效果同字节 6 为 0）时按
         // 轨道 1 再问一次，与 libburn 对可覆写介质的取值一致。
         let mut reply = vec![0u8; write::TRACK_INFO_LEN];
+        reply[2] = 1; // 响应轨道号：校验要用
         reply[8..12].copy_from_slice(&286_770u32.to_be_bytes());
         reply[12..16].copy_from_slice(&286_770u32.to_be_bytes());
         reply[16..20].copy_from_slice(&73_077u32.to_be_bytes());
@@ -1012,9 +1079,9 @@ mod tests {
             .borrow()
             .iter()
             .filter(|cdb| cdb[0] == 0x52)
-            .map(|cdb| u32::from(u16::from_be_bytes([cdb[2], cdb[3]])))
+            .map(|cdb| asked_track(cdb))
             .collect();
-        assert_eq!(tracks, vec![0xFF, 1], "读不到末条轨道号时按轨道 1");
+        assert_eq!(tracks, vec![0xFF, 0xFF, 1], "读不到末条轨道号时按轨道 1");
     }
 
     #[test]
@@ -1041,6 +1108,7 @@ mod tests {
         // 末条轨道的读数，而不是把 ILLEGAL REQUEST 当设备故障上抛。实机形态见
         // ADR-0031 补记（DVDRAM GP70N 在 DVD-R 上回 key 5 加 ASC 0x21）。
         let mut track_reply = vec![0u8; write::TRACK_INFO_LEN];
+        track_reply[2] = 4; // 响应轨道号：校验要用
         track_reply[7] = 0x01; // NWA_V
         track_reply[8..12].copy_from_slice(&118_512u32.to_be_bytes());
         track_reply[12..16].copy_from_slice(&118_512u32.to_be_bytes());
@@ -1064,9 +1132,13 @@ mod tests {
             .borrow()
             .iter()
             .filter(|cdb| cdb[0] == 0x52)
-            .map(|cdb| u32::from(u16::from_be_bytes([cdb[2], cdb[3]])))
+            .map(|cdb| asked_track(cdb))
             .collect();
-        assert_eq!(tracks, vec![0xFF, 4], "先问 0xFF，被拒后改问末条轨道");
+        assert_eq!(
+            tracks,
+            vec![0xFF, 0xFF, 4],
+            "0xFF 两种形态都被拒后改问末条轨道"
+        );
     }
 
     #[test]
@@ -1122,6 +1194,7 @@ mod tests {
         );
         // 剩余块数为 0 的轨道读数不构成口径，照样退回格式化容量。
         let empty_track = TrackInfo {
+            number: 1,
             start_lba: 0,
             next_writable_address: 0,
             free_blocks: 0,
@@ -1409,9 +1482,9 @@ mod tests {
         assert_eq!(writes.borrow()[0], data);
     }
 
-    /// 轨道号在字节 2-3，字节 1 置 0：2026-10-11 在中断刻录后的 CD-R 上实测，旧写法
-    /// （32 位放字节 2-5 加字节 1 置位）被驱动器拒或回退化描述符，见 `track_info_cdb`
-    /// 的注释。
+    /// 标准形态（libburn 同款）：字节 1 置 1、轨道号 32 位放字节 2-5。0xFF 查询
+    /// 不做响应轨道号校验，标准形态一次成功就不再发兼容形态（见
+    /// `read_track_information` 的双形态探测）。
     #[test]
     fn read_track_information_cdb_and_parse_are_golden() {
         let mut reply = vec![0u8; write::TRACK_INFO_LEN];
@@ -1429,8 +1502,218 @@ mod tests {
         assert_eq!(
             cdbs.borrow().as_slice(),
             &[vec![
-                0x52, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00
+                0x52, 0x01, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x20, 0x00
             ]]
+        );
+    }
+
+    /// 只认兼容形态的 CD 式驱动器（2026-10-11 的实测行为）：对字节 1 置 1 的
+    /// READ TRACK INFORMATION 回 INVALID FIELD IN CDB，兼容形态正常回答。
+    struct CompatOnlyTransport {
+        reply: Vec<u8>,
+        issued: Rc<RefCell<Vec<Vec<u8>>>>,
+    }
+
+    impl ScsiTransport for CompatOnlyTransport {
+        fn issue(
+            &mut self,
+            cdb: &[u8],
+            _dir: Direction,
+            data: &mut [u8],
+            _timeout: Duration,
+        ) -> Result<optiburn_transport::Completion, TransportError> {
+            self.issued.borrow_mut().push(cdb.to_vec());
+            if cdb[0] == 0x52 && cdb[1] & 0x01 != 0 {
+                return Err(TransportError::CommandFailed {
+                    cdb: cdb.to_vec(),
+                    scsi_status: 2,
+                    sense: vec![
+                        0x70, 0x00, 0x05, 0x00, 0, 0, 0, 0x0a, 0, 0, 0, 0, 0x24, 0x00,
+                    ],
+                });
+            }
+            let n = self.reply.len().min(data.len());
+            data[..n].copy_from_slice(&self.reply[..n]);
+            Ok(optiburn_transport::Completion {
+                scsi_status: 0,
+                sense: Vec::new(),
+                residual: 0,
+            })
+        }
+
+        fn device_path(&self) -> &str {
+            "/dev/fake"
+        }
+    }
+
+    #[test]
+    fn read_track_information_falls_back_to_compat_when_standard_is_rejected() {
+        // CD 只认兼容形态的驱动器：标准形态被 ILLEGAL REQUEST 拒后换兼容形态拿到
+        // 读数，且响应轨道号校验通过。
+        let mut reply = vec![0u8; write::TRACK_INFO_LEN];
+        reply[2] = 9;
+        reply[7] = 0x01; // NWA_V
+        reply[8..12].copy_from_slice(&286_770u32.to_be_bytes());
+        reply[12..16].copy_from_slice(&286_770u32.to_be_bytes());
+        reply[16..20].copy_from_slice(&73_077u32.to_be_bytes());
+        let issued = Rc::new(RefCell::new(Vec::new()));
+        let mut dev = MmcDevice::new(Box::new(CompatOnlyTransport {
+            reply,
+            issued: Rc::clone(&issued),
+        }));
+
+        let info = dev.read_track_information(9).expect("compat form answers");
+        assert_eq!(info.number, 9);
+        assert!(info.nwa_valid);
+        assert_eq!(info.next_writable_address, 286_770);
+
+        let forms: Vec<u8> = issued
+            .borrow()
+            .iter()
+            .filter(|cdb| cdb[0] == 0x52)
+            .map(|cdb| cdb[1] & 0x01)
+            .collect();
+        assert_eq!(forms, vec![0x01, 0x00], "先标准形态，被拒后换兼容形态");
+    }
+
+    #[test]
+    fn read_track_information_rejects_a_silently_wrong_answer() {
+        // GP70N 的病灶形态（issue #75）：命令不报错，但响应描述的是另一条轨道。
+        // 两种形态都这样错答时按标准形态的错误上抛，错误里带问的与答的轨道号。
+        let mut reply = vec![0u8; write::TRACK_INFO_LEN];
+        reply[2] = 4; // 问的是 5，答的是 4
+        reply[8..12].copy_from_slice(&118_512u32.to_be_bytes());
+        let (mut dev, cdbs) = device(reply);
+
+        let error = dev
+            .read_track_information(5)
+            .expect_err("wrong track must not be accepted");
+        assert!(
+            matches!(
+                error,
+                MmcError::TrackMismatch {
+                    asked: 5,
+                    answered: 4
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            cdbs.borrow().len(),
+            2,
+            "标准形态错答后要再试兼容形态，两次都错答才上抛"
+        );
+    }
+
+    /// 复刻 2026-10-28 实测的 GP70N 加可追加 DVD-R（issue #75）：4 条已写轨道加
+    /// 隐形轨道 5。0xFF 两种形态都被拒（ASC 0x24 与 0x21），标准形态问轨道 5 回
+    /// 隐形轨道的真实描述符，兼容形态问轨道 5 不报错、回成已关闭轨道 4。
+    struct Gp70nDvdRTransport {
+        issued: Rc<RefCell<Vec<Vec<u8>>>>,
+    }
+
+    /// 隐形轨道 5 的实测响应（前 32 字节）：NWA_V 置位，起点与 NWA 均 457040，
+    /// 剩余 1840848 块。
+    const MEASURED_INVISIBLE_TRACK: [u8; write::TRACK_INFO_LEN] = [
+        0x00, 0x26, 0x05, 0x05, 0x00, 0x04, 0x61, 0x01, 0x00, 0x06, 0xF9, 0x50, 0x00, 0x06, 0xF9,
+        0x50, 0x00, 0x1C, 0x16, 0xD0, 0x00, 0x00, 0x00, 0x10, 0x00, 0x1C, 0x16, 0xD0, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+
+    /// 已关闭轨道 4 的实测响应（前 32 字节）：NWA_V 清零、NWA 与剩余块数均 0。
+    const MEASURED_CLOSED_TRACK: [u8; write::TRACK_INFO_LEN] = [
+        0x00, 0x26, 0x04, 0x04, 0x00, 0x04, 0x21, 0x02, 0x00, 0x01, 0xCE, 0xF0, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x05, 0x12, 0x50, 0x00, 0x06,
+        0xE1, 0x3F,
+    ];
+
+    impl ScsiTransport for Gp70nDvdRTransport {
+        fn issue(
+            &mut self,
+            cdb: &[u8],
+            _dir: Direction,
+            data: &mut [u8],
+            _timeout: Duration,
+        ) -> Result<optiburn_transport::Completion, TransportError> {
+            self.issued.borrow_mut().push(cdb.to_vec());
+            match cdb[0] {
+                0x51 => {
+                    // 实测 READ DISC INFORMATION：可追加、区段 5、首轨 1、
+                    // 末区段首末轨道号都是 5（隐形轨道）。
+                    let reply: [u8; DISC_INFORMATION_LEN] = [
+                        0x00, 0x20, 0x01, 0x01, 0x05, 0x05, 0x05, 0x20, 0x00, 0x00, 0x00, 0x00,
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    ];
+                    let n = DISC_INFORMATION_LEN.min(data.len());
+                    data[..n].copy_from_slice(&reply[..n]);
+                }
+                0x52 => {
+                    let standard = cdb[1] & 0x01 != 0;
+                    let track = asked_track(cdb);
+                    // 0xFF 两种形态都被拒：标准形态 ASC 0x24，兼容形态 ASC 0x21。
+                    if track == 0xFF {
+                        let asc = if standard { 0x24 } else { 0x21 };
+                        return Err(TransportError::CommandFailed {
+                            cdb: cdb.to_vec(),
+                            scsi_status: 2,
+                            sense: vec![
+                                0x70, 0x00, 0x05, 0x00, 0, 0, 0, 0x0a, 0, 0, 0, 0, asc, 0x00,
+                            ],
+                        });
+                    }
+                    // 标准形态问轨道 5 答隐形轨道 5；兼容形态问轨道 5 静默答轨道 4
+                    //（issue #75 的病灶）。问轨道 4 两种形态都答轨道 4。
+                    let reply = if track == 5 && standard {
+                        &MEASURED_INVISIBLE_TRACK[..]
+                    } else {
+                        &MEASURED_CLOSED_TRACK[..]
+                    };
+                    data[..write::TRACK_INFO_LEN].copy_from_slice(reply);
+                }
+                _ => {}
+            }
+            Ok(optiburn_transport::Completion {
+                scsi_status: 0,
+                sense: Vec::new(),
+                residual: 0,
+            })
+        }
+
+        fn device_path(&self) -> &str {
+            "/dev/fake"
+        }
+    }
+
+    #[test]
+    fn writable_track_information_reads_the_measured_gp70n_dvd_r() {
+        // issue #75 的端到端回归：0xFF 两种形态都被拒，回退问末条轨道号 5。标准
+        // 形态拿到隐形轨道的真实描述符（NWA 457040、剩余 1840848 块），兼容形态
+        // 的错答被轨道号校验挡住。修复前这条链路拿到的是关闭轨道 4 的
+        // “NWA_V 清零”，门禁误判整张盘不可续写。
+        let issued = Rc::new(RefCell::new(Vec::new()));
+        let mut dev = MmcDevice::new(Box::new(Gp70nDvdRTransport {
+            issued: Rc::clone(&issued),
+        }));
+
+        let track = dev
+            .read_writable_track_information()
+            .expect("the invisible track must be readable");
+        assert_eq!(track.number, 5);
+        assert!(track.nwa_valid);
+        assert_eq!(track.next_writable_address, 457_040);
+        assert_eq!(track.free_blocks, 1_840_848);
+
+        let asked: Vec<(u8, u32)> = issued
+            .borrow()
+            .iter()
+            .filter(|cdb| cdb[0] == 0x52)
+            .map(|cdb| (cdb[1] & 0x01, asked_track(cdb)))
+            .collect();
+        assert_eq!(
+            asked,
+            vec![(0x01, 0xFF), (0x00, 0xFF), (0x01, 5)],
+            "0xFF 两种形态都被拒，末条轨道号 5 走标准形态成功"
         );
     }
 

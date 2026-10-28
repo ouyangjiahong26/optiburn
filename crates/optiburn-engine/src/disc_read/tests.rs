@@ -622,16 +622,23 @@ impl ScriptedDisc {
     }
 
     /// READ TRACK INFORMATION：按轨道号回起点与 NWA，未写过的轨道号按命令失败拒绝。
+    /// CDB 两种形态（标准 32 位在字节 2-5、兼容 16 位在字节 2-3）都要能解，响应的
+    /// 轨道号（字节 2）按询问值回填，mmc 层的轨道号校验要看它。
     fn answer_track_info(
         &self,
         cdb: &[u8],
         data: &mut [u8],
     ) -> Result<(), optiburn_transport::TransportError> {
-        let track = u16::from_be_bytes([cdb[2], cdb[3]]) as u8;
+        let track = if cdb[1] & 0x01 != 0 {
+            u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]])
+        } else {
+            u32::from(u16::from_be_bytes([cdb[2], cdb[3]]))
+        } as u8;
         let Some((_, lba)) = self.tracks.iter().find(|(number, _)| *number == track) else {
             return Err(scripted_fail(cdb));
         };
         if data.len() >= 28 {
+            data[2] = track;
             data[8..12].copy_from_slice(&lba.to_be_bytes());
             data[12..16].copy_from_slice(&lba.to_be_bytes());
             data[16..20].copy_from_slice(&1000u32.to_be_bytes());
