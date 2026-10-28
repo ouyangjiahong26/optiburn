@@ -182,6 +182,11 @@ pub const TRACK_INFO_LEN: usize = 32;
 /// 一条轨道的信息（READ TRACK INFORMATION 响应的关键字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrackInfo {
+    /// 轨道号（响应字节 2）。用于校验驱动器答的就是问的那条轨道：问具体轨道号时
+    /// 两者必须相等（0xFF 查询除外，见 [`track_info_cdb`]）。GP70N 在可追加 DVD-R
+    /// 上对兼容形态会把隐形轨道 5 的查询静默回成已关闭轨道 4（2026-10-28 实测，
+    /// issue #75），没有这个字段就发现不了错答。
+    pub number: u8,
     /// 轨道起始地址（响应字节 8-11）。
     pub start_lba: u32,
     /// 下一个可写地址（响应字节 12-15）。追加刻录的起点在它后面（中间是链接块）。
@@ -201,20 +206,33 @@ pub struct TrackInfo {
     pub nwa_valid: bool,
 }
 
-/// READ TRACK INFORMATION（0x52）：字节 1 置 0，轨道号按大端 16 位放在字节 2-3
-/// （MMC-5 的 Logical Track Number 字段）。
+/// READ TRACK INFORMATION（0x52）的标准形态：字节 1 置 1，轨道号按大端 32 位放
+/// 字节 2-5。这是 libburn 的 `mmc_read_track_info` 的写法（MMC-5 的 Logical Track
+/// Number 字段就是这四个字节），也是实测里 GP70N 在可追加 DVD-R 上唯一答得对的
+/// 形态（2026-10-28，issue #75）：对它询问隐形轨道 5，回出 NWA_V 置位、NWA 457040、
+/// 剩余 1840848 块的真实描述符。
 ///
-/// CD 上用 0xFF 取“当前可写的那条”，这也是 libburn 对 CD 的取值（mmc.c 的
-/// `mmc_read_track_info`：CD 走 0xFF，DVD-R 族改传最后一条轨道的编号）。
-///
-/// 两处字段位置踩过坑，都是 2026-10-11 在中断刻录后的 CD-R 上实测出来的：
-/// - 早期实现把轨道号按 32 位写进字节 2-5，低字节落进保留的字节 5，驱动器当轨道号
-///   0 处理，任何轨道号都回地址全零的退化描述符（响应头 `[00 22 01 01 00 04 01 00]`）。
-/// - 早期实现还置了字节 1，本机驱动器对置位的 CDB 回 INVALID FIELD IN CDB。
-///
-/// 改到字节 1 置 0、轨道号在 2-3 之后，同一张盘回出真实描述符（0xFF 给出开放轨道，
-/// 起始地址 301170 就是当时真正的 NWA）。
+/// CD 上轨道号用 0xFF 取“当前可写的那条”（libburn 对 CD 的取值），DVD-R 族对
+/// 0xFF 无定义（GP70N 回 ASC 0x21），由 `MmcDevice::read_writable_track_information`
+/// 换成具体轨道号再问。
 pub fn track_info_cdb(track: u32) -> [u8; 10] {
+    let mut cdb = [0u8; 10];
+    cdb[0] = 0x52;
+    cdb[1] = 0x01;
+    cdb[2..6].copy_from_slice(&track.to_be_bytes());
+    cdb[7] = (TRACK_INFO_LEN >> 8) as u8;
+    cdb[8] = TRACK_INFO_LEN as u8;
+    cdb
+}
+
+/// READ TRACK INFORMATION 的兼容形态：字节 1 置 0，轨道号按大端 16 位放字节 2-3。
+///
+/// 只有标准形态被拒绝或答非所问时才用它（见 `MmcDevice::read_track_information`
+/// 的双形态探测）：2026-10-11 在中断刻录后的 CD-R 上实测，只有这种形态能取回
+/// 真实描述符（轨道号放 32 位或字节 1 置 1 的组合分别回退化描述符与 INVALID
+/// FIELD IN CDB）。同一台驱动器换成可追加 DVD-R 后它会把隐形轨道 5 的查询静默
+/// 回成已关闭轨道 4，所以响应必须先过轨道号校验（issue #75）。
+pub fn track_info_cdb_compat(track: u32) -> [u8; 10] {
     let mut cdb = [0u8; 10];
     cdb[0] = 0x52;
     cdb[2..4].copy_from_slice(&(track as u16).to_be_bytes());
@@ -243,14 +261,16 @@ pub fn close_track_cdb(track: u16) -> [u8; 10] {
     close_track_session_cdb(0b001, track)
 }
 
-/// 从 READ TRACK INFORMATION 的响应取起始地址、NWA、剩余块数与轨道大小。
+/// 从 READ TRACK INFORMATION 的响应取轨道号、起始地址、NWA、剩余块数与轨道大小。
 pub fn parse_track_information(response: &[u8]) -> Option<TrackInfo> {
+    let number = *response.get(2)?;
     let flags = response.get(5..8)?;
     let start = response.get(8..12)?;
     let nwa = response.get(12..16)?;
     let free = response.get(16..20)?;
     let size = response.get(24..28)?;
     Some(TrackInfo {
+        number,
         start_lba: u32::from_be_bytes([start[0], start[1], start[2], start[3]]),
         next_writable_address: u32::from_be_bytes([nwa[0], nwa[1], nwa[2], nwa[3]]),
         free_blocks: u32::from_be_bytes([free[0], free[1], free[2], free[3]]),
@@ -622,16 +642,23 @@ mod tests {
     }
 
     #[test]
-    fn track_info_cdb_puts_the_track_number_in_bytes_two_and_three() {
-        // MMC-5 的 Logical Track Number 是字节 2-3 的两字节大端字段。历史上这里写的是
-        // 32 位（低字节落进保留的字节 5），实测在中断刻录后的 CD-R 上任何轨道号都回
-        // 地址全零的退化描述符，改到 2-3 后同一张盘回出真实描述符。
+    fn track_info_cdbs_put_the_track_number_in_both_layouts() {
+        // 标准形态（libburn 同款）：字节 1 置 1，轨道号 32 位放字节 2-5。
         assert_eq!(
             track_info_cdb(0xFF),
-            [0x52, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00]
+            [0x52, 0x01, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x20, 0x00]
         );
         assert_eq!(
             track_info_cdb(10),
+            [0x52, 0x01, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x20, 0x00]
+        );
+        // 兼容形态（2026-10-11 的 CD-R 实测）：字节 1 置 0，轨道号 16 位放字节 2-3。
+        assert_eq!(
+            track_info_cdb_compat(0xFF),
+            [0x52, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00]
+        );
+        assert_eq!(
+            track_info_cdb_compat(10),
             [0x52, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00]
         );
     }
@@ -668,6 +695,7 @@ mod tests {
         measured[6] = 0x22;
         measured[8..12].copy_from_slice(&301_170u32.to_be_bytes());
         let track = parse_track_information(&measured).expect("实测响应要解析出来");
+        assert_eq!(track.number, 0x0B);
         assert!(track.damaged, "Damage 位置位");
         assert!(!track.nwa_valid, "NWA_V 清零");
         assert_eq!(track.start_lba, 301_170);
@@ -684,9 +712,46 @@ mod tests {
         healthy[12..16].copy_from_slice(&286_770u32.to_be_bytes());
         healthy[16..20].copy_from_slice(&73_077u32.to_be_bytes());
         let track = parse_track_information(&healthy).expect("健康响应要解析出来");
+        assert_eq!(track.number, 0x09);
         assert!(!track.damaged);
         assert!(track.nwa_valid);
         assert_eq!(track.next_writable_address, 286_770);
         assert_eq!(track.free_blocks, 73_077);
+    }
+
+    #[test]
+    fn track_information_parses_the_measured_appendable_dvd_r_pair() {
+        // 实测（2026-10-28，HL-DT-ST DVDRAM GP70N，可追加 DVD-R，4 条已写轨道加
+        // 隐形轨道 5，issue #75）。隐形轨道 5（标准形态的查询结果）：NWA_V 置位，
+        // 起点与 NWA 均 457040，剩余 1840848 块，轨道大小同剩余块数，末记录地址 0。
+        let invisible = [
+            0x00, 0x26, 0x05, 0x05, 0x00, 0x04, 0x61, 0x01, 0x00, 0x06, 0xF9, 0x50, 0x00, 0x06,
+            0xF9, 0x50, 0x00, 0x1C, 0x16, 0xD0, 0x00, 0x00, 0x00, 0x10, 0x00, 0x1C, 0x16, 0xD0,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        let track = parse_track_information(&invisible).expect("隐形轨道响应要解析出来");
+        assert_eq!(track.number, 5);
+        assert!(!track.damaged);
+        assert!(track.nwa_valid);
+        assert_eq!(track.start_lba, 457_040);
+        assert_eq!(track.next_writable_address, 457_040);
+        assert_eq!(track.free_blocks, 1_840_848);
+        assert_eq!(track.track_blocks, 1_840_848);
+
+        // 已关闭轨道 4（兼容形态对轨道 5 的查询被静默回成它，issue #75 的病灶）：
+        // NWA_V 清零、NWA 与剩余块数都是 0，轨道大小 332368、末记录地址 450879。
+        let closed = [
+            0x00, 0x26, 0x04, 0x04, 0x00, 0x04, 0x21, 0x02, 0x00, 0x01, 0xCE, 0xF0, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x05, 0x12, 0x50,
+            0x00, 0x06, 0xE1, 0x3F,
+        ];
+        let track = parse_track_information(&closed).expect("关闭轨道响应要解析出来");
+        assert_eq!(track.number, 4);
+        assert!(!track.damaged);
+        assert!(!track.nwa_valid);
+        assert_eq!(track.start_lba, 118_512);
+        assert_eq!(track.next_writable_address, 0);
+        assert_eq!(track.free_blocks, 0);
+        assert_eq!(track.track_blocks, 332_368);
     }
 }

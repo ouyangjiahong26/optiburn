@@ -118,7 +118,14 @@ impl ScsiTransport for ScriptedDrive {
                 // READ TRACK INFORMATION：起始地址 8-11，NWA 12-15，剩余块数 16-19，
                 // Damage 位在字节 5 的 bit 5、NWA_V 在字节 7 的 bit 0（libburn 的
                 // `mmc_get_nwa` 按这两位移流）。默认报健康：地址有效、没有损坏。
-                if self.reject_track_ff && u16::from_be_bytes([cdb[2], cdb[3]]) == 0xFF {
+                // 轨道号（字节 2）按询问值回填：mmc 层的响应轨道号校验要看它。
+                // CDB 两种形态（标准 32 位在字节 2-5、兼容 16 位在字节 2-3）都要能解。
+                let asked = if cdb[1] & 0x01 != 0 {
+                    u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]])
+                } else {
+                    u32::from(u16::from_be_bytes([cdb[2], cdb[3]]))
+                };
+                if self.reject_track_ff && asked == 0xFF {
                     return Err(TransportError::CommandFailed {
                         cdb: cdb.to_vec(),
                         scsi_status: 2,
@@ -130,6 +137,7 @@ impl ScsiTransport for ScriptedDrive {
                 }
                 if data.len() >= 20 {
                     let start = self.open_track_start.unwrap_or(self.nwa);
+                    data[2] = asked as u8;
                     data[5] = if self.damaged { 0x20 } else { 0x00 };
                     data[7] = u8::from(self.nwa_valid);
                     data[8..12].copy_from_slice(&start.to_be_bytes());
@@ -927,18 +935,25 @@ fn grow_on_a_dvd_r_which_rejects_track_ff_uses_the_last_track() {
     drive.last_track = 2;
     let (cdbs, written) = run_grow(drive, &new_src).expect("grow succeeds via the fallback");
 
-    let asked: Vec<u16> = cdbs
+    let asked: Vec<u32> = cdbs
         .iter()
         .filter(|cdb| cdb[0] == 0x52)
-        .map(|cdb| u16::from_be_bytes([cdb[2], cdb[3]]))
+        .map(|cdb| {
+            if cdb[1] & 0x01 != 0 {
+                u32::from_be_bytes([cdb[2], cdb[3], cdb[4], cdb[5]])
+            } else {
+                u32::from(u16::from_be_bytes([cdb[2], cdb[3]]))
+            }
+        })
         .collect();
-    assert!(asked.contains(&0xFF), "0xFF 确实被问过: {asked:?}");
+    // 每次取可写地址都是同一串：0xFF 先问标准形态再问兼容形态，都被拒后改问
+    // 末条轨道 2（标准形态成功， mmc 层的轨道号校验通过）。
+    let expected = [0xFF, 0xFF, 2];
     assert!(
-        asked
-            .iter()
-            .enumerate()
-            .all(|(index, track)| *track != 0xFF || asked.get(index + 1) == Some(&2)),
-        "每次问 0xFF 被拒后都改问末条轨道 2: {asked:?}"
+        !asked.is_empty()
+            && asked.len().is_multiple_of(expected.len())
+            && asked.chunks(3).all(|chunk| chunk == expected),
+        "0xFF 两种形态都被拒后都改问末条轨道 2: {asked:?}"
     );
 
     let write = cdbs
