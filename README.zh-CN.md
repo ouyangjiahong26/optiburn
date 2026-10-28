@@ -11,7 +11,7 @@ optiburn 是一个 Rust 写的跨平台光盘刻录工具，目标平台是 Wind
 
 同时支持 Windows 与 Linux、x86_64 与 arm64 四个组合的刻录软件很少，Linux 桌面（Ubuntu、银河麒麟等发行版）上的体验尤其粗糙：命令行参数难记，没有进度，失败只有英文报错，盘片状态不对时要自己排查。optiburn 把写前检查、可中止的实时进度、归类的失败说明、回读校验放在同一条流水线上。
 
-## 当前能力（0.1.10）
+## 当前能力（0.1.11）
 
 | 命令 | 做什么 | 平台 |
 |---|---|---|
@@ -54,7 +54,7 @@ Windows 不需要外部工具，刻录、增长与读盘都走原生路径。那
 
 ### 图形前端
 
-Windows 下载 `OptiBurn_0.1.10_x64-setup.exe` 或 arm64 版，Linux 下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。无网的 Windows 机器改用 x64 安装包的 `-offline` 版本：内嵌 WebView2 运行时，安装器约 210 MB，安装全程不需要联网。缺补丁的 Windows 7 上 WebView2 安装器会报 0x8007007F，先从 [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) 离线安装 KB2533623 与 KB3063858 再安装（详见 ADR-0016 补记）。
+Windows 下载 `OptiBurn_0.1.11_x64-setup.exe` 或 arm64 版，Linux 下载 AppImage（`chmod +x` 后直接运行）或 `.deb` 安装包。无网的 Windows 机器改用 x64 安装包的 `-offline` 版本：内嵌 WebView2 运行时，安装器约 210 MB，安装全程不需要联网。缺补丁的 Windows 7 上 WebView2 安装器会报 0x8007007F，先从 [Microsoft Update Catalog](https://www.catalog.update.microsoft.com/Search.aspx?q=KB2533623) 离线安装 KB2533623 与 KB3063858 再安装（详见 ADR-0016 补记）。
 
 ## 用法
 
